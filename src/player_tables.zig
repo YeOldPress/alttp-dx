@@ -236,6 +236,17 @@ pub const kAbilityBitmasks = [8]u8{
     224, 64, 4, 224, 224, 224, 224, 224,
 };
 
+/// Item animation step delays, indexed by player_handler_timer.
+///
+/// The C item handlers (LinkItem_Rod, LinkItem_Hammer, LinkItem_Bow and
+/// LinkItem_CaneOfSomaria) index these with the timer and then, in the very
+/// next statement, compare that same timer against 3 - so on the final step
+/// they read one byte past the end of a three-entry table. The read is
+/// undefined behaviour upstream but harmless there, because its result is
+/// always dead: every one of those handlers goes on to store 0 into
+/// link_delay_timer_spin_attack before anything can read it. The port skips
+/// the read on that last step instead of reproducing it, which keeps the
+/// behaviour identical and keeps Zig's bounds check from firing.
 pub const kRodAnimDelays = [3]u8{
     3, 3, 5,
 };

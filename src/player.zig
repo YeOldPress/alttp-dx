@@ -2785,9 +2785,12 @@ pub export fn LinkItem_Rod() callconv(.c) void {
             return;
         vars.player_handler_timer.* +%= 1;
 
-        vars.link_delay_timer_spin_attack.* = tables.kRodAnimDelays[vars.player_handler_timer.*];
-        if (vars.player_handler_timer.* != 3)
+        // The C reads one past the end of this three-entry table on the last
+        // step; see the note on kRodAnimDelays. The value is dead, so skip it.
+        if (vars.player_handler_timer.* != 3) {
+            vars.link_delay_timer_spin_attack.* = tables.kRodAnimDelays[vars.player_handler_timer.*];
             return;
+        }
         vars.link_debug_value_2.* = 0;
         vars.link_speed_setting.* = 0;
         vars.player_handler_timer.* = 0;
@@ -2819,7 +2822,10 @@ pub export fn LinkItem_Hammer() callconv(.c) void {
         return;
     vars.player_handler_timer.* +%= 1;
 
-    vars.link_delay_timer_spin_attack.* = tables.kHammerAnimDelays[vars.player_handler_timer.*];
+    // The C reads one past the end of this three-entry table on the last step;
+    // see the note on kRodAnimDelays. The value is dead, so skip it.
+    if (vars.player_handler_timer.* != 3)
+        vars.link_delay_timer_spin_attack.* = tables.kHammerAnimDelays[vars.player_handler_timer.*];
     if (vars.player_handler_timer.* == 1) {
         TileDetect_MainHandler(3);
         Ancilla_AddHitStars(22, 0);
@@ -2853,9 +2859,12 @@ pub export fn LinkItem_Bow() callconv(.c) void {
         return;
     vars.player_handler_timer.* +%= 1;
 
-    vars.link_delay_timer_spin_attack.* = tables.kBowDelays[vars.player_handler_timer.*];
-    if (vars.player_handler_timer.* != 3)
+    // The C reads one past the end of this three-entry table on the last step;
+    // see the note on kRodAnimDelays. The value is dead, so skip it.
+    if (vars.player_handler_timer.* != 3) {
+        vars.link_delay_timer_spin_attack.* = tables.kBowDelays[vars.player_handler_timer.*];
         return;
+    }
 
     const obj = AncillaAdd_Arrow(9, vars.link_direction_facing.*, 2,
         vars.link_x_coord.*, vars.link_y_coord.*);
@@ -3949,9 +3958,12 @@ pub export fn LinkItem_CaneOfSomaria() callconv(.c) void {
             return;
         vars.player_handler_timer.* +%= 1;
 
-        vars.link_delay_timer_spin_attack.* = kRodAnimDelaysLocal[vars.player_handler_timer.*];
-        if (vars.player_handler_timer.* != 3)
+        // The C reads one past the end of this three-entry table on the last
+        // step; see the note on kRodAnimDelays. The value is dead, so skip it.
+        if (vars.player_handler_timer.* != 3) {
+            vars.link_delay_timer_spin_attack.* = kRodAnimDelaysLocal[vars.player_handler_timer.*];
             return;
+        }
         vars.link_speed_setting.* = 0;
         vars.player_handler_timer.* = 0;
         vars.link_delay_timer_spin_attack.* = 0;
@@ -7814,6 +7826,47 @@ test "Refund_Magic clamps at 128 only when the bugfix flag is set" {
     features.enhanced_features0.* = 0;
     Refund_Magic(4);
     try std.testing.expectEqual(@as(u8, 127 +% cost), vars.link_magic_power.*);
+}
+
+test "the item handlers survive their last animation step" {
+    // Every one of these used to read one past the end of a three-entry delay
+    // table on the step where player_handler_timer reaches 3, which panics
+    // under Zig's bounds checking. Drive each handler straight to that step.
+    //
+    // button_mask_b_y bit 0x40 means "already mid-animation", so the handlers
+    // skip their setup block; link_delay_timer_spin_attack == 0 makes the
+    // decrement underflow, which is what advances the timer.
+    const handlers = [_]struct { name: []const u8, f: *const fn () callconv(.c) void }{
+        .{ .name = "Rod", .f = &LinkItem_Rod },
+        .{ .name = "Hammer", .f = &LinkItem_Hammer },
+        .{ .name = "Bow", .f = &LinkItem_Bow },
+        .{ .name = "CaneOfSomaria", .f = &LinkItem_CaneOfSomaria },
+    };
+    for (handlers) |h| {
+        vars.button_mask_b_y.* = 0x40;
+        vars.link_delay_timer_spin_attack.* = 0;
+        vars.player_handler_timer.* = 2;
+        vars.link_incapacitated_timer.* = 0;
+
+        h.f();
+
+        // Reaching the last step ends the animation and clears the latch.
+        try std.testing.expectEqual(@as(u8, 0), vars.player_handler_timer.*);
+        try std.testing.expectEqual(@as(u8, 0), vars.link_delay_timer_spin_attack.*);
+        try std.testing.expectEqual(@as(u8, 0), vars.button_mask_b_y.* & 0x40);
+    }
+
+    // The earlier steps still take their delay from the table.
+    vars.button_mask_b_y.* = 0x40;
+    vars.link_delay_timer_spin_attack.* = 0;
+    vars.player_handler_timer.* = 0;
+    LinkItem_Bow();
+    try std.testing.expectEqual(@as(u8, 1), vars.player_handler_timer.*);
+    try std.testing.expectEqual(tables.kBowDelays[1], vars.link_delay_timer_spin_attack.*);
+
+    vars.button_mask_b_y.* = 0;
+    vars.player_handler_timer.* = 0;
+    vars.link_delay_timer_spin_attack.* = 0;
 }
 
 test "Link_ResetProperties_C clears item and button state" {
