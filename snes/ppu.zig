@@ -201,6 +201,22 @@ fn clearBackdrop(buf: *PpuPixelPrioBufs) void {
     @memset(&buf.data, 0x0500);
 }
 
+/// Start of the mosaic block containing `x`, for the horizontal mosaic step.
+///
+/// ppu.mosaicModulo only covers 0..kPpuXPixels-1. With the widescreen
+/// enhancement a window edge starts at -extraLeftCur, and the C indexes the
+/// array with that negative value, reading off the front of the struct. Masking
+/// it into range instead - as this port did - lands on entry 416..511, which
+/// either runs past the end of the array (a panic for x of -1..-64) or quietly
+/// picks a block from the far right of the line. Neither is the mosaic grid, so
+/// continue the grid arithmetically outside the table.
+fn mosaicBlockStart(ppu: *const Ppu, x: i32) i32 {
+    if (x >= 0 and x < ppu.mosaicModulo.len)
+        return @as(i32, ppu.mosaicModulo[@intCast(x)]);
+    const m: i32 = if (ppu.mosaicSize == 0) 1 else @as(i32, ppu.mosaicSize);
+    return @divFloor(x, m) * m;
+}
+
 pub export fn ppu_runLine(ppu: *Ppu, line: c_int) callconv(.c) void {
     if (line != 0) {
         if (ppu.mosaicSize != ppu.lastMosaicModulo) {
@@ -668,8 +684,7 @@ fn drawBackgroundMosaic(
         var x: u32 = @bitCast(@as(i32, sx) +% @as(i32, bglayer.hScroll));
         var cursor = TileCursor.init(tps, x);
         x &= 7;
-        const mosaic_index: usize = @intCast(@as(i32, sx) & 0x1ff);
-        var w: i32 = @as(i32, ppu.mosaicSize) - (@as(i32, sx) - @as(i32, ppu.mosaicModulo[mosaic_index]));
+        var w: i32 = @as(i32, ppu.mosaicSize) - (@as(i32, sx) - mosaicBlockStart(ppu, @as(i32, sx)));
         while (true) {
             const remaining: i32 = @intCast((@intFromPtr(dstz_end) - @intFromPtr(dstz)) / 2);
             w = intMin(w, remaining);
@@ -788,8 +803,7 @@ fn PpuDrawBackground_mode7(ppu: *Ppu, y_in: u32, sub: u1, z: PpuZbufType) void {
         const outside_value: u32 = if (ppu.m7largeField) 0x3ffff else 0xffffffff;
         const char_fill = ppu.m7charFill;
         if (mosaic_enabled) {
-            const mosaic_index: usize = @intCast(@as(i32, x) & 0x1ff);
-            var w: i32 = @as(i32, ppu.mosaicSize) - (@as(i32, x) - @as(i32, ppu.mosaicModulo[mosaic_index]));
+            var w: i32 = @as(i32, ppu.mosaicSize) - (@as(i32, x) - mosaicBlockStart(ppu, @as(i32, x)));
             while (true) {
                 const remaining: i32 = @intCast((@intFromPtr(dstz_end) - @intFromPtr(dstz)) / 2);
                 w = intMin(w, remaining);
@@ -1647,6 +1661,33 @@ pub export fn ppu_write(ppu: *Ppu, adr: u8, val: u8) callconv(.c) void {
 }
 
 const testing = std.testing;
+
+test "the mosaic grid continues left of the visible line" {
+    // Widescreen window edges start at -extraLeftCur. The table only covers
+    // 0..kPpuXPixels-1, so those had to be handled arithmetically; masking them
+    // into range panicked for x of -1..-64 and read the wrong block beyond that.
+    var ppu = std.mem.zeroes(Ppu);
+    ppu.mosaicSize = 8;
+    var j: u8 = 0;
+    for (&ppu.mosaicModulo, 0..) |*m, i| {
+        m.* = @truncate(i -% j);
+        j = if (j + 1 == ppu.mosaicSize) 0 else j + 1;
+    }
+
+    // In range, the helper still reads the table verbatim.
+    for ([_]i32{ 0, 1, 7, 8, 255, 447 }) |x|
+        try testing.expectEqual(@as(i32, ppu.mosaicModulo[@intCast(x)]), mosaicBlockStart(&ppu, x));
+
+    // Left of zero the grid continues, so the offset into the block stays
+    // inside 0..mosaicSize-1 and the step stays positive.
+    for ([_]i32{ -1, -8, -41, -64, -65, -96 }) |x| {
+        const start = mosaicBlockStart(&ppu, x);
+        const offset = x - start;
+        try testing.expect(offset >= 0 and offset < ppu.mosaicSize);
+        try testing.expectEqual(@as(i32, 0), @rem(start, ppu.mosaicSize));
+    }
+}
+
 
 fn testPpu() !*Ppu {
     const ppu = try testing.allocator.create(Ppu);
