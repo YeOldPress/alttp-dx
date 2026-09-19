@@ -16,7 +16,9 @@ jobs:
       matrix:
         include:
         - name: Linux
-          os: ubuntu-latest
+          # libsdl3-dev landed in Ubuntu 25.10; ubuntu-latest is still 24.04
+          # until GitHub's late-2026 migration, so pin an image that has it.
+          os: ubuntu-26.04
         - name: Mac
           os: macos-latest
     steps:
@@ -28,10 +30,13 @@ jobs:
       if: ${{ matrix.name == 'Linux' }}
       run: |
         sudo apt update
-        sudo apt install -y libsdl2-dev
+        sudo apt install -y libsdl3-dev
     - name: Install dependencies for Mac
       if: ${{ matrix.name == 'Mac' }}
-      run: brew install sdl2
+      # SDL3 ships no sdl3-config, so build.zig locates it with pkg-config.
+      run: |
+        brew install sdl3
+        command -v pkg-config >/dev/null || brew install pkgconf
     - name: Build
       run: zig build
     - name: Test

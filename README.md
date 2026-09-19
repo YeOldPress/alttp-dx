@@ -13,7 +13,7 @@ Upstream's discord server is: https://discord.gg/AJJbJAzNNJ
 
 ## Zig port (this checkout)
 
-Build with Zig 0.16.0 and SDL2. All game code is handwritten Zig; third-party
+Build with Zig 0.16.0 and SDL3. All game code is handwritten Zig; third-party
 OpenGL loading, stb_image, and Opus remain C dependencies.
 
 ```sh
@@ -25,12 +25,12 @@ zig build run
 
 Run from the repository root with `zelda3_assets.dat` extracted from your own
 ROM using the asset instructions below. The executable is `zig-out/bin/zelda3`.
-SDL2 must be installed and discoverable through `sdl2-config` or the system
-library search paths.
+SDL3 must be installed and discoverable through `pkg-config --cflags/--libs
+sdl3` or the system library search paths. (SDL3 ships no `sdl3-config`.)
 
 The conversion is **complete**. Every game routine in `src/` and `snes/` is Zig,
 and no project C source or header remains: the only C still compiled is
-third-party (`gl_core`, `stb_image`, Opus), alongside the usual SDL2, libc and
+third-party (`gl_core`, `stb_image`, Opus), alongside the usual SDL3, libc and
 OpenGL linkage.
 
 Optional differential checks compare the port's results and complete RAM state
@@ -118,11 +118,12 @@ cd zelda3
 ```sh
 python3 -m pip install -r requirements.txt
 ```
-5. Install SDL2
-* Ubuntu/Debian `sudo apt install libsdl2-dev`
-* Fedora Linux `sudo dnf install SDL2-devel`
-* Arch Linux `sudo pacman -S sdl2`
-* macOS: `brew install sdl2` (you can get homebrew [here](https://brew.sh/))
+5. Install SDL3
+* Ubuntu/Debian `sudo apt install libsdl3-dev` (Ubuntu 25.10 or newer; older
+  releases have no SDL3 package and need a source build)
+* Fedora Linux `sudo dnf install SDL3-devel`
+* Arch Linux `sudo pacman -S sdl3`
+* macOS: `brew install sdl3` (you can get homebrew [here](https://brew.sh/))
 
 ## Compiling on Linux/MacOS
 1. Place your US ROM file named `zelda3.sfc` in `zelda3`
@@ -222,5 +223,5 @@ Vendored under `third_party/`, each under its own licence:
 | stb_image v2.27 | Dual: MIT or public domain (Unlicense), © Sean Barrett | end of `third_party/stb/stb_image.h` |
 | gl_core 3.1 | Generated OpenGL loader (glLoadGen); no licence text is present in the file | — |
 
-SDL2, libc and OpenGL are linked as external system dependencies and are not
+SDL3, libc and OpenGL are linked as external system dependencies and are not
 included in this repository.

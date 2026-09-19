@@ -103,10 +103,11 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 }
 
-// SDL2 is a system dependency. Prefer the paths sdl2-config reports, since
-// Homebrew installs outside the default search path.
+// SDL3 is a system dependency. It ships no sdl3-config, so the paths come
+// from pkg-config, which also covers Homebrew installing outside the default
+// search path.
 fn addSdlIncludes(b: *std.Build, m: *std.Build.Module) void {
-    const cflags = sdl2Config(b, "--cflags") orelse return;
+    const cflags = sdl3PkgConfig(b, "--cflags") orelse return;
     var it = std.mem.tokenizeAny(u8, cflags, " \r\n");
     while (it.next()) |arg| {
         if (std.mem.startsWith(u8, arg, "-I")) {
@@ -123,8 +124,8 @@ fn addSdlIncludes(b: *std.Build, m: *std.Build.Module) void {
 }
 
 fn linkSdlLibs(b: *std.Build, m: *std.Build.Module) void {
-    const libs = sdl2Config(b, "--libs") orelse {
-        m.linkSystemLibrary("SDL2", .{});
+    const libs = sdl3PkgConfig(b, "--libs") orelse {
+        m.linkSystemLibrary("SDL3", .{});
         return;
     };
     var it = std.mem.tokenizeAny(u8, libs, " \r\n");
@@ -137,7 +138,11 @@ fn linkSdlLibs(b: *std.Build, m: *std.Build.Module) void {
     }
 }
 
-fn sdl2Config(b: *std.Build, arg: []const u8) ?[]const u8 {
-    const exe_path = b.findProgram(&.{"sdl2-config"}, &.{}) catch return null;
-    return b.run(&.{ exe_path, arg });
+/// Null when pkg-config is missing or knows nothing about sdl3, so the caller
+/// can fall back to a plain -lSDL3 and let the linker look in the usual places.
+fn sdl3PkgConfig(b: *std.Build, arg: []const u8) ?[]const u8 {
+    const exe_path = b.findProgram(&.{"pkg-config"}, &.{}) catch return null;
+    // A nonzero exit (no sdl3.pc installed) comes back as an error, not a code.
+    var code: u8 = undefined;
+    return b.runAllowFail(&.{ exe_path, arg, "sdl3" }, &code, .ignore) catch null;
 }

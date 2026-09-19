@@ -4,8 +4,9 @@ const util = @import("util.zig");
 
 const c = @cImport({
     // translate-c cannot parse arm_neon.h, which SDL pulls in on ARM targets.
-    @cDefine("SDL_DISABLE_ARM_NEON_H", "1");
-    @cInclude("SDL.h");
+    // SDL2 spelled this guard SDL_DISABLE_ARM_NEON_H.
+    @cDefine("SDL_DISABLE_NEON", "1");
+    @cInclude("SDL3/SDL.h");
 });
 
 extern fn atoi(s: [*:0]const u8) c_int;
@@ -143,24 +144,24 @@ pub export var g_config: Config = std.mem.zeroes(Config);
 
 /// Squeeze an SDL keycode into 10 bits: the low 9 plus a flag for the
 /// scancode-derived range.
-fn remapSdlKeycode(key: c_int) u16 {
+fn remapSdlKeycode(key: c.SDL_Keycode) u16 {
     const scancode_bit: u16 = if (key & c.SDLK_SCANCODE_MASK != 0) kKeyMod_ScanCode else 0;
     return scancode_bit | @as(u16, @intCast(key & (kKeyMod_ScanCode - 1)));
 }
 
-fn k(key: c_int) u16 {
+fn k(key: c.SDL_Keycode) u16 {
     return remapSdlKeycode(key);
 }
 
-fn shift(key: c_int) u16 {
+fn shift(key: c.SDL_Keycode) u16 {
     return remapSdlKeycode(key) | kKeyMod_Shift;
 }
 
-fn alt(key: c_int) u16 {
+fn alt(key: c.SDL_Keycode) u16 {
     return remapSdlKeycode(key) | kKeyMod_Alt;
 }
 
-fn ctrl(key: c_int) u16 {
+fn ctrl(key: c.SDL_Keycode) u16 {
     return remapSdlKeycode(key) | kKeyMod_Ctrl;
 }
 
@@ -172,8 +173,8 @@ const kDefaultKbdControls: [kKeys.Total]u16 = blk: {
         0,
         // Controls
         k(c.SDLK_UP),       k(c.SDLK_DOWN),     k(c.SDLK_LEFT),     k(c.SDLK_RIGHT),
-        k(c.SDLK_RSHIFT),   k(c.SDLK_RETURN),   k(c.SDLK_x),        k(c.SDLK_z),
-        k(c.SDLK_s),        k(c.SDLK_a),        k(c.SDLK_c),        k(c.SDLK_v),
+        k(c.SDLK_RSHIFT),   k(c.SDLK_RETURN),   k(c.SDLK_X),        k(c.SDLK_Z),
+        k(c.SDLK_S),        k(c.SDLK_A),        k(c.SDLK_C),        k(c.SDLK_V),
         // LoadState
         k(c.SDLK_F1),       k(c.SDLK_F2),       k(c.SDLK_F3),       k(c.SDLK_F4),
         k(c.SDLK_F5),       k(c.SDLK_F6),       k(c.SDLK_F7),       k(c.SDLK_F8),
@@ -205,12 +206,12 @@ const kDefaultKbdControls: [kKeys.Total]u16 = blk: {
         0,                  0,                  0,                  0,
         0,                  0,                  0,                  0,
         // CheatLife, CheatKeys, CheatEquipment, CheatWalkThroughWalls
-        k(c.SDLK_w),        k(c.SDLK_o),        shift(c.SDLK_w),    ctrl(c.SDLK_e),
+        k(c.SDLK_W),        k(c.SDLK_O),        shift(c.SDLK_W),    ctrl(c.SDLK_E),
         // ClearKeyLog, StopReplay, Fullscreen, Reset, Pause, PauseDimmed,
         // Turbo, ReplayTurbo, WindowBigger, WindowSmaller, DisplayPerf, ToggleRenderer
-        k(c.SDLK_k),        k(c.SDLK_l),        alt(c.SDLK_RETURN), ctrl(c.SDLK_r),
-        shift(c.SDLK_p),    k(c.SDLK_p),        k(c.SDLK_TAB),      k(c.SDLK_t),
-        0,                  0,                  k(c.SDLK_f),        k(c.SDLK_r),
+        k(c.SDLK_K),        k(c.SDLK_L),        alt(c.SDLK_RETURN), ctrl(c.SDLK_R),
+        shift(c.SDLK_P),    k(c.SDLK_P),        k(c.SDLK_TAB),      k(c.SDLK_T),
+        0,                  0,                  k(c.SDLK_F),        k(c.SDLK_R),
     };
     for (listed, 0..) |v, i| t[i] = v;
     break :blk t;
@@ -303,14 +304,14 @@ fn keyMapHashFind(key: u16) c_int {
 }
 
 export fn FindCmdForSdlKey(code: c.SDL_Keycode, mod: c.SDL_Keymod) callconv(.c) c_int {
-    if (code & ~@as(c_int, c.SDLK_SCANCODE_MASK | 0x1ff) != 0) return 0;
+    if (code & ~@as(c.SDL_Keycode, c.SDLK_SCANCODE_MASK | 0x1ff) != 0) return 0;
     var key: u16 = 0;
     if (code != c.SDLK_LALT and code != c.SDLK_RALT)
-        key |= if (mod & c.KMOD_ALT != 0) kKeyMod_Alt else 0;
+        key |= if (mod & c.SDL_KMOD_ALT != 0) kKeyMod_Alt else 0;
     if (code != c.SDLK_LCTRL and code != c.SDLK_RCTRL)
-        key |= if (mod & c.KMOD_CTRL != 0) kKeyMod_Ctrl else 0;
+        key |= if (mod & c.SDL_KMOD_CTRL != 0) kKeyMod_Ctrl else 0;
     if (code != c.SDLK_LSHIFT and code != c.SDLK_RSHIFT)
-        key |= if (mod & c.KMOD_SHIFT != 0) kKeyMod_Shift else 0;
+        key |= if (mod & c.SDL_KMOD_SHIFT != 0) kKeyMod_Shift else 0;
     key |= remapSdlKeycode(code);
     return keyMapHashFind(key);
 }
@@ -784,7 +785,7 @@ test "parseBoolBit sets and clears just its own bit" {
 
 test "remapSdlKeycode packs scancode keys into 10 bits" {
     // Character keys keep their low bits and carry no scancode flag.
-    try testing.expectEqual(@as(u16, 'x'), remapSdlKeycode(c.SDLK_x));
+    try testing.expectEqual(@as(u16, 'x'), remapSdlKeycode(c.SDLK_X));
     try testing.expectEqual(@as(u16, '\r'), remapSdlKeycode(c.SDLK_RETURN));
     // Scancode keys get the flag plus the low 9 bits of the scancode.
     const up = remapSdlKeycode(c.SDLK_UP);

@@ -25,7 +25,7 @@ const kPpuRenderFlags_NoSpriteLimits = ppu_types.kPpuRenderFlags_NoSpriteLimits;
 
 // config.zig exports these without `pub`, so they are reached by symbol.
 extern fn ParseConfigFile(filename: ?[*:0]const u8) void;
-extern fn FindCmdForSdlKey(code: i32, mod: c_uint) c_int;
+extern fn FindCmdForSdlKey(code: u32, mod: u16) c_int;
 extern fn FindCmdForGamepadButton(button: c_int, modifiers: u32) c_int;
 
 // Still in C: zelda_rtl.c
@@ -140,8 +140,13 @@ const kDefaultFreq = 44100;
 const kDefaultChannels = 2;
 const kDefaultSamples = 2048;
 
+/// SDL3 dropped SDL_MIX_MAXVOLUME along with SDL_MixAudioFormat; the volume is
+/// a stream gain now. The old scale is kept so the printed value reads as it did.
+const kMixMaxVolume: c_int = 128;
+
 const kWindowTitle = "The Legend of Zelda: A Link to the Past";
-var g_win_flags: u32 = c.SDL_WINDOW_RESIZABLE;
+
+var g_win_flags: c.SDL_WindowFlags = c.SDL_WINDOW_RESIZABLE;
 var g_window: ?*c.SDL_Window = null;
 
 var g_paused: bool = false;
@@ -156,7 +161,7 @@ var g_curr_fps: c_int = 0;
 var g_ppu_render_flags: u32 = 0;
 var g_snes_width: c_int = 0;
 var g_snes_height: c_int = 0;
-var g_sdl_audio_mixer_volume: c_int = c.SDL_MIX_MAXVOLUME;
+var g_sdl_audio_mixer_volume: c_int = kMixMaxVolume;
 var g_renderer_funcs: RendererFuncs = std.mem.zeroes(RendererFuncs);
 var g_gamepad_modifiers: u32 = 0;
 var g_gamepad_last_cmd: [kGamepadBtn_Count]u16 = @splat(0);
@@ -176,11 +181,12 @@ pub export fn Die(err: [*:0]const u8) callconv(.c) noreturn {
 
 pub export fn ChangeWindowScale(scale_step: c_int) callconv(.c) void {
     const masked = c.SDL_GetWindowFlags(g_window) &
-        (c.SDL_WINDOW_FULLSCREEN_DESKTOP | c.SDL_WINDOW_FULLSCREEN | c.SDL_WINDOW_MINIMIZED | c.SDL_WINDOW_MAXIMIZED);
+        (c.SDL_WINDOW_FULLSCREEN | c.SDL_WINDOW_MINIMIZED | c.SDL_WINDOW_MAXIMIZED);
     if (masked != 0)
         return;
-    var screen = c.SDL_GetWindowDisplayIndex(g_window);
-    if (screen < 0) screen = 0;
+    // SDL3 hands out display ids instead of indices, and 0 means "unknown".
+    var screen = c.SDL_GetDisplayForWindow(g_window);
+    if (screen == 0) screen = c.SDL_GetPrimaryDisplay();
     var max_scale: c_int = kMaxWindowScale;
     var bounds: c.SDL_Rect = undefined;
     var bt: c_int = -1;
@@ -188,9 +194,9 @@ pub export fn ChangeWindowScale(scale_step: c_int) callconv(.c) void {
     var bb: c_int = 0;
     var br: c_int = 0;
     // note this takes into effect Windows display scaling, i.e., resolution is divided by scale factor
-    if (c.SDL_GetDisplayUsableBounds(screen, &bounds) == 0) {
+    if (c.SDL_GetDisplayUsableBounds(screen, &bounds)) {
         // this call may take a while before it is reported by Windows (or not at all in my testing)
-        if (c.SDL_GetWindowBordersSize(g_window, &bt, &bl, &bb, &br) != 0) {
+        if (!c.SDL_GetWindowBordersSize(g_window, &bt, &bl, &bb, &br)) {
             // guess based on Windows 10/11 defaults
             bl = 1;
             br = 1;
@@ -207,17 +213,20 @@ pub export fn ChangeWindowScale(scale_step: c_int) callconv(.c) void {
     const w = new_scale * g_snes_width;
     const h = new_scale * g_snes_height;
 
-    c.SDL_SetWindowSize(g_window, w, h);
+    _ = c.SDL_SetWindowSize(g_window, w, h);
     if (bt >= 0) {
-        // Center the window on top of the mouse
-        var mx: c_int = 0;
-        var my: c_int = 0;
-        _ = c.SDL_GetGlobalMouseState(&mx, &my);
+        // Center the window on top of the mouse. SDL3 reports the pointer in
+        // floats.
+        var mxf: f32 = 0;
+        var myf: f32 = 0;
+        _ = c.SDL_GetGlobalMouseState(&mxf, &myf);
+        const mx: c_int = @intFromFloat(mxf);
+        const my: c_int = @intFromFloat(myf);
         const wx = intMax(intMin(mx - @divTrunc(w, 2), bounds.x + bounds.w - bl - br - w), bounds.x + bl);
         const wy = intMax(intMin(my - @divTrunc(h, 2), bounds.y + bounds.h - bt - bb - h), bounds.y + bt);
-        c.SDL_SetWindowPosition(g_window, wx, wy);
+        _ = c.SDL_SetWindowPosition(g_window, wx, wy);
     } else {
-        c.SDL_SetWindowPosition(g_window, c.SDL_WINDOWPOS_CENTERED, c.SDL_WINDOWPOS_CENTERED);
+        _ = c.SDL_SetWindowPosition(g_window, c.SDL_WINDOWPOS_CENTERED, c.SDL_WINDOWPOS_CENTERED);
     }
 }
 
@@ -226,15 +235,15 @@ const RESIZE_BORDER = 20;
 fn HitTestCallback(win: ?*c.SDL_Window, pt: [*c]const c.SDL_Point, data: ?*anyopaque) callconv(.c) c.SDL_HitTestResult {
     _ = data;
     const flags = c.SDL_GetWindowFlags(win);
-    if ((flags & c.SDL_WINDOW_FULLSCREEN_DESKTOP) != 0 or (flags & c.SDL_WINDOW_FULLSCREEN) != 0)
+    if ((flags & c.SDL_WINDOW_FULLSCREEN) != 0)
         return c.SDL_HITTEST_NORMAL;
 
-    if ((c.SDL_GetModState() & c.KMOD_CTRL) != 0)
+    if ((c.SDL_GetModState() & c.SDL_KMOD_CTRL) != 0)
         return c.SDL_HITTEST_DRAGGABLE;
 
     var w: c_int = 0;
     var h: c_int = 0;
-    c.SDL_GetWindowSize(win, &w, &h);
+    _ = c.SDL_GetWindowSize(win, &w, &h);
 
     if (pt[0].y < RESIZE_BORDER) {
         return if (pt[0].x < RESIZE_BORDER)
@@ -294,19 +303,27 @@ fn DrawPpuFrameWithPerf() void {
     g_renderer_funcs.EndDraw.?();
 }
 
-var g_audio_mutex: ?*c.SDL_mutex = null;
+var g_audio_mutex: ?*c.SDL_Mutex = null;
+var g_audio_stream: ?*c.SDL_AudioStream = null;
 var g_audiobuffer: ?[*]u8 = null;
 var g_audiobuffer_cur: ?[*]u8 = null;
 var g_audiobuffer_end: ?[*]u8 = null;
 var g_frames_per_block: c_int = 0;
 var g_audio_channels: u8 = 0;
 
-fn AudioCallback(userdata: ?*anyopaque, stream_in: [*c]u8, len_in: c_int) callconv(.c) void {
-    _ = userdata;
-    var stream = stream_in;
-    var len = len_in;
-    if (c.SDL_LockMutex(g_audio_mutex) != 0) Die("Mutex lock failed!");
-    while (len != 0) {
+/// SDL3 asks the app to push into the stream rather than handing it a buffer to
+/// fill, and scales the samples itself, so the SDL_MixAudioFormat step the C
+/// used for the volume is gone (see ApplyAudioVolume).
+fn AudioCallback(
+    userdata: ?*anyopaque,
+    stream: ?*c.SDL_AudioStream,
+    additional_amount: c_int,
+    total_amount: c_int,
+) callconv(.c) void {
+    _ = .{ userdata, total_amount };
+    var len = additional_amount;
+    c.SDL_LockMutex(g_audio_mutex);
+    while (len > 0) {
         if (@intFromPtr(g_audiobuffer_end.?) - @intFromPtr(g_audiobuffer_cur.?) == 0) {
             audio.ZeldaRenderAudio(@ptrCast(@alignCast(g_audiobuffer.?)), g_frames_per_block, g_audio_channels);
             g_audiobuffer_cur = g_audiobuffer;
@@ -315,19 +332,13 @@ fn AudioCallback(userdata: ?*anyopaque, stream_in: [*c]u8, len_in: c_int) callco
         }
         const avail: c_int = @intCast(@intFromPtr(g_audiobuffer_end.?) - @intFromPtr(g_audiobuffer_cur.?));
         const n = intMin(len, avail);
-        if (g_sdl_audio_mixer_volume == c.SDL_MIX_MAXVOLUME) {
-            @memcpy(stream[0..@intCast(n)], g_audiobuffer_cur.?[0..@intCast(n)]);
-        } else {
-            _ = c.SDL_memset(stream, 0, @intCast(n));
-            c.SDL_MixAudioFormat(stream, g_audiobuffer_cur.?, c.AUDIO_S16, @intCast(n), g_sdl_audio_mixer_volume);
-        }
+        _ = c.SDL_PutAudioStreamData(stream, g_audiobuffer_cur.?, n);
         g_audiobuffer_cur = g_audiobuffer_cur.? + @as(usize, @intCast(n));
-        stream += @as(usize, @intCast(n));
         len -= n;
     }
 
     audio.ZeldaDiscardUnusedAudioFrames();
-    _ = c.SDL_UnlockMutex(g_audio_mutex);
+    c.SDL_UnlockMutex(g_audio_mutex);
 }
 
 // State for sdl renderer
@@ -340,27 +351,35 @@ fn SdlRenderer_Init(window: ?*c.SDL_Window) callconv(.c) bool {
     if (config.g_config.shader != null)
         std.debug.print("Warning: Shaders are supported only with the OpenGL backend\n", .{});
 
-    const renderer = c.SDL_CreateRenderer(g_window, -1, if (config.g_config.output_method == kOutputMethod_SDLSoftware)
-        c.SDL_RENDERER_SOFTWARE
-    else
-        c.SDL_RENDERER_ACCELERATED | c.SDL_RENDERER_PRESENTVSYNC);
+    // SDL3 picks the backend by name and sets vsync separately; the old
+    // SDL_RENDERER_* creation flags are gone.
+    const software = config.g_config.output_method == kOutputMethod_SDLSoftware;
+    const renderer = c.SDL_CreateRenderer(g_window, if (software) c.SDL_SOFTWARE_RENDERER else null);
     if (renderer == null) {
         _ = printf("Failed to create renderer: %s\n", c.SDL_GetError());
         return false;
     }
-    var renderer_info: c.SDL_RendererInfo = undefined;
-    _ = c.SDL_GetRendererInfo(renderer, &renderer_info);
+    if (!software)
+        _ = c.SDL_SetRenderVSync(renderer, 1);
     if (kDebugFlag) {
+        // SDL_GetRendererInfo is gone; the formats come from a renderer
+        // property holding a SDL_PIXELFORMAT_UNKNOWN-terminated list.
         _ = printf("Supported texture formats:");
-        for (0..renderer_info.num_texture_formats) |i|
-            _ = printf(" %s", c.SDL_GetPixelFormatName(renderer_info.texture_formats[i]));
+        const formats: ?[*]const c.SDL_PixelFormat = @ptrCast(@alignCast(c.SDL_GetPointerProperty(
+            c.SDL_GetRendererProperties(renderer),
+            c.SDL_PROP_RENDERER_TEXTURE_FORMATS_POINTER,
+            null,
+        )));
+        if (formats) |list| {
+            var i: usize = 0;
+            while (list[i] != c.SDL_PIXELFORMAT_UNKNOWN) : (i += 1)
+                _ = printf(" %s", c.SDL_GetPixelFormatName(list[i]));
+        }
         _ = printf("\n");
     }
     g_renderer = renderer;
     if (!config.g_config.ignore_aspect_ratio)
-        _ = c.SDL_RenderSetLogicalSize(renderer, g_snes_width, g_snes_height);
-    if (config.g_config.linear_filtering)
-        _ = c.SDL_SetHint(c.SDL_HINT_RENDER_SCALE_QUALITY, "best");
+        _ = c.SDL_SetRenderLogicalPresentation(renderer, g_snes_width, g_snes_height, c.SDL_LOGICAL_PRESENTATION_LETTERBOX);
 
     const tex_mult: c_int = if (g_ppu_render_flags & kPpuRenderFlags_4x4Mode7 != 0) 4 else 1;
     g_texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_ARGB8888, c.SDL_TEXTUREACCESS_STREAMING, g_snes_width * tex_mult, g_snes_height * tex_mult);
@@ -368,6 +387,16 @@ fn SdlRenderer_Init(window: ?*c.SDL_Window) callconv(.c) bool {
         _ = printf("Failed to create texture: %s\n", c.SDL_GetError());
         return false;
     }
+    // SDL_HINT_RENDER_SCALE_QUALITY was replaced by a per-texture scale mode,
+    // which defaults to linear, so nearest has to be asked for explicitly.
+    _ = c.SDL_SetTextureScaleMode(g_texture, if (config.g_config.linear_filtering)
+        c.SDL_SCALEMODE_LINEAR
+    else
+        c.SDL_SCALEMODE_NEAREST);
+    // SDL3 gives a texture in an alpha-carrying format SDL_BLENDMODE_BLEND by
+    // default, where SDL2 used SDL_BLENDMODE_NONE. The PPU leaves the alpha
+    // byte at zero, so blending would make every frame invisible.
+    _ = c.SDL_SetTextureBlendMode(g_texture, c.SDL_BLENDMODE_NONE);
     return true;
 }
 
@@ -379,7 +408,7 @@ fn SdlRenderer_Destroy() callconv(.c) void {
 fn SdlRenderer_BeginDraw(width: c_int, height: c_int, pixels: *[*c]u8, pitch: *c_int) callconv(.c) void {
     g_sdl_renderer_rect.w = width;
     g_sdl_renderer_rect.h = height;
-    if (c.SDL_LockTexture(g_texture, &g_sdl_renderer_rect, @ptrCast(pixels), pitch) != 0) {
+    if (!c.SDL_LockTexture(g_texture, &g_sdl_renderer_rect, @ptrCast(pixels), pitch)) {
         _ = printf("Failed to lock texture: %s\n", c.SDL_GetError());
         return;
     }
@@ -388,8 +417,15 @@ fn SdlRenderer_BeginDraw(width: c_int, height: c_int, pixels: *[*c]u8, pitch: *c
 fn SdlRenderer_EndDraw() callconv(.c) void {
     c.SDL_UnlockTexture(g_texture);
     _ = c.SDL_RenderClear(g_renderer);
-    _ = c.SDL_RenderCopy(g_renderer, g_texture, &g_sdl_renderer_rect, null);
-    c.SDL_RenderPresent(g_renderer); // vsyncs to 60 FPS?
+    // SDL_RenderCopy became SDL_RenderTexture, which takes float rects.
+    const src = c.SDL_FRect{
+        .x = @floatFromInt(g_sdl_renderer_rect.x),
+        .y = @floatFromInt(g_sdl_renderer_rect.y),
+        .w = @floatFromInt(g_sdl_renderer_rect.w),
+        .h = @floatFromInt(g_sdl_renderer_rect.h),
+    };
+    _ = c.SDL_RenderTexture(g_renderer, g_texture, &src, null);
+    _ = c.SDL_RenderPresent(g_renderer); // vsyncs to 60 FPS?
 }
 
 const kSdlRendererFuncs = RendererFuncs{
@@ -433,23 +469,38 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         @as(u32, @intFromBool(config.g_config.enhanced_mode7)) * kPpuRenderFlags_4x4Mode7 |
         @as(u32, @intFromBool(config.g_config.extend_y)) * kPpuRenderFlags_Height240 |
         @as(u32, @intFromBool(config.g_config.no_sprite_limits)) * kPpuRenderFlags_NoSpriteLimits;
+    // audio_freq: Use common sampling rates (see user config file. values higher than 48000 are not supported.)
+    if (config.g_config.audio_freq < 11025 or config.g_config.audio_freq > 48000)
+        config.g_config.audio_freq = kDefaultFreq;
+
+    // The MSU mixer only plays at the right pitch when the output runs at the
+    // rate its decoder produces, so take that rate rather than asking the user
+    // to match it by hand. Nothing is lost by overriding them: SDL3's stream
+    // resamples the finished mix to whatever the device is actually running at,
+    // so AudioFreq no longer has to name a rate the hardware supports.
+    if (audio.MsuRequiredAudioFreq(config.g_config.enable_msu)) |msu_freq| {
+        if (config.g_config.audio_freq != msu_freq) {
+            _ = printf("MSU: using AudioFreq = %d, the rate its audio decodes at\n", @as(c_int, msu_freq));
+            config.g_config.audio_freq = msu_freq;
+        }
+    }
+
+    // ZeldaEnableMsu scales the volume ramp by audio_freq, so it has to run
+    // after the rate above is settled.
     audio.ZeldaEnableMsu(config.g_config.enable_msu);
     ZeldaSetLanguage(config.g_config.language);
 
-    if (config.g_config.fullscreen == 1)
-        g_win_flags ^= c.SDL_WINDOW_FULLSCREEN_DESKTOP
-    else if (config.g_config.fullscreen == 2)
-        g_win_flags ^= c.SDL_WINDOW_FULLSCREEN;
+    // SDL3 folded SDL_WINDOW_FULLSCREEN_DESKTOP into SDL_WINDOW_FULLSCREEN: a
+    // fullscreen window stays at the desktop resolution unless a display mode
+    // is pinned on it, which is what fullscreen=2 does once the window exists.
+    if (config.g_config.fullscreen != 0)
+        g_win_flags |= c.SDL_WINDOW_FULLSCREEN;
 
     // Window scale (1=100%, 2=200%, 3=300%, etc.)
     g_current_window_scale = if (config.g_config.window_scale == 0)
         2
     else
         @intCast(intMin(config.g_config.window_scale, kMaxWindowScale));
-
-    // audio_freq: Use common sampling rates (see user config file. values higher than 48000 are not supported.)
-    if (config.g_config.audio_freq < 11025 or config.g_config.audio_freq > 48000)
-        config.g_config.audio_freq = kDefaultFreq;
 
     // Currently, the SPC/DSP implementation only supports up to stereo.
     if (config.g_config.audio_channels < 1 or config.g_config.audio_channels > 2)
@@ -461,7 +512,18 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         config.g_config.audio_samples = kDefaultSamples;
 
     // set up SDL
-    if (c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO | c.SDL_INIT_GAMECONTROLLER) != 0) {
+    if (builtin.os.tag == .macos) {
+        // macOS's GameController framework and SDL's own HIDAPI driver both
+        // claim some USB pads, so one controller enumerates twice under two
+        // different mappings. Both then deliver an event per press, and where
+        // the two mappings disagree about which button sits where, one press
+        // fires two different bindings - a SNES pad ends up with B and A doing
+        // the same thing. HIDAPI is the one that maps these correctly, so leave
+        // GameController out of it. SDL_SetHint yields to the environment, so
+        // SDL_JOYSTICK_MFI=1 still turns it back on.
+        _ = c.SDL_SetHint(c.SDL_HINT_JOYSTICK_MFI, "0");
+    }
+    if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO | c.SDL_INIT_GAMEPAD)) {
         _ = printf("Failed to init SDL: %s\n", c.SDL_GetError());
         return 1;
     }
@@ -479,39 +541,53 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         g_renderer_funcs = kSdlRendererFuncs;
     }
 
-    const window = c.SDL_CreateWindow(kWindowTitle, c.SDL_WINDOWPOS_UNDEFINED, c.SDL_WINDOWPOS_UNDEFINED, window_width, window_height, g_win_flags);
+    // SDL3 drops the x/y arguments; an unpositioned window is the default.
+    const window = c.SDL_CreateWindow(kWindowTitle, window_width, window_height, g_win_flags);
     if (window == null) {
         _ = printf("Failed to create window: %s\n", c.SDL_GetError());
         return 1;
     }
     g_window = window;
+    if (config.g_config.fullscreen == 2) {
+        // Exclusive fullscreen: pin the closest real mode to the wanted size.
+        var mode: c.SDL_DisplayMode = undefined;
+        const display = c.SDL_GetDisplayForWindow(window);
+        if (c.SDL_GetClosestFullscreenDisplayMode(display, window_width, window_height, 0.0, false, &mode))
+            _ = c.SDL_SetWindowFullscreenMode(window, &mode);
+    }
     _ = c.SDL_SetWindowHitTest(window, HitTestCallback, null);
 
     if (!g_renderer_funcs.Initialize.?(window))
         return 1;
 
-    var device: c.SDL_AudioDeviceID = 0;
-    var want: c.SDL_AudioSpec = std.mem.zeroes(c.SDL_AudioSpec);
-    var have: c.SDL_AudioSpec = undefined;
+    // SDL3's SDL_AudioSpec carries only the format; the buffer size moved to a
+    // hint and the callback is passed to SDL_OpenAudioDeviceStream. The spec
+    // describes what the app produces and the stream converts to the device,
+    // so there is no "have" to read back.
+    var spec: c.SDL_AudioSpec = std.mem.zeroes(c.SDL_AudioSpec);
     g_audio_mutex = c.SDL_CreateMutex();
     if (g_audio_mutex == null) Die("No mutex");
 
     if (config.g_config.enable_audio) {
-        want.freq = config.g_config.audio_freq;
-        want.format = c.AUDIO_S16;
-        want.channels = config.g_config.audio_channels;
-        want.samples = config.g_config.audio_samples;
-        want.callback = &AudioCallback;
-        device = c.SDL_OpenAudioDevice(null, 0, &want, &have, 0);
-        if (device == 0) {
+        spec.freq = config.g_config.audio_freq;
+        spec.format = c.SDL_AUDIO_S16;
+        spec.channels = config.g_config.audio_channels;
+        var samples_str: [16]u8 = undefined;
+        _ = snprintf(&samples_str, samples_str.len, "%d", @as(c_int, config.g_config.audio_samples));
+        _ = c.SDL_SetHint(c.SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, @ptrCast(&samples_str));
+        g_audio_stream = c.SDL_OpenAudioDeviceStream(c.SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, &AudioCallback, null);
+        if (g_audio_stream == null) {
             _ = printf("Failed to open audio device: %s\n", c.SDL_GetError());
             return 1;
         }
-        g_audio_channels = have.channels;
-        g_frames_per_block = @divTrunc(534 * have.freq, 32000);
-        g_audiobuffer = @ptrCast(malloc(@as(usize, @intCast(g_frames_per_block)) * have.channels * @sizeOf(i16)));
+        g_audio_channels = @intCast(spec.channels);
+        g_frames_per_block = @divTrunc(534 * spec.freq, 32000);
+        g_audiobuffer = @ptrCast(malloc(@as(usize, @intCast(g_frames_per_block)) * g_audio_channels * @sizeOf(i16)));
         g_audiobuffer_cur = g_audiobuffer;
         g_audiobuffer_end = g_audiobuffer;
+        ApplyAudioVolume();
+        // SDL_OpenAudioDeviceStream hands back a paused device.
+        _ = c.SDL_ResumeAudioStreamDevice(g_audio_stream);
     }
 
     if (argc >= 1 and !g_run_without_emu)
@@ -521,14 +597,19 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
 
     ZeldaReadSram();
 
-    var i: c_int = 0;
-    while (i < c.SDL_NumJoysticks()) : (i += 1)
-        OpenOneGamepad(i);
+    // SDL3 enumerates joysticks by instance id instead of by index.
+    var joystick_count: c_int = 0;
+    if (c.SDL_GetJoysticks(&joystick_count)) |joysticks| {
+        for (joysticks[0..@intCast(joystick_count)]) |id|
+            OpenOneGamepad(id);
+        c.SDL_free(joysticks);
+    }
 
     var running = true;
     var event: c.SDL_Event = undefined;
+    // SDL_GetTicks is 64-bit in SDL3.
     var lastTick = c.SDL_GetTicks();
-    var curTick: u32 = 0;
+    var curTick: u64 = 0;
     var frameCtr: u32 = 0;
     var audiopaused = true;
 
@@ -536,41 +617,41 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         HandleCommand(kKeys_Load + 0, true);
 
     while (running) {
-        while (c.SDL_PollEvent(&event) != 0) {
+        while (c.SDL_PollEvent(&event)) {
             switch (event.type) {
-                c.SDL_CONTROLLERDEVICEADDED => OpenOneGamepad(event.cdevice.which),
-                c.SDL_CONTROLLERAXISMOTION => HandleGamepadAxisInput(event.caxis.which, event.caxis.axis, event.caxis.value),
-                c.SDL_CONTROLLERBUTTONDOWN, c.SDL_CONTROLLERBUTTONUP => {
-                    const b = RemapSdlButton(event.cbutton.button);
+                c.SDL_EVENT_GAMEPAD_ADDED => OpenOneGamepad(event.gdevice.which),
+                c.SDL_EVENT_GAMEPAD_AXIS_MOTION => HandleGamepadAxisInput(event.gaxis.which, event.gaxis.axis, event.gaxis.value),
+                c.SDL_EVENT_GAMEPAD_BUTTON_DOWN, c.SDL_EVENT_GAMEPAD_BUTTON_UP => {
+                    const b = RemapSdlButton(event.gbutton.button);
                     if (b >= 0)
-                        HandleGamepadInput(b, event.type == c.SDL_CONTROLLERBUTTONDOWN);
+                        HandleGamepadInput(b, event.type == c.SDL_EVENT_GAMEPAD_BUTTON_DOWN);
                 },
-                c.SDL_MOUSEWHEEL => {
-                    if ((c.SDL_GetModState() & c.KMOD_CTRL) != 0 and event.wheel.y != 0)
+                c.SDL_EVENT_MOUSE_WHEEL => {
+                    // SDL3 reports wheel deltas as floats.
+                    if ((c.SDL_GetModState() & c.SDL_KMOD_CTRL) != 0 and event.wheel.y != 0)
                         ChangeWindowScale(if (event.wheel.y > 0) 1 else -1);
                 },
-                c.SDL_MOUSEBUTTONDOWN => {
-                    if (event.button.button == c.SDL_BUTTON_LEFT and event.button.state == c.SDL_PRESSED and event.button.clicks == 2) {
-                        if ((g_win_flags & c.SDL_WINDOW_FULLSCREEN_DESKTOP) == 0 and
-                            (g_win_flags & c.SDL_WINDOW_FULLSCREEN) == 0 and
-                            (c.SDL_GetModState() & c.KMOD_SHIFT) != 0)
+                c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                    if (event.button.button == c.SDL_BUTTON_LEFT and event.button.down and event.button.clicks == 2) {
+                        if ((g_win_flags & c.SDL_WINDOW_FULLSCREEN) == 0 and
+                            (c.SDL_GetModState() & c.SDL_KMOD_SHIFT) != 0)
                         {
                             g_win_flags ^= c.SDL_WINDOW_BORDERLESS;
-                            c.SDL_SetWindowBordered(g_window, @intFromBool((g_win_flags & c.SDL_WINDOW_BORDERLESS) == 0));
+                            _ = c.SDL_SetWindowBordered(g_window, (g_win_flags & c.SDL_WINDOW_BORDERLESS) == 0);
                         }
                     }
                 },
-                c.SDL_KEYDOWN => HandleInput(event.key.keysym.sym, event.key.keysym.mod, true),
-                c.SDL_KEYUP => HandleInput(event.key.keysym.sym, event.key.keysym.mod, false),
-                c.SDL_QUIT => running = false,
+                c.SDL_EVENT_KEY_DOWN => HandleInput(event.key.key, event.key.mod, true),
+                c.SDL_EVENT_KEY_UP => HandleInput(event.key.key, event.key.mod, false),
+                c.SDL_EVENT_QUIT => running = false,
                 else => {},
             }
         }
 
         if (g_paused != audiopaused) {
             audiopaused = g_paused;
-            if (device != 0)
-                c.SDL_PauseAudioDevice(device, @intFromBool(audiopaused));
+            if (g_audio_stream) |stream|
+                _ = if (audiopaused) c.SDL_PauseAudioStreamDevice(stream) else c.SDL_ResumeAudioStreamDevice(stream);
         }
 
         if (g_paused) {
@@ -584,9 +665,9 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
             g_gamepad_buttons = 0;
         inputs |= g_gamepad_buttons;
 
-        _ = c.SDL_LockMutex(g_audio_mutex);
+        c.SDL_LockMutex(g_audio_mutex);
         const is_replay = ZeldaRunFrame(inputs);
-        _ = c.SDL_UnlockMutex(g_audio_mutex);
+        c.SDL_UnlockMutex(g_audio_mutex);
 
         frameCtr +%= 1;
 
@@ -601,7 +682,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         if (config.g_config.display_perf_title) {
             var title: [60]u8 = undefined;
             _ = snprintf(&title, title.len, "%s | FPS: %d", kWindowTitle.ptr, g_curr_fps);
-            c.SDL_SetWindowTitle(g_window, @ptrCast(&title));
+            _ = c.SDL_SetWindowTitle(g_window, @ptrCast(&title));
         }
 
         // if vsync isn't working, delay manually
@@ -617,7 +698,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
                     lastTick = curTick -% 500;
                     delta = 500;
                 }
-                c.SDL_Delay(delta);
+                c.SDL_Delay(@intCast(delta));
             } else if (curTick -% lastTick > 500) {
                 lastTick = curTick;
             }
@@ -627,9 +708,11 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         HandleCommand(kKeys_Save + 0, true);
 
     // clean sdl
-    if (config.g_config.enable_audio) {
-        c.SDL_PauseAudioDevice(device, 1);
-        c.SDL_CloseAudioDevice(device);
+    if (g_audio_stream) |stream| {
+        _ = c.SDL_PauseAudioStreamDevice(stream);
+        // Destroying a stream from SDL_OpenAudioDeviceStream closes its device.
+        c.SDL_DestroyAudioStream(stream);
+        g_audio_stream = null;
     }
 
     c.SDL_DestroyMutex(g_audio_mutex);
@@ -736,17 +819,17 @@ fn HandleCommand(j: u32, pressed: bool) void {
 
     // Everything that might access audio state
     // (like SaveLoad and Reset) must have the lock.
-    _ = c.SDL_LockMutex(g_audio_mutex);
+    c.SDL_LockMutex(g_audio_mutex);
     HandleCommand_Locked(j, pressed);
-    _ = c.SDL_UnlockMutex(g_audio_mutex);
+    c.SDL_UnlockMutex(g_audio_mutex);
 }
 
 pub export fn ZeldaApuLock() callconv(.c) void {
-    _ = c.SDL_LockMutex(g_audio_mutex);
+    c.SDL_LockMutex(g_audio_mutex);
 }
 
 pub export fn ZeldaApuUnlock() callconv(.c) void {
-    _ = c.SDL_UnlockMutex(g_audio_mutex);
+    c.SDL_UnlockMutex(g_audio_mutex);
 }
 
 fn HandleCommand_Locked(j: u32, pressed: bool) void {
@@ -771,10 +854,11 @@ fn HandleCommand_Locked(j: u32, pressed: bool) void {
             kKeys_ClearKeyLog => PatchCommand('k'),
             kKeys_StopReplay => PatchCommand('l'),
             kKeys_Fullscreen => {
-                g_win_flags ^= c.SDL_WINDOW_FULLSCREEN_DESKTOP;
-                _ = c.SDL_SetWindowFullscreen(g_window, g_win_flags & c.SDL_WINDOW_FULLSCREEN_DESKTOP);
+                g_win_flags ^= c.SDL_WINDOW_FULLSCREEN;
+                _ = c.SDL_SetWindowFullscreen(g_window, (g_win_flags & c.SDL_WINDOW_FULLSCREEN) != 0);
                 g_cursor = !g_cursor;
-                _ = c.SDL_ShowCursor(@intFromBool(g_cursor));
+                // SDL3 split SDL_ShowCursor(toggle) into two argument-less calls.
+                _ = if (g_cursor) c.SDL_ShowCursor() else c.SDL_HideCursor();
             },
             kKeys_Reset => ZeldaReset(true),
             kKeys_Pause => g_paused = !g_paused,
@@ -791,37 +875,84 @@ fn HandleCommand_Locked(j: u32, pressed: bool) void {
     }
 }
 
-fn HandleInput(keyCode: i32, keyMod: c_uint, pressed: bool) void {
+fn HandleInput(keyCode: c.SDL_Keycode, keyMod: c.SDL_Keymod, pressed: bool) void {
     const j = FindCmdForSdlKey(keyCode, keyMod);
     if (j != 0)
         HandleCommand(@intCast(j), pressed);
 }
 
-fn OpenOneGamepad(i: c_int) void {
-    if (c.SDL_IsGameController(i) != 0) {
-        const controller = c.SDL_GameControllerOpen(i);
-        if (controller == null)
-            std.debug.print("Could not open gamepad {d}: {s}\n", .{ i, c.SDL_GetError() });
+fn OpenOneGamepad(id: c.SDL_JoystickID) void {
+    if (!c.SDL_IsGamepad(id)) return;
+    // SDL queues an "added" event for pads that were already plugged in, so the
+    // startup sweep and that event both reach here for the same id. Opening
+    // twice is harmless - SDL hands back the same gamepad - but reporting it
+    // twice is just noise.
+    if (c.SDL_GetGamepadFromID(id) != null) return;
+    const gamepad = c.SDL_OpenGamepad(id);
+    if (gamepad == null) {
+        std.debug.print("Could not open gamepad {d}: {s}\n", .{ id, c.SDL_GetError() });
+        return;
     }
+    // The bindings go by position, so print the letter SDL says sits at each
+    // one. A pad whose printed faces disagree with this line is the usual cause
+    // of "my buttons are swapped", and it says whether the fault is SDL's
+    // mapping for the device or the [GamepadMap] section.
+    std.debug.print("Gamepad {d}: {s} [south={s} east={s} west={s} north={s}]\n", .{
+        id,
+        gamepadName(gamepad),
+        buttonLabelName(gamepad, c.SDL_GAMEPAD_BUTTON_SOUTH),
+        buttonLabelName(gamepad, c.SDL_GAMEPAD_BUTTON_EAST),
+        buttonLabelName(gamepad, c.SDL_GAMEPAD_BUTTON_WEST),
+        buttonLabelName(gamepad, c.SDL_GAMEPAD_BUTTON_NORTH),
+    });
 }
 
+/// SDL_GetGamepadName returns a C string that may be null.
+fn gamepadName(gamepad: ?*c.SDL_Gamepad) [*:0]const u8 {
+    return c.SDL_GetGamepadName(gamepad) orelse "unknown";
+}
+
+/// The letter or shape printed on a face button, for the diagnostic above.
+fn buttonLabelName(gamepad: ?*c.SDL_Gamepad, button: c_int) []const u8 {
+    return switch (c.SDL_GetGamepadButtonLabel(gamepad, button)) {
+        c.SDL_GAMEPAD_BUTTON_LABEL_A => "A",
+        c.SDL_GAMEPAD_BUTTON_LABEL_B => "B",
+        c.SDL_GAMEPAD_BUTTON_LABEL_X => "X",
+        c.SDL_GAMEPAD_BUTTON_LABEL_Y => "Y",
+        c.SDL_GAMEPAD_BUTTON_LABEL_CROSS => "Cross",
+        c.SDL_GAMEPAD_BUTTON_LABEL_CIRCLE => "Circle",
+        c.SDL_GAMEPAD_BUTTON_LABEL_SQUARE => "Square",
+        c.SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE => "Triangle",
+        else => "?",
+    };
+}
+
+/// SDL3 names the face buttons by position rather than by Xbox letter:
+/// south is A, east is B, west is X and north is Y.
+///
+/// Position is what the bindings want, not the letter printed on the pad. The
+/// stock [GamepadMap] line maps gamepad B to SNES A, A to SNES B, Y to SNES X
+/// and X to SNES Y - a cross-map that lines up only if those names mean Xbox
+/// labels, which sit at south/east/west/north. So a gamepad's south button has
+/// to arrive here as kGamepadBtn_A whatever its face says, and the SNES pad
+/// whose south button reads "B" still ends up driving SNES B.
 fn RemapSdlButton(button: u8) c_int {
     return switch (button) {
-        c.SDL_CONTROLLER_BUTTON_A => kGamepadBtn_A,
-        c.SDL_CONTROLLER_BUTTON_B => kGamepadBtn_B,
-        c.SDL_CONTROLLER_BUTTON_X => kGamepadBtn_X,
-        c.SDL_CONTROLLER_BUTTON_Y => kGamepadBtn_Y,
-        c.SDL_CONTROLLER_BUTTON_BACK => kGamepadBtn_Back,
-        c.SDL_CONTROLLER_BUTTON_GUIDE => kGamepadBtn_Guide,
-        c.SDL_CONTROLLER_BUTTON_START => kGamepadBtn_Start,
-        c.SDL_CONTROLLER_BUTTON_LEFTSTICK => kGamepadBtn_L3,
-        c.SDL_CONTROLLER_BUTTON_RIGHTSTICK => kGamepadBtn_R3,
-        c.SDL_CONTROLLER_BUTTON_LEFTSHOULDER => kGamepadBtn_L1,
-        c.SDL_CONTROLLER_BUTTON_RIGHTSHOULDER => kGamepadBtn_R1,
-        c.SDL_CONTROLLER_BUTTON_DPAD_UP => kGamepadBtn_DpadUp,
-        c.SDL_CONTROLLER_BUTTON_DPAD_DOWN => kGamepadBtn_DpadDown,
-        c.SDL_CONTROLLER_BUTTON_DPAD_LEFT => kGamepadBtn_DpadLeft,
-        c.SDL_CONTROLLER_BUTTON_DPAD_RIGHT => kGamepadBtn_DpadRight,
+        c.SDL_GAMEPAD_BUTTON_SOUTH => kGamepadBtn_A,
+        c.SDL_GAMEPAD_BUTTON_EAST => kGamepadBtn_B,
+        c.SDL_GAMEPAD_BUTTON_WEST => kGamepadBtn_X,
+        c.SDL_GAMEPAD_BUTTON_NORTH => kGamepadBtn_Y,
+        c.SDL_GAMEPAD_BUTTON_BACK => kGamepadBtn_Back,
+        c.SDL_GAMEPAD_BUTTON_GUIDE => kGamepadBtn_Guide,
+        c.SDL_GAMEPAD_BUTTON_START => kGamepadBtn_Start,
+        c.SDL_GAMEPAD_BUTTON_LEFT_STICK => kGamepadBtn_L3,
+        c.SDL_GAMEPAD_BUTTON_RIGHT_STICK => kGamepadBtn_R3,
+        c.SDL_GAMEPAD_BUTTON_LEFT_SHOULDER => kGamepadBtn_L1,
+        c.SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER => kGamepadBtn_R1,
+        c.SDL_GAMEPAD_BUTTON_DPAD_UP => kGamepadBtn_DpadUp,
+        c.SDL_GAMEPAD_BUTTON_DPAD_DOWN => kGamepadBtn_DpadDown,
+        c.SDL_GAMEPAD_BUTTON_DPAD_LEFT => kGamepadBtn_DpadLeft,
+        c.SDL_GAMEPAD_BUTTON_DPAD_RIGHT => kGamepadBtn_DpadRight,
         else => -1,
     };
 }
@@ -840,8 +971,17 @@ fn HandleGamepadInput(button: c_int, pressed: bool) void {
 fn HandleVolumeAdjustment(volume_adjustment: c_int) void {
     // SYSTEM_VOLUME_MIXER_AVAILABLE is 0 for this build.
     g_sdl_audio_mixer_volume = intMin(intMax(0, g_sdl_audio_mixer_volume +
-        volume_adjustment * (c.SDL_MIX_MAXVOLUME >> 4)), c.SDL_MIX_MAXVOLUME);
+        volume_adjustment * (kMixMaxVolume >> 4)), kMixMaxVolume);
+    ApplyAudioVolume();
     _ = printf("[SDL mixer volume]=%i\n", g_sdl_audio_mixer_volume);
+}
+
+/// The volume used to be folded into each callback by SDL_MixAudioFormat. SDL3
+/// scales the stream itself, with 1.0 meaning untouched samples.
+fn ApplyAudioVolume() void {
+    if (g_audio_stream) |stream|
+        _ = c.SDL_SetAudioStreamGain(stream, @as(f32, @floatFromInt(g_sdl_audio_mixer_volume)) /
+            @as(f32, @floatFromInt(kMixMaxVolume)));
 }
 
 /// Approximates atan2(y, x) normalized to the [0,4) range
@@ -876,12 +1016,12 @@ const kSegmentToButtons = [8]u8{
     1 << 6 | 1 << 4, // 7 = left, up
 };
 
-var last_gamepad_id: c_int = 0;
+var last_gamepad_id: c.SDL_JoystickID = 0;
 var last_x: c_int = 0;
 var last_y: c_int = 0;
 
-fn HandleGamepadAxisInput(gamepad_id: c_int, axis: u8, value: i16) void {
-    if (axis == c.SDL_CONTROLLER_AXIS_LEFTX or axis == c.SDL_CONTROLLER_AXIS_LEFTY) {
+fn HandleGamepadAxisInput(gamepad_id: c.SDL_JoystickID, axis: u8, value: i16) void {
+    if (axis == c.SDL_GAMEPAD_AXIS_LEFTX or axis == c.SDL_GAMEPAD_AXIS_LEFTY) {
         // ignore other gamepads unless they have a big input
         if (last_gamepad_id != gamepad_id) {
             if (value > -16000 and value < 16000)
@@ -890,7 +1030,7 @@ fn HandleGamepadAxisInput(gamepad_id: c_int, axis: u8, value: i16) void {
             last_x = 0;
             last_y = 0;
         }
-        if (axis == c.SDL_CONTROLLER_AXIS_LEFTX) last_x = value else last_y = value;
+        if (axis == c.SDL_GAMEPAD_AXIS_LEFTX) last_x = value else last_y = value;
         var buttons: u8 = 0;
         if (last_x * last_x + last_y * last_y >= 10000 * 10000) {
             // in the non deadzone part, divide the circle into eight 45 degree
@@ -899,9 +1039,9 @@ fn HandleGamepadAxisInput(gamepad_id: c_int, axis: u8, value: i16) void {
             buttons = kSegmentToButtons[(angle +% 16 +% 64) >> 5];
         }
         g_gamepad_buttons = buttons;
-    } else if (axis == c.SDL_CONTROLLER_AXIS_TRIGGERLEFT or axis == c.SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
+    } else if (axis == c.SDL_GAMEPAD_AXIS_LEFT_TRIGGER or axis == c.SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) {
         if (value < 12000 or value >= 16000) // hysteresis
-            HandleGamepadInput(if (axis == c.SDL_CONTROLLER_AXIS_TRIGGERLEFT) kGamepadBtn_L2 else kGamepadBtn_R2, value >= 12000);
+            HandleGamepadInput(if (axis == c.SDL_GAMEPAD_AXIS_LEFT_TRIGGER) kGamepadBtn_L2 else kGamepadBtn_R2, value >= 12000);
     }
 }
 
@@ -1053,10 +1193,10 @@ test "the key command enum matches the C numbering" {
     try testing.expectEqual(131, kKeys_Total);
 }
 
-test "gamepad buttons map onto the SDL controller enum" {
-    try testing.expectEqual(kGamepadBtn_A, RemapSdlButton(c.SDL_CONTROLLER_BUTTON_A));
-    try testing.expectEqual(kGamepadBtn_DpadRight, RemapSdlButton(c.SDL_CONTROLLER_BUTTON_DPAD_RIGHT));
-    try testing.expectEqual(kGamepadBtn_R1, RemapSdlButton(c.SDL_CONTROLLER_BUTTON_RIGHTSHOULDER));
+test "gamepad buttons map onto the SDL gamepad enum" {
+    try testing.expectEqual(kGamepadBtn_A, RemapSdlButton(c.SDL_GAMEPAD_BUTTON_SOUTH));
+    try testing.expectEqual(kGamepadBtn_DpadRight, RemapSdlButton(c.SDL_GAMEPAD_BUTTON_DPAD_RIGHT));
+    try testing.expectEqual(kGamepadBtn_R1, RemapSdlButton(c.SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER));
     // Anything unknown is rejected rather than mapped.
     try testing.expectEqual(-1, RemapSdlButton(200));
     try testing.expectEqual(17, kGamepadBtn_Count);

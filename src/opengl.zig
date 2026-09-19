@@ -266,7 +266,9 @@ fn computeViewport(
 fn OpenGLRenderer_EndDraw() callconv(.c) void {
     var drawable_width: c_int = 0;
     var drawable_height: c_int = 0;
-    c.SDL_GL_GetDrawableSize(g_window, &drawable_width, &drawable_height);
+    // SDL3 dropped SDL_GL_GetDrawableSize; the generic window call reports the
+    // same pixel (not logical) size.
+    _ = c.SDL_GetWindowSizeInPixels(g_window, &drawable_width, &drawable_height);
 
     const vp = computeViewport(
         drawable_width,
@@ -301,7 +303,7 @@ fn OpenGLRenderer_EndDraw() callconv(.c) void {
         c.glDrawArrays(c.GL_TRIANGLE_STRIP, 0, 4);
     }
 
-    c.SDL_GL_SwapWindow(g_window);
+    _ = c.SDL_GL_SwapWindow(g_window);
 }
 
 const kOpenGLRendererFuncs = RendererFuncs{

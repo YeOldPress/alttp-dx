@@ -792,16 +792,27 @@ pub export fn ZeldaSaveMusicStateToRam_Locked() callconv(.c) void {
     dst.* = g_msu_player.resume_info;
 }
 
+/// The output rate the MSU mixer has to run at, or null when MSU is off.
+///
+/// MsuPlayer_Mix copies decoded frames into the output buffer one for one, with
+/// no rate conversion of its own, so the mix only comes out at the right pitch
+/// when the buffer it writes into runs at the rate the decoder produces: 48000
+/// for Opuz (see the opus_decoder_create call) and 44100 for plain PCM. The SNES
+/// DSP has no such constraint — dsp_getSamples resamples its 32kHz output to
+/// whatever length it is handed.
+///
+/// This used to be the user's problem, with a warning telling them to go and set
+/// AudioFreq themselves. The caller picks the rate from this instead; SDL3's
+/// audio stream converts the finished mix to whatever the device wants, so the
+/// rate the mixer needs no longer has to be a rate the hardware supports.
+pub fn MsuRequiredAudioFreq(enable: u8) ?u16 {
+    if (enable == 0) return null;
+    return if (enable & kMsuEnabled_Opuz != 0) 48000 else 44100;
+}
+
 pub export fn ZeldaEnableMsu(enable: u8) callconv(.c) void {
     g_msu_player.volume = 1.0;
     g_msu_player.enabled = enable;
-    if (enable & kMsuEnabled_Opuz != 0) {
-        if (config.g_config.audio_freq != 48000)
-            std.debug.print("Warning: MSU Opuz requires: AudioFreq = 48000\n", .{});
-    } else if (enable != 0) {
-        if (config.g_config.audio_freq != 44100)
-            std.debug.print("Warning: MSU requires: AudioFreq = 44100\n", .{});
-    }
 
     const msuvolume: f32 = @floatFromInt(config.g_config.msuvolume);
     const freq: f32 = @floatFromInt(config.g_config.audio_freq);
@@ -921,6 +932,16 @@ test "negative samples survive the C's unsigned-product truncation" {
     // Halving rounds toward negative infinity, so -1 stays -1 rather than 0.
     try testing.expectEqual(@as(i16, -1), scaleSample(-1, 32768));
     try testing.expectEqual(@as(i16, 16383), scaleSample(32767, 32768));
+}
+
+test "the msu mixer asks for the rate its decoder produces" {
+    // Off means no constraint; the DSP resamples to any rate on its own.
+    try testing.expectEqual(@as(?u16, null), MsuRequiredAudioFreq(0));
+    // Opuz decodes at 48000, every other MSU flavour is 44100 PCM.
+    try testing.expectEqual(@as(?u16, 48000), MsuRequiredAudioFreq(kMsuEnabled_Opuz));
+    try testing.expectEqual(@as(?u16, 48000), MsuRequiredAudioFreq(kMsuEnabled_Msu | kMsuEnabled_Opuz));
+    try testing.expectEqual(@as(?u16, 44100), MsuRequiredAudioFreq(kMsuEnabled_Msu));
+    try testing.expectEqual(@as(?u16, 44100), MsuRequiredAudioFreq(kMsuEnabled_MsuDeluxe));
 }
 
 test "the volume transition tables scale with the configured msu volume" {
