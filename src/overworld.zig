@@ -1115,6 +1115,25 @@ pub export fn OverworldHandleTransitions() callconv(.c) void {
     }
 }
 
+/// The overworld area's base offset, or null for an index the table does not
+/// cover.
+///
+/// The screen index is masked with 0xbf, which clears bit 6 but keeps bit 7, so
+/// a special area (screen index 0x80 and up) indexes past this 64-entry table.
+/// The C reads whatever static data follows it; the value is dead either way,
+/// because Overworld_EnterSpecialArea overwrites both offsets from the
+/// kSpExit_* tables as soon as LoadOverworldFromDungeon returns. Leaving them
+/// untouched keeps that outcome without reading out of bounds.
+const OverworldOffsetBase = struct { y: u16, x: u16 };
+
+fn overworldOffsetBase(j: usize) ?OverworldOffsetBase {
+    if (j >= tables.kOverworld_OffsetBaseY.len) return null;
+    return .{
+        .y = tables.kOverworld_OffsetBaseY[j],
+        .x = tables.kOverworld_OffsetBaseX[j] >> 3,
+    };
+}
+
 pub export fn Overworld_LoadGFXAndScreenSize() callconv(.c) void {
     const i: usize = loPtr(vars.overworld_screen_index).*;
     vars.incremental_counter_for_vram.* = 0;
@@ -1130,8 +1149,10 @@ pub export fn Overworld_LoadGFXAndScreenSize() callconv(.c) void {
         tables.kVariousPacks[6 + @as(usize, if (vars.overworld_screen_index.* & 0x40 != 0) 8 else 0)];
 
     const j: usize = vars.overworld_screen_index.* & 0xbf;
-    vars.overworld_offset_base_y.* = tables.kOverworld_OffsetBaseY[j];
-    vars.overworld_offset_base_x.* = tables.kOverworld_OffsetBaseX[j] >> 3;
+    if (overworldOffsetBase(j)) |base| {
+        vars.overworld_offset_base_y.* = base.y;
+        vars.overworld_offset_base_x.* = base.x;
+    }
 
     const m: u16 = if (vars.overworld_area_is_big.* != 0) 0x3f0 else 0x1f0;
     vars.overworld_offset_mask_y.* = m;
@@ -4819,4 +4840,23 @@ test "turtlerock_ctr and ganonentrance_ctr alias the same byte" {
     vars.some_menu_ctr.* = 0;
     vars.overworld_entrance_sequence_counter.* = 77;
     try std.testing.expectEqual(@as(u8, 77), vars.some_menu_ctr.*);
+}
+
+test "special overworld areas do not index past the offset base tables" {
+    // overworld_screen_index & 0xbf keeps bit 7, so entering a special area
+    // (0x80 and up) asks for an entry this 64-entry table does not have.
+    try std.testing.expectEqual(@as(usize, 64), tables.kOverworld_OffsetBaseY.len);
+    try std.testing.expectEqual(@as(usize, 64), tables.kOverworld_OffsetBaseX.len);
+
+    // In range the lookup is unchanged.
+    for ([_]usize{ 0, 1, 10, 63 }) |j| {
+        const base = overworldOffsetBase(j).?;
+        try std.testing.expectEqual(tables.kOverworld_OffsetBaseY[j], base.y);
+        try std.testing.expectEqual(tables.kOverworld_OffsetBaseX[j] >> 3, base.x);
+    }
+
+    // A special area reports no entry, and the caller leaves the offsets alone;
+    // Overworld_EnterSpecialArea sets them from kSpExit_* moments later.
+    for ([_]u16{ 0x80, 0x81, 0x8f, 0xbf }) |idx|
+        try std.testing.expect(overworldOffsetBase(idx & 0xbf) == null);
 }
