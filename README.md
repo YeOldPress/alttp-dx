@@ -1,7 +1,15 @@
-# Zelda3
-A reimplementation of Zelda 3.
+# alttp-zig
 
-Our discord server is: https://discord.gg/AJJbJAzNNJ
+A Zig port of [snesrev/zelda3](https://github.com/snesrev/zelda3), a
+reimplementation of Zelda 3.
+
+This is a fork. The original project is written in C by snesrev and
+contributors; this repository ports that code to Zig. Upstream remains the
+source of the game logic, the asset pipeline and the reverse-engineering work
+behind both — see the [About](#about) section for its credits. The MIT licence
+and the original copyright notices are retained unchanged in `LICENSE.txt`.
+
+Upstream's discord server is: https://discord.gg/AJJbJAzNNJ
 
 ## Zig port (this checkout)
 
@@ -129,9 +137,9 @@ zig build run
 ```
 
 The `Makefile` was removed along with the last C sources — `zig build` replaces
-it. The Nintendo Switch target lived in `platform/switch`, which is not part of
-this checkout. Both remain available in upstream:
-https://github.com/snesrev/zelda3
+it. A Nintendo Switch target still exists under `src/platform/switch/`, but its
+Makefile builds the old C sources and no longer works here; upstream
+(https://github.com/snesrev/zelda3) still has a working one.
 
 ## More Compilation Help
 
@@ -193,4 +201,26 @@ Additionally, the following commands are available:
 
 ## License
 
-This project is licensed under the MIT license. See 'LICENSE.txt' for details.
+This project is licensed under the MIT license. See `LICENSE.txt` for details.
+
+It is a fork of [snesrev/zelda3](https://github.com/snesrev/zelda3) and inherits
+that licence. `LICENSE.txt` retains the original copyright notices — Copyright
+(c) 2022 snesrev and Copyright (c) 2021 elzo_d — as the MIT licence requires.
+The SNES PPU and DSP implementation originates in
+[LakeSnes](https://github.com/elzo-d/LakeSnes) by elzo_d.
+
+No game assets are distributed. Running the game requires a ROM you already
+own, from which the assets are extracted locally.
+
+### Third-party components
+
+Vendored under `third_party/`, each under its own licence:
+
+| Component | Licence | Full text |
+| --- | --- | --- |
+| Opus 1.3.1 (stripped) | 3-clause BSD, © Xiph.Org Foundation and others | `third_party/opus-1.3.1-stripped/COPYING`, also appended to `LICENSE.txt` |
+| stb_image v2.27 | Dual: MIT or public domain (Unlicense), © Sean Barrett | end of `third_party/stb/stb_image.h` |
+| gl_core 3.1 | Generated OpenGL loader (glLoadGen); no licence text is present in the file | — |
+
+SDL2, libc and OpenGL are linked as external system dependencies and are not
+included in this repository.
