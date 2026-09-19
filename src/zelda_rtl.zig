@@ -594,6 +594,21 @@ fn ReadFromFile(f: *FILE, data: *anyopaque, n: usize) void {
         Die("fread failed\n");
 }
 
+/// Read a whole ByteArray back, tolerating the null pointer an empty one
+/// carries: ByteArray_Resize never allocates for a size of 0, and the C passes
+/// that NULL straight to fread with a length of 0, which reads nothing and
+/// succeeds. Unwrapping it instead would panic.
+fn ReadArrayFromFile(f: *FILE, arr: *const ByteArray) void {
+    if (arr.size == 0) return;
+    ReadFromFile(f, arr.data.?, arr.size);
+}
+
+/// The write side of the same thing: fwrite(NULL, 1, 0, f) is a no-op in the C.
+fn WriteArrayToFile(f: *FILE, arr: *const ByteArray) void {
+    if (arr.size == 0) return;
+    _ = fwrite(arr.data.?, 1, arr.size, f);
+}
+
 fn StateRecorder_Load(sr: *StateRecorder, f: *FILE, replay_mode: bool) void {
     // todo: fix robustness on invalid data.
     var hdr: [8]u32 = @splat(0);
@@ -603,12 +618,12 @@ fn StateRecorder_Load(sr: *StateRecorder, f: *FILE, replay_mode: bool) void {
 
     sr.total_frames = hdr[1];
     util.ByteArray_Resize(&sr.log, hdr[2]);
-    ReadFromFile(f, sr.log.data.?, sr.log.size);
+    ReadArrayFromFile(f, &sr.log);
     sr.last_inputs = @truncate(hdr[3]);
     sr.frames_since_last = hdr[4];
 
     util.ByteArray_Resize(&sr.base_snapshot, if (hdr[5] & 1 != 0) hdr[6] else 0);
-    ReadFromFile(f, sr.base_snapshot.data.?, sr.base_snapshot.size);
+    ReadArrayFromFile(f, &sr.base_snapshot);
 
     sr.replay_next_cmd_at = 0;
 
@@ -639,7 +654,7 @@ fn StateRecorder_Load(sr: *StateRecorder, f: *FILE, replay_mode: bool) void {
 
         var arr = ByteArray{ .data = null, .size = 0, .capacity = 0 };
         util.ByteArray_Resize(&arr, hdr[6]);
-        ReadFromFile(f, arr.data.?, arr.size);
+        ReadArrayFromFile(f, &arr);
         var state = LoadFuncState{ .p = arr.data.?, .pend = arr.data.? + arr.size };
         LoadSnesState(&loadFunc, &state);
         util.ByteArray_Destroy(&arr);
@@ -668,9 +683,9 @@ fn StateRecorder_Save(sr: *StateRecorder, f: *FILE) void {
         hdr[7] = sr.replay_frame_counter;
     }
     _ = fwrite(&hdr, 1, @sizeOf(@TypeOf(hdr)), f);
-    _ = fwrite(sr.log.data.?, 1, hdr[2], f);
-    _ = fwrite(sr.base_snapshot.data.?, 1, sr.base_snapshot.size, f);
-    _ = fwrite(arr.data.?, 1, arr.size, f);
+    WriteArrayToFile(f, &sr.log);
+    WriteArrayToFile(f, &sr.base_snapshot);
+    WriteArrayToFile(f, &arr);
 
     util.ByteArray_Destroy(&arr);
 }
@@ -999,6 +1014,38 @@ pub export fn ZeldaWriteSram() callconv(.c) void {
 }
 
 const testing = std.testing;
+
+extern fn tmpfile() ?*FILE;
+extern fn rewind(f: *FILE) void;
+
+test "the state file helpers tolerate the null pointer an empty array carries" {
+    const f = tmpfile() orelse return error.SkipZigTest;
+    defer _ = fclose(f);
+
+    // ByteArray_Resize never allocates for a size of 0, so an empty array's
+    // data stays null. The C hands that null to fwrite/fread with a length of
+    // 0, which does nothing; unwrapping it panicked instead, which truncated
+    // every save state the port wrote at the first empty section.
+    var empty = ByteArray{ .data = null, .size = 0, .capacity = 0 };
+    try testing.expect(empty.data == null);
+    WriteArrayToFile(f, &empty);
+
+    var src = ByteArray{ .data = null, .size = 0, .capacity = 0 };
+    defer util.ByteArray_Destroy(&src);
+    util.ByteArray_Resize(&src, 4);
+    @memcpy(src.data.?[0..4], "abcd");
+    WriteArrayToFile(f, &src);
+
+    rewind(f);
+
+    // The empty write contributed no bytes, so the populated one is all there is.
+    ReadArrayFromFile(f, &empty);
+    var dst = ByteArray{ .data = null, .size = 0, .capacity = 0 };
+    defer util.ByteArray_Destroy(&dst);
+    util.ByteArray_Resize(&dst, 4);
+    ReadArrayFromFile(f, &dst);
+    try testing.expectEqualSlices(u8, "abcd", dst.data.?[0..4]);
+}
 
 test "the hdma mode tables came over intact" {
     try testing.expectEqual(8, bAdrOffsets.len);

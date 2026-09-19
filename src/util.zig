@@ -212,6 +212,9 @@ pub export fn ByteArray_Destroy(arr: *ByteArray) callconv(.c) void {
 
 pub export fn ByteArray_AppendData(arr: *ByteArray, data: [*]const u8, data_size: usize) callconv(.c) void {
     ByteArray_Resize(arr, arr.size + data_size);
+    // Appending nothing to an array that never allocated leaves data null, and
+    // the C memcpys 0 bytes through it without caring. Unwrapping would panic.
+    if (data_size == 0) return;
     _ = memcpy(arr.data.? + arr.size - data_size, data, data_size);
 }
 
