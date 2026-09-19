@@ -31,3 +31,10 @@ __pycache__
 /sprites-gfx
 /glsl-shaders
 /token.txt
+
+# Zig build artifacts
+.zig-cache/
+zig-out/
+
+# Local snapshot, not part of the project
+/backup.zip
