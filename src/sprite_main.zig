@@ -1182,6 +1182,16 @@ pub export fn ArcheryGame_DrawPrize(k: c_int) callconv(.c) void {
     }
     a.Sprite_DrawDistress_custom(info.x, info.y, v.frame_counter.*);
 }
+/// One pixel of pull towards the Debirando pit, for drag_player_x/y.
+///
+/// Those are 16-bit and are added straight onto link_x/y_coord, so the "back
+/// one pixel" case has to be a 16-bit -1. Spelling it 255 - the 8-bit way, as
+/// this port first did - drags Link 255 pixels the other way instead, which
+/// threw him through walls and left the camera and his sprite far apart.
+fn debirandoDragStep(vel: u8) u16 {
+    return if (sign8_smz(vel)) 1 else 0xffff;
+}
+
 pub export fn Sprite_63_DebirandoPit(k: c_int) callconv(.c) void {
     const i = ix_smz(k);
     var pt: a.PointU8 = undefined;
@@ -1203,11 +1213,11 @@ pub export fn Sprite_63_DebirandoPit(k: c_int) callconv(.c) void {
         const yv = v.sprite_y_vel[i];
         const sy = @as(u16, if (sign8_smz(yv)) 0 -% yv else yv) + v.sprite_A[i];
         v.sprite_A[i] = byte(sy);
-        if (sy >= 256) v.drag_player_y.* = if (sign8_smz(yv)) 1 else 255;
+        if (sy >= 256) v.drag_player_y.* = debirandoDragStep(yv);
         const xv = v.sprite_x_vel[i];
         const sx = @as(u16, if (sign8_smz(xv)) 0 -% xv else xv) + v.sprite_B[i];
         v.sprite_B[i] = byte(sx);
-        if (sx >= 256) v.drag_player_x.* = if (sign8_smz(xv)) 1 else 255;
+        if (sx >= 256) v.drag_player_x.* = debirandoDragStep(xv);
     }
     switch (v.sprite_ai_state[i]) {
         0 => {
@@ -22869,3 +22879,25 @@ pub export fn Ganon_HandleFireBatCircle(k:c_int) void {
 }
 pub export fn Ganon_SpawnSpiralBat(k:c_int) void {var info:Spawn=undefined; const j=a.Sprite_SpawnDynamicallyEx(k,0xc9,&info,8); if(j<0) return; const n=ix_ex(j); a.Sprite_SetSpawnedCoordinates(j,&info); v.sprite_anim_clock[n]=4; v.sprite_oam_flags[n]=3; v.sprite_flags3[n]=0x40; v.sprite_flags2[n]=1; v.sprite_defl_bits[n]=128; v.sprite_y_hi[n]=128; v.sprite_delay_main[n]=48; v.sprite_bump_damage[n]=7; v.sprite_ignore_projectile[n]=7;}
 
+
+const testing = std.testing;
+
+test "the debirando pit drags the player back one pixel, not 255 forward" {
+    // drag_player_x/y are 16-bit and get added straight onto link_x/y_coord.
+    // Away-from-the-pit has to be a 16-bit -1; the 8-bit spelling (255) sends
+    // Link most of a screen in the wrong direction, which is what broke Desert
+    // Palace: he shot through walls and his sprite parted ways with the camera.
+    const back = debirandoDragStep(0); // positive velocity -> pull back
+    try testing.expectEqual(@as(u16, 0xffff), back);
+
+    var link_x: u16 = 100;
+    link_x +%= back;
+    try testing.expectEqual(@as(u16, 99), link_x);
+
+    // A negative velocity pulls the other way, by one pixel.
+    const fwd = debirandoDragStep(0x80);
+    try testing.expectEqual(@as(u16, 1), fwd);
+    link_x = 100;
+    link_x +%= fwd;
+    try testing.expectEqual(@as(u16, 101), link_x);
+}
