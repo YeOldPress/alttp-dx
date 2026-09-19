@@ -3,6 +3,42 @@ A reimplementation of Zelda 3.
 
 Our discord server is: https://discord.gg/AJJbJAzNNJ
 
+## Zig port (this checkout)
+
+Build with Zig 0.16.0 and SDL2. All game code is handwritten Zig; third-party
+OpenGL loading, stb_image, and Opus remain C dependencies.
+
+```sh
+zig build
+zig build test
+zig build -Doptimize=ReleaseSafe
+zig build run
+```
+
+Run from the repository root with `zelda3_assets.dat` extracted from your own
+ROM using the asset instructions below. The executable is `zig-out/bin/zelda3`.
+SDL2 must be installed and discoverable through `sdl2-config` or the system
+library search paths.
+
+The conversion is **complete**. Every game routine in `src/` and `snes/` is Zig,
+and no project C source or header remains: the only C still compiled is
+third-party (`gl_core`, `stb_image`, Opus), alongside the usual SDL2, libc and
+OpenGL linkage.
+
+Optional differential checks compare the port's results and complete RAM state
+with the original C from commit `fbbb3f967a51fafe642e6140d0753979e73b4090`:
+
+```sh
+python3 other/check_ancilla_parity.py
+python3 other/check_ancilla_parity.py -Doptimize=ReleaseSafe
+```
+
+These checks require Git history containing that commit. The script creates a
+temporary, symbol-renamed C reference — together with the headers it needs, also
+taken from that commit — so it stays self-contained now that the tree carries no
+headers of its own. It does not generate Zig implementations or add the
+reference to the game build.
+
 ## About
 
 This is a reverse engineered clone of Zelda 3 - A Link to the Past.
@@ -46,23 +82,18 @@ Visit Wiki for more info on building the project: https://github.com/snesrev/zel
 3. Type `python -m pip install --upgrade pip pillow pyyaml` and hit enter
 4. Close the command prompt
 
-## Compiling on Windows with TCC (1mb Tiny C Compiler)
+## Compiling on Windows
 1. Download the project by clicking "Code > Download ZIP" on the github page
 2. Extract the ZIP to your hard drive
 3. Place the USA rom named `zelda3.sfc` in the root directory.
 4. Double-click `extract_assets.bat` in the main dir to create `zelda3_assets.dat` in that same dir
-5. Download [TCC](https://github.com/FitzRoyX/tinycc/releases/download/tcc_20221020/tcc_20221020.zip) and extract to the "\third_party" subfolder
-6. Download [SDL2](https://github.com/libsdl-org/SDL/releases/download/release-2.26.3/SDL2-devel-2.26.3-VC.zip) and extract to the "\third_party" subfolder
-7. Double-click `run_with_tcc.bat` in the main dir to create `zelda3.exe` in that same dir
-8. Configure with `zelda3.ini` in the main dir
+5. Build with `zig build` as described at the top of this file
+6. Configure with `zelda3.ini` in the main dir
 
-## Compiling on Windows with Visual Studio (4.5gb IDE and compiler)
-Same Steps 1-4 above<br/>
-8. Double-click `Zelda3.sln`<br/>
-9. Install the **Desktop development with C++** workload with the VS Installer if you don't have it already (it should prompt you to do this).<br/>
-10. Change "debug" to "release" in the top dropdown<br/>
-12. Choose "build > build Zelda3" in the menu to create `zelda3.exe` in the "/bin/release" subfolder<br/>
-13. Configure with `zelda3.ini` in the main dir<br/>
+The TCC and Visual Studio routes (`run_with_tcc.bat`, `Zelda3.sln`,
+`zelda3.vcxproj`) compiled `src/*.c` and were removed once the last C sources
+were ported; MSBuild cannot build a Zig project. Both remain available in
+upstream: https://github.com/snesrev/zelda3
 
 ## Installing libraries on Linux/MacOS
 1. Open a terminal
@@ -87,33 +118,20 @@ python3 -m pip install -r requirements.txt
 
 ## Compiling on Linux/MacOS
 1. Place your US ROM file named `zelda3.sfc` in `zelda3`
-2. Compile
+2. Extract the assets
 ```sh
-make
+python3 assets/restool.py --extract-from-rom
 ```
-<details>
-<summary>
-Advanced make usage ...
-</summary>
-
+3. Build and run
 ```sh
-make -j$(nproc) # run on all core
-make clean all  # clear gen+obj and rebuild
-CC=clang make   # specify compiler
+zig build
+zig build run
 ```
-</details>
 
-## Nintendo Switch
-
-You need [DevKitPro](https://devkitpro.org/wiki/Getting_Started) and [Atmosphere](https://github.com/Atmosphere-NX/Atmosphere) installed.
-
-```sh
-(dkp-)pacman -S git switch-dev switch-sdl2 switch-tools
-cd platform/switch
-make # Add -j$(nproc) to build using all cores ( Optional )
-# You can test the build directly onto the switch ( Optional )
-nxlink -s zelda3.nro
-```
+The `Makefile` was removed along with the last C sources — `zig build` replaces
+it. The Nintendo Switch target lived in `platform/switch`, which is not part of
+this checkout. Both remain available in upstream:
+https://github.com/snesrev/zelda3
 
 ## More Compilation Help
 
