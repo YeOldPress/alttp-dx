@@ -46,7 +46,6 @@ const kColorValue = Rgb{ .r = 0x90, .g = 0xc0, .b = 0xf8 };
 const kColorSelect = Rgb{ .r = 0xf8, .g = 0xd8, .b = 0x78 };
 const kColorRowHi = Rgb{ .r = 0x28, .g = 0x28, .b = 0x50 };
 const kColorLaunchBg = Rgb{ .r = 0x00, .g = 0xe0, .b = 0x18 };
-const kColorLaunchBgDim = Rgb{ .r = 0x0c, .g = 0x58, .b = 0x14 };
 const kColorLaunchText = Rgb{ .r = 0x00, .g = 0x18, .b = 0x00 };
 const kColorSection = Rgb{ .r = 0x78, .g = 0xd8, .b = 0x98 };
 
@@ -284,6 +283,15 @@ fn fillRect(r: *c.SDL_Renderer, x: f32, y: f32, w: f32, h: f32, col: Rgb) void {
 
 /// A recessed gold frame: light along the top and left, dark along the bottom
 /// and right, the way the game's own menu boxes are shaded.
+/// A hollow rectangle. drawFrame paints its interior, so anything drawn
+/// around existing content needs this instead.
+fn drawOutline(r: *c.SDL_Renderer, x: f32, y: f32, w: f32, h: f32, t: f32, col: Rgb) void {
+    fillRect(r, x, y, w, t, col);
+    fillRect(r, x, y + h - t, w, t, col);
+    fillRect(r, x, y, t, h, col);
+    fillRect(r, x + w - t, y, t, h, col);
+}
+
 fn drawFrame(r: *c.SDL_Renderer, x: f32, y: f32, w: f32, h: f32) void {
     const t = 4.0;
     fillRect(r, x, y, w, h, kColorFrame);
@@ -296,6 +304,15 @@ fn drawFrame(r: *c.SDL_Renderer, x: f32, y: f32, w: f32, h: f32) void {
 
 fn drawText(r: *c.SDL_Renderer, x: f32, y: f32, col: Rgb, text: []const u8) void {
     drawTextScaled(r, x, y, col, text, kScale);
+}
+
+/// Width of a run of text once drawn. The debug font is a fixed 8x8 cell.
+fn textWidth(text: []const u8, scale: f32) f32 {
+    return @as(f32, @floatFromInt(text.len)) * 8 * scale;
+}
+
+fn drawTextCentered(r: *c.SDL_Renderer, cx: f32, y: f32, col: Rgb, text: []const u8, scale: f32) void {
+    drawTextScaled(r, cx - textWidth(text, scale) / 2, y, col, text, scale);
 }
 
 /// SDL's debug font is a fixed 8x8, so size comes from the render scale.
@@ -361,8 +378,7 @@ fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     fillRect(renderer, 0, 0, kWindowW, kWindowH, kColorBg);
     drawFrame(renderer, 16, 16, kWindowW - 32, kWindowH - 32);
 
-    drawText(renderer, 40, 36, kColorSelect, "THE LEGEND OF ZELDA");
-    drawText(renderer, 40 + kCell * 20, 36, kColorTextDim, "LAUNCHER");
+    drawHeader(renderer, v.screen);
 
     switch (v.screen) {
         .main => drawMain(renderer, v),
@@ -373,47 +389,74 @@ fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     _ = c.SDL_RenderPresent(renderer);
 }
 
-fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
-    var y: f32 = 140;
-    for (kMainItems, 0..) |label, i| {
-        const selected = i == v.cursor;
+/// Title and the rule under it. The lists need the space, so the title stays
+/// on one line and the rule doubles as the top of the list.
+fn drawHeader(renderer: *c.SDL_Renderer, screen: Screen) void {
+    const cx: f32 = kWindowW / 2;
+    if (screen == .main) {
+        drawTextCentered(renderer, cx, 44, kColorSelect, "THE LEGEND OF ZELDA", kScale);
+        drawTextCentered(renderer, cx, 44 + kRowH, kColorTextDim, "LAUNCHER", kScale);
+        fillRect(renderer, 60, 44 + kRowH * 2 + 6, kWindowW - 120, 2, kColorFrame);
+        return;
+    }
 
-        if (i == kMainLaunch) {
-            // Launch is the thing people came for, so it is a button rather
-            // than another row: bigger type on a green field.
-            const scale = kScale * 2;
-            const w: f32 = @floatFromInt(label.len * 8 * @as(usize, scale));
-            const box_w = w + 32;
-            const box_h: f32 = 8 * scale + 20;
-            const bg = if (selected) kColorLaunchBg else kColorLaunchBgDim;
-            fillRect(renderer, 72, y - 10, box_w, box_h, bg);
-            if (selected) {
-                drawText(renderer, 44, y + 8, kColorSelect, ">");
-            }
-            drawTextScaled(renderer, 88, y, kColorLaunchText, label, scale);
-            y += box_h + 10;
-            continue;
-        }
+    const name = if (screen == .settings) "SETTINGS" else "FEATURES";
+    drawText(renderer, 40, 36, kColorSelect, name);
+    drawTextScaled(renderer, kWindowW - 40 - textWidth("ESC BACK", kScale), 36, kColorTextDim, "ESC BACK", kScale);
+    fillRect(renderer, 40, 36 + kRowH, kWindowW - 80, 2, kColorFrame);
+}
+
+fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
+    const cx: f32 = kWindowW / 2;
+
+    // The two list entries sit as a pair, with Launch set apart below them -
+    // it leaves the launcher rather than moving within it.
+    const kEntryY: f32 = 150;
+    const kEntryGap: f32 = 44;
+
+    for (kMainItems[0..kMainLaunch], 0..) |label, i| {
+        const y = kEntryY + kEntryGap * @as(f32, @floatFromInt(i));
+        const selected = i == v.cursor;
+        const w = textWidth(label, kScale);
 
         if (selected) {
-            fillRect(renderer, 32, y - 3, kWindowW - 64, kRowH, kColorRowHi);
-            drawText(renderer, 36, y, kColorSelect, ">");
+            // Sized to the word rather than the window, so the highlight
+            // reads as a selection and not as a banner.
+            fillRect(renderer, cx - w / 2 - 20, y - 8, w + 40, kRowH + 10, kColorRowHi);
+            drawTextScaled(renderer, cx - w / 2 - 36, y, kColorSelect, ">", kScale);
         }
-        drawText(renderer, 56, y, if (selected) kColorSelect else kColorText, label);
-        y += kRowH + 10;
+        drawTextCentered(renderer, cx, y, if (selected) kColorSelect else kColorText, label, kScale);
     }
+
+    // Launch: a button, centred, big enough to be the obvious thing to press.
+    const scale: f32 = kScale * 2;
+    const label = kMainItems[kMainLaunch];
+    const w = textWidth(label, scale);
+    const box_w = w + 72;
+    const box_h = 8 * scale + 28;
+    const box_x = cx - box_w / 2;
+    const box_y: f32 = 268;
+    const selected = v.cursor == kMainLaunch;
+
+    // Green whether or not it is selected - it is the one action the window
+    // exists for. Selection is the ring, which has to be an outline: a frame
+    // would paint its own interior over the button.
+    fillRect(renderer, box_x, box_y, box_w, box_h, kColorLaunchBg);
+    if (selected) drawOutline(renderer, box_x - 8, box_y - 8, box_w + 16, box_h + 16, 4, kColorFrameHi);
+    drawTextCentered(renderer, cx, box_y + 14, kColorLaunchText, label, scale);
 
     // The game cannot start without its assets, and a ROM dropped on the
     // window is the shortest way to get them.
     if (!v.have_assets) {
-        drawText(renderer, 40, y + 12, kColorSelect, "NO ASSETS YET");
-        drawText(renderer, 40, y + 12 + kRowH, kColorTextDim, "DRAG A .SFC ROM ONTO THIS WINDOW");
+        const hint_y: f32 = box_y + box_h + 16;
+        drawTextCentered(renderer, cx, hint_y, kColorSelect, "NO ASSETS YET", kScale);
+        drawTextCentered(renderer, cx, hint_y + kRowH, kColorTextDim, "DRAG A .SFC ROM ONTO THIS WINDOW", kScale);
     }
 }
 
 fn drawList(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     const range = screenRange(v.screen);
-    var y: f32 = 36 + kRowH + 8;
+    var y: f32 = 36 + kRowH + 14;
     var i = v.top;
     while (i < range.to and i < v.top + kVisibleRows) : (i += 1) {
         const s = kSettings[i];
@@ -442,8 +485,8 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
             drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "B BUILD ASSETS   ESC QUIT");
         },
         .settings, .features => {
-            drawText(renderer, 40, footer_y, kColorTextDim, "ARROWS MOVE/CHANGE   S SAVE");
-            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "ESC BACK");
+            drawText(renderer, 40, footer_y, kColorTextDim, "UP/DOWN MOVE   LEFT/RIGHT CHANGE");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "S SAVE   ESC BACK");
         },
     }
 
@@ -989,8 +1032,10 @@ test "the on-screen strings fit the window" {
     for ([_][]const u8{
         "UP/DOWN MOVE   ENTER SELECT",
         "B BUILD ASSETS   ESC QUIT",
-        "ARROWS MOVE/CHANGE   S SAVE",
-        "ESC BACK",
+        "UP/DOWN MOVE   LEFT/RIGHT CHANGE",
+        "S SAVE   ESC BACK",
+        "SETTINGS",
+        "FEATURES",
         "NO ASSETS YET",
         "DRAG A .SFC ROM ONTO THIS WINDOW",
         "DRAG A .SFC ROM HERE FIRST",
