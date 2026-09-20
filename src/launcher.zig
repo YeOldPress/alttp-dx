@@ -55,11 +55,29 @@ const kColorSection = Rgb{ .r = 0x78, .g = 0xd8, .b = 0x98 };
 // ---------------------------------------------------------------- settings
 
 /// How a setting's value is presented and cycled.
+/// A fixed set of values, and optionally what to call them.
+///
+/// The file's spelling is not always meant for people to read - Fullscreen is
+/// stored as 0, 1 or 2 - so `labels` gives each value a name to show instead.
+/// Leave it empty and the value is shown as written.
+const Choice = struct {
+    values: []const []const u8,
+    labels: []const []const u8 = &.{},
+
+    fn labelFor(self: Choice, value: []const u8) []const u8 {
+        if (self.labels.len == 0) return value;
+        for (self.values, 0..) |v, i| {
+            if (std.ascii.eqlIgnoreCase(v, value) and i < self.labels.len) return self.labels[i];
+        }
+        return value;
+    }
+};
+
 const Kind = union(enum) {
     /// 0 or 1, shown as OFF / ON.
     toggle,
     /// One of a fixed set of spellings, cycled in order.
-    choice: []const []const u8,
+    choice: Choice,
     /// A whole number, nudged by `step` and clamped to the range. `suffix` is
     /// kept on the value when written back, for entries like "100%".
     number: struct { min: i32, max: i32, step: i32, suffix: []const u8 = "" },
@@ -83,13 +101,16 @@ const kSettings = [_]Setting{
     .{ .section = kSectionMark, .key = "", .label = "GENERAL", .kind = .text },
     .{ .section = "General", .key = "Autosave", .label = "Autosave", .kind = .toggle },
     .{ .section = "General", .key = "DisplayPerfInTitle", .label = "Show FPS In Title", .kind = .toggle },
-    .{ .section = "General", .key = "ExtendedAspectRatio", .label = "Aspect Ratio", .kind = .{ .choice = &.{ "4:3", "16:9", "16:10", "18:9" } } },
+    .{ .section = "General", .key = "ExtendedAspectRatio", .label = "Aspect Ratio", .kind = .{ .choice = .{ .values = &.{ "4:3", "16:9", "16:10", "18:9" } } } },
     .{ .section = "General", .key = "DisableFrameDelay", .label = "Disable Frame Delay", .kind = .toggle },
 
     .{ .section = kSectionMark, .key = "", .label = "GRAPHICS", .kind = .text },
-    .{ .section = "Graphics", .key = "Fullscreen", .label = "Fullscreen", .kind = .{ .choice = &.{ "0", "1", "2" } } },
+    .{ .section = "Graphics", .key = "Fullscreen", .label = "Fullscreen", .kind = .{ .choice = .{
+        .values = &.{ "0", "1", "2" },
+        .labels = &.{ "Windowed", "Borderless", "Exclusive" },
+    } } },
     .{ .section = "Graphics", .key = "WindowScale", .label = "Window Scale", .kind = .{ .number = .{ .min = 1, .max = 10, .step = 1 } } },
-    .{ .section = "Graphics", .key = "OutputMethod", .label = "Output Method", .kind = .{ .choice = &.{ "SDL", "SDL-Software", "OpenGL", "OpenGL ES" } } },
+    .{ .section = "Graphics", .key = "OutputMethod", .label = "Output Method", .kind = .{ .choice = .{ .values = &.{ "SDL", "SDL-Software", "OpenGL", "OpenGL ES" } } } },
     .{ .section = "Graphics", .key = "NewRenderer", .label = "New Renderer", .kind = .toggle },
     .{ .section = "Graphics", .key = "EnhancedMode7", .label = "Enhanced Mode 7", .kind = .toggle },
     .{ .section = "Graphics", .key = "NoSpriteLimits", .label = "No Sprite Limits", .kind = .toggle },
@@ -101,10 +122,19 @@ const kSettings = [_]Setting{
 
     .{ .section = kSectionMark, .key = "", .label = "SOUND", .kind = .text },
     .{ .section = "Sound", .key = "EnableAudio", .label = "Enable Audio", .kind = .toggle },
-    .{ .section = "Sound", .key = "AudioFreq", .label = "Audio Frequency", .kind = .{ .choice = &.{ "11025", "22050", "32000", "44100", "48000" } } },
-    .{ .section = "Sound", .key = "AudioChannels", .label = "Audio Channels", .kind = .{ .choice = &.{ "1", "2" } } },
-    .{ .section = "Sound", .key = "AudioSamples", .label = "Audio Buffer", .kind = .{ .choice = &.{ "512", "1024", "2048", "4096" } } },
-    .{ .section = "Sound", .key = "EnableMSU", .label = "MSU Audio", .kind = .{ .choice = &.{ "false", "true", "deluxe", "opuz", "deluxe-opuz" } } },
+    .{ .section = "Sound", .key = "AudioFreq", .label = "Audio Frequency", .kind = .{ .choice = .{
+        .values = &.{ "11025", "22050", "32000", "44100", "48000" },
+        .labels = &.{ "11 kHz", "22 kHz", "32 kHz", "44 kHz", "48 kHz" },
+    } } },
+    .{ .section = "Sound", .key = "AudioChannels", .label = "Audio Channels", .kind = .{ .choice = .{
+        .values = &.{ "1", "2" },
+        .labels = &.{ "Mono", "Stereo" },
+    } } },
+    .{ .section = "Sound", .key = "AudioSamples", .label = "Audio Buffer", .kind = .{ .choice = .{ .values = &.{ "512", "1024", "2048", "4096" } } } },
+    .{ .section = "Sound", .key = "EnableMSU", .label = "MSU Audio", .kind = .{ .choice = .{
+        .values = &.{ "false", "true", "deluxe", "opuz", "deluxe-opuz" },
+        .labels = &.{ "Off", "On", "Deluxe", "Opuz", "Deluxe Opuz" },
+    } } },
     .{ .section = "Sound", .key = "MSUVolume", .label = "MSU Volume", .kind = .{ .number = .{ .min = 0, .max = 100, .step = 5, .suffix = "%" } } },
     .{ .section = "Sound", .key = "ResumeMSU", .label = "Resume MSU", .kind = .toggle },
     .{ .section = "Sound", .key = "MSUPath", .label = "MSU Path", .kind = .text },
@@ -235,17 +265,17 @@ fn cycle(alloc: std.mem.Allocator, buf: []u8, s: Setting, current: []const u8, d
         .toggle => return if (std.mem.eql(u8, std.mem.trim(u8, current, " \t"), "1")) "0" else "1",
         .choice => |opts| {
             var at: usize = 0;
-            for (opts, 0..) |o, i| {
+            for (opts.values, 0..) |o, i| {
                 if (std.ascii.eqlIgnoreCase(o, current)) {
                     at = i;
                     break;
                 }
             }
-            const n: i32 = @intCast(opts.len);
+            const n: i32 = @intCast(opts.values.len);
             var next: i32 = @as(i32, @intCast(at)) + dir;
             if (next < 0) next = n - 1;
             if (next >= n) next = 0;
-            return opts[@intCast(next)];
+            return opts.values[@intCast(next)];
         },
         .number => |num| {
             const body = splitSuffix(std.mem.trim(u8, current, " \t"), num.suffix);
@@ -267,6 +297,7 @@ fn displayValue(buf: []u8, s: Setting, value: []const u8) []const u8 {
     switch (s.kind) {
         .toggle => return if (std.mem.eql(u8, v, "1")) "ON" else "OFF",
         .text => return if (v.len == 0) "(none)" else v,
+        .choice => |opts| return opts.labelFor(v),
         else => {},
     }
     return std.fmt.bufPrint(buf, "{s}", .{v}) catch v;
@@ -362,9 +393,10 @@ fn screenRange(screen: Screen) struct { from: usize, to: usize } {
     };
 }
 
-const kMainItems = [_][]const u8{ "Settings", "Features", "Build Assets", "Launch" };
-const kMainBuild = 2;
-const kMainLaunch = 3;
+const kMainItems = [_][]const u8{ "Settings", "Features", "Save Settings", "Build Assets", "Launch" };
+const kMainSave = 2;
+const kMainBuild = 3;
+const kMainLaunch = 4;
 
 /// Every gamepad currently plugged in. Held open so their sticks and pads
 /// can be polled each frame, which is what gives held-direction repeat.
@@ -631,8 +663,8 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
 
     // The three list entries sit as a group, with Launch set apart below -
     // it leaves the launcher rather than moving within it.
-    const kEntryY: f32 = 132;
-    const kEntryGap: f32 = 38;
+    const kEntryY: f32 = 118;
+    const kEntryGap: f32 = 34;
 
     for (kMainItems[0..kMainLaunch], 0..) |label, i| {
         const y = kEntryY + kEntryGap * @as(f32, @floatFromInt(i));
@@ -655,7 +687,7 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     const box_w = w + 72;
     const box_h = 8 * scale + 28;
     const box_x = cx - box_w / 2;
-    const box_y: f32 = 248;
+    const box_y: f32 = 252;
     const selected = v.cursor == kMainLaunch;
 
     // Green whether or not it is selected - it is the one action the window
@@ -704,8 +736,8 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
     const footer_y: f32 = kWindowH - 32 - kRowH * 2 - 6;
     switch (v.screen) {
         .main => {
-            drawText(renderer, 40, footer_y, kColorTextDim, "MOVE  UP/DOWN OR STICK");
-            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "SELECT A/ENTER   QUIT B/ESC");
+            drawText(renderer, 40, footer_y, kColorTextDim, "SELECT A/ENTER   SAVE X/S");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "QUIT B/ESC");
         },
         .settings, .features => {
             drawText(renderer, 40, footer_y, kColorTextDim, "CHANGE  LEFT/RIGHT OR A");
@@ -1053,7 +1085,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
             status = "";
         }
 
-        if (save and screen != .main) {
+        if (save and !dirty) {
+            status = "NO CHANGES TO SAVE";
+        } else if (save) {
             ini.save("zelda3.ini") catch |err| {
                 std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
                 status = "COULD NOT SAVE";
@@ -1081,6 +1115,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         screen = .features;
                         status = "";
                     },
+                    kMainSave => save = true,
                     kMainBuild => build = true,
                     else => {
                         ini.save("zelda3.ini") catch |err| {
@@ -1236,7 +1271,7 @@ test "toggles flip and choices wrap in both directions" {
         .section = "x",
         .key = "k",
         .label = "l",
-        .kind = .{ .choice = &.{ "a", "b", "c" } },
+        .kind = .{ .choice = .{ .values = &.{ "a", "b", "c" } } },
     };
     try testing.expectEqualStrings("b", cycle(testing.allocator, &buf, choice, "a", 1).?);
     try testing.expectEqualStrings("a", cycle(testing.allocator, &buf, choice, "c", 1).?);
@@ -1346,8 +1381,8 @@ test "the on-screen strings fit the window" {
 
     for ([_][]const u8{
         // Footers.
-        "MOVE  UP/DOWN OR STICK",
-        "SELECT A/ENTER   QUIT B/ESC",
+        "SELECT A/ENTER   SAVE X/S",
+        "QUIT B/ESC",
         "CHANGE  LEFT/RIGHT OR A",
         "SAVE X/S   BACK B/ESC",
         // Headers.
@@ -1373,6 +1408,12 @@ test "the on-screen strings fit the window" {
         "NOT A .SFC FILE",
         "ROM IS NOT THE US RELEASE",
         "SAVED",
+        "NO CHANGES TO SAVE",
+        // The longest value label, which shares the row with its name.
+        "Deluxe Opuz",
+        "Borderless",
+        "Windowed",
+        "Exclusive",
         "UNRECOGNISED ROM",
         "UNSAVED CHANGES",
         "US ROM VERIFIED - ASSETS BUILT",
@@ -1431,4 +1472,54 @@ test "a corrupted asset file is not reported as verified" {
     try fileio.writeWholeFile(scratch, copy);
     defer _ = fileio.remove(scratch);
     try testing.expectEqual(AssetState.unrecognised, checkAssetsAt(alloc, scratch));
+}
+
+test "every named choice names all of its values" {
+    // A labels array shorter than its values array shows the raw value for
+    // the ones past the end, which looks like a missing translation rather
+    // than a bug. A longer one names something that cannot be selected.
+    for (kSettings) |setting| {
+        const opts = switch (setting.kind) {
+            .choice => |ch| ch,
+            else => continue,
+        };
+        if (opts.labels.len == 0) continue;
+        testing.expectEqual(opts.values.len, opts.labels.len) catch |err| {
+            std.debug.print("{s}: {d} values but {d} labels\n", .{ setting.key, opts.values.len, opts.labels.len });
+            return err;
+        };
+    }
+}
+
+test "a value's name fits the column it is drawn in" {
+    // Names are drawn at x=400 with the frame 16 pixels from the right edge.
+    const max_chars = (kWindowW - 400 - 16) / kCell;
+    for (kSettings) |setting| {
+        const opts = switch (setting.kind) {
+            .choice => |ch| ch,
+            else => continue,
+        };
+        for (opts.labels) |label| {
+            testing.expect(label.len <= max_chars) catch |err| {
+                std.debug.print("{s}: \"{s}\" is {d} wide, column fits {d}\n", .{ setting.key, label, label.len, max_chars });
+                return err;
+            };
+        }
+    }
+}
+
+test "cycling a named choice writes the value, not the name" {
+    // The file has to keep getting 0, 1, 2 - the names are only for reading.
+    const alloc = testing.allocator;
+    var buf: [64]u8 = undefined;
+    for (kSettings) |setting| {
+        const opts = switch (setting.kind) {
+            .choice => |ch| ch,
+            else => continue,
+        };
+        if (opts.labels.len == 0) continue;
+
+        const next = cycle(alloc, &buf, setting, opts.values[0], 1).?;
+        try testing.expectEqualStrings(opts.values[1], next);
+    }
 }
