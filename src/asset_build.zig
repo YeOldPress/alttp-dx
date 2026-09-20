@@ -155,6 +155,14 @@ pub const kMiscAssets = [_]MiscAsset{
     .{ .name = "kMap32ToMap16_2", .kind = .uint8, .addr = 0x848000, .count = 2218 * 6 },
     .{ .name = "kMap32ToMap16_3", .kind = .uint8, .addr = 0x84b400, .count = 2218 * 6 },
 
+    // Dungeon tile attributes and the movable block and torch tables, which
+    // print_dungeon_map emits alongside the data it builds from YAML.
+    .{ .name = "kDungAttrsForTile_Offs", .kind = .uint16, .addr = 0x8e9000, .count = 21, .words = true },
+    .{ .name = "kDungAttrsForTile", .kind = .uint8, .addr = 0x8e902a, .count = 1024 },
+    .{ .name = "kMovableBlockDataInit", .kind = .uint16, .addr = 0x84f1de, .count = 198, .words = true },
+    .{ .name = "kTorchDataInit", .kind = .uint16, .addr = 0x84f36a, .count = 144, .words = true },
+    .{ .name = "kTorchDataJunk", .kind = .uint16, .addr = 0x84f48a, .count = 48, .words = true },
+
     // These two come from print_dungeon_map's neighbourhood rather than
     // print_misc, but they are the same shape.
     .{ .name = "kMap8DataToTileAttr", .kind = .uint8, .addr = 0x8e9459, .count = 512 },
@@ -194,6 +202,41 @@ pub fn buildOverworldHibytes(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
 
 pub fn buildOverworldLobytes(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
     return overworldBlocks(alloc, rom, 0x82fb2d);
+}
+
+/// Enemy damage tables. Unlike the graphics, this one is stored decompressed
+/// in the asset file - the game reads it directly.
+pub fn buildEnemyDamageData(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
+    const d = try rom_mod.decomp(alloc, rom, 0x83e800, true);
+    return d.data;
+}
+
+/// Where each background tilemap's packet stream begins. The lengths are not
+/// recorded anywhere, so they have to be walked.
+pub const kBgTilemapPtrs = [_]u32{ 0x0cdd6d, 0x0ce7bf, 0x0ce2a8, 0x0ce63c, 0x0ce456, 0x0eda9c };
+
+/// Measures a stripe upload stream. Each packet has a four byte header - a
+/// VRAM address, then a flag byte and a length - and the stream ends at a
+/// header whose first byte has bit 7 set. A memset packet carries two bytes
+/// of payload however long it expands to; everything else carries `len`.
+///
+/// The walk steps the address straight through rather than hopping the bank
+/// boundary the way reads do. That matches the Python, and these streams do
+/// not reach a boundary.
+fn bgTilemapLength(rom: Rom, start: u32) u32 {
+    var p = start;
+    while (rom.getByte(p) & 0x80 == 0) {
+        const is_memset = rom.getByte(p + 2) & 0x40 != 0;
+        const len = ((@as(u32, rom.getByte(p + 2)) * 256 + rom.getByte(p + 3)) & 0x3fff) + 1;
+        p += 4;
+        p += if (is_memset) 2 else len;
+    }
+    return p - start + 1;
+}
+
+pub fn buildBgTilemap(alloc: std.mem.Allocator, rom: Rom, index: usize) ![]u8 {
+    const start = kBgTilemapPtrs[index];
+    return rom.getBytes(alloc, start, bgTilemapLength(rom, start));
 }
 
 const testing = std.testing;
@@ -434,4 +477,35 @@ test "unpacking and repacking the map32 tables is the identity" {
         const name = try std.fmt.bufPrint(&name_buf, "kMap32ToMap16_{d}", .{k});
         try testing.expectEqualSlices(u8, f.contents.find(name).?, raw);
     }
+}
+
+test "kEnemyDamageData matches the reference asset file" {
+    var f = try Fixture.open();
+    defer f.close();
+
+    const got = try buildEnemyDamageData(testing.allocator, f.rom);
+    defer testing.allocator.free(got);
+    try testing.expectEqualSlices(u8, f.contents.find("kEnemyDamageData").?, got);
+}
+
+test "the background tilemaps match the reference asset file" {
+    var f = try Fixture.open();
+    defer f.close();
+
+    for (0..kBgTilemapPtrs.len) |i| {
+        const got = try buildBgTilemap(testing.allocator, f.rom, i);
+        defer testing.allocator.free(got);
+
+        var name_buf: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "kBgTilemap_{d}", .{i});
+        testing.expectEqualSlices(u8, f.contents.find(name).?, got) catch |err| {
+            std.debug.print("{s} differs\n", .{name});
+            return err;
+        };
+    }
+}
+
+test {
+    // Pull the overworld tables' tests into this root as well.
+    _ = @import("asset_overworld.zig");
 }
