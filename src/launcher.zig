@@ -47,6 +47,8 @@ const kColorSelect = Rgb{ .r = 0xf8, .g = 0xd8, .b = 0x78 };
 const kColorRowHi = Rgb{ .r = 0x28, .g = 0x28, .b = 0x50 };
 const kColorLaunchBg = Rgb{ .r = 0x00, .g = 0xe0, .b = 0x18 };
 const kColorLaunchText = Rgb{ .r = 0x00, .g = 0x18, .b = 0x00 };
+const kColorOk = Rgb{ .r = 0x78, .g = 0xe0, .b = 0x88 };
+const kColorWarn = Rgb{ .r = 0xf8, .g = 0xc0, .b = 0x58 };
 const kColorSection = Rgb{ .r = 0x78, .g = 0xd8, .b = 0x98 };
 
 // ---------------------------------------------------------------- settings
@@ -359,8 +361,151 @@ fn screenRange(screen: Screen) struct { from: usize, to: usize } {
     };
 }
 
-const kMainItems = [_][]const u8{ "Settings", "Features", "Launch" };
-const kMainLaunch = 2;
+const kMainItems = [_][]const u8{ "Settings", "Features", "Build Assets", "Launch" };
+const kMainBuild = 2;
+const kMainLaunch = 3;
+
+/// Every gamepad currently plugged in. Held open so their sticks and pads
+/// can be polled each frame, which is what gives held-direction repeat.
+const Pads = struct {
+    items: [8]?*c.SDL_Gamepad = @splat(null),
+
+    fn open(self: *Pads, id: c.SDL_JoystickID) void {
+        for (&self.items) |*slot| {
+            if (slot.* != null) continue;
+            slot.* = c.SDL_OpenGamepad(id);
+            return;
+        }
+    }
+
+    fn close(self: *Pads, id: c.SDL_JoystickID) void {
+        for (&self.items) |*slot| {
+            const pad = slot.* orelse continue;
+            if (c.SDL_GetGamepadID(pad) != id) continue;
+            c.SDL_CloseGamepad(pad);
+            slot.* = null;
+        }
+    }
+
+    fn closeAll(self: *Pads) void {
+        for (&self.items) |*slot| {
+            if (slot.*) |pad| c.SDL_CloseGamepad(pad);
+            slot.* = null;
+        }
+    }
+
+    fn count(self: *const Pads) usize {
+        var n: usize = 0;
+        for (self.items) |slot| {
+            if (slot != null) n += 1;
+        }
+        return n;
+    }
+
+    /// Sums the d-pads and left sticks into one direction, so any pad drives
+    /// the menu and neither input beats the other.
+    fn direction(self: *const Pads, comptime axis: enum { vertical, horizontal }) i32 {
+        const kDeadzone = 16000;
+        var dir: i32 = 0;
+        for (self.items) |slot| {
+            const pad = slot orelse continue;
+            const neg = if (axis == .vertical) c.SDL_GAMEPAD_BUTTON_DPAD_UP else c.SDL_GAMEPAD_BUTTON_DPAD_LEFT;
+            const pos = if (axis == .vertical) c.SDL_GAMEPAD_BUTTON_DPAD_DOWN else c.SDL_GAMEPAD_BUTTON_DPAD_RIGHT;
+            if (c.SDL_GetGamepadButton(pad, neg)) dir -= 1;
+            if (c.SDL_GetGamepadButton(pad, pos)) dir += 1;
+
+            const stick = if (axis == .vertical) c.SDL_GAMEPAD_AXIS_LEFTY else c.SDL_GAMEPAD_AXIS_LEFTX;
+            const v = c.SDL_GetGamepadAxis(pad, stick);
+            if (v < -kDeadzone) dir -= 1;
+            if (v > kDeadzone) dir += 1;
+        }
+        return std.math.sign(dir);
+    }
+};
+
+/// Turns a held direction into one step immediately and then a steady stream,
+/// so a list of forty settings can be crossed without forty presses.
+const Repeat = struct {
+    dir: i32 = 0,
+    next_at: u64 = 0,
+
+    const kDelayMs = 380;
+    const kRateMs = 80;
+
+    /// Records a press that arrived as an event, so the frame poll that
+    /// follows does not count it a second time.
+    fn arm(self: *Repeat, dir: i32, now: u64) void {
+        self.dir = dir;
+        self.next_at = now + kDelayMs;
+    }
+
+    fn step(self: *Repeat, dir: i32, now: u64) i32 {
+        if (dir == 0) {
+            self.dir = 0;
+            return 0;
+        }
+        if (dir != self.dir) {
+            self.dir = dir;
+            self.next_at = now + kDelayMs;
+            return dir;
+        }
+        if (now >= self.next_at) {
+            self.next_at = now + kRateMs;
+            return dir;
+        }
+        return 0;
+    }
+};
+
+/// What is sitting in zelda3_assets.dat.
+pub const AssetState = enum {
+    missing,
+    /// Present and matching the file the Python tool builds from a US ROM.
+    verified,
+    /// Present, but not a file this build of the tool produces. Usually an
+    /// older .dat; the game may or may not accept it.
+    unrecognised,
+
+    fn line(self: AssetState) []const u8 {
+        return switch (self) {
+            .missing => "ASSETS MISSING",
+            .verified => "ASSETS VERIFIED",
+            .unrecognised => "ASSETS PRESENT - CHECKSUM DIFFERS",
+        };
+    }
+
+    fn colour(self: AssetState) Rgb {
+        return switch (self) {
+            .missing => kColorWarn,
+            .verified => kColorOk,
+            .unrecognised => kColorWarn,
+        };
+    }
+};
+
+/// Hashes zelda3_assets.dat and compares it with the digest the asset
+/// builder is known to produce. Reading 668K costs about a millisecond, so
+/// this runs at startup and after every build rather than being cached and
+/// going stale.
+fn checkAssets(alloc: std.mem.Allocator) AssetState {
+    return checkAssetsAt(alloc, kAssetsPath);
+}
+
+fn checkAssetsAt(alloc: std.mem.Allocator, path: [*:0]const u8) AssetState {
+    const data = fileio.readWholeFile(alloc, path) catch return .missing;
+    defer alloc.free(data);
+
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
+
+    var hex: [64]u8 = undefined;
+    const kHexDigits = "0123456789abcdef";
+    for (digest, 0..) |byte, i| {
+        hex[i * 2] = kHexDigits[byte >> 4];
+        hex[i * 2 + 1] = kHexDigits[byte & 0xf];
+    }
+    return if (std.mem.eql(u8, &hex, asset_all.kReferenceDigest)) .verified else .unrecognised;
+}
 
 /// State the drawing needs. Passed as one value because the slow paths -
 /// building assets - draw a frame before they block, and threading eight
@@ -371,8 +516,33 @@ const View = struct {
     top: usize,
     status: []const u8,
     dirty: bool,
-    have_assets: bool,
+    assets: AssetState,
 };
+
+fn listIndex(sc: Screen) usize {
+    return if (sc == .features) 1 else 0;
+}
+
+/// Gathers the loop's scattered state into what drawing needs.
+fn viewOf(
+    screen: Screen,
+    main_cursor: usize,
+    list_cursor: [2]usize,
+    list_top: [2]usize,
+    status: []const u8,
+    dirty: bool,
+    assets: AssetState,
+) View {
+    const li = listIndex(screen);
+    return .{
+        .screen = screen,
+        .cursor = if (screen == .main) main_cursor else list_cursor[li],
+        .top = list_top[li],
+        .status = status,
+        .dirty = dirty,
+        .assets = assets,
+    };
+}
 
 fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     fillRect(renderer, 0, 0, kWindowW, kWindowH, kColorBg);
@@ -409,10 +579,10 @@ fn drawHeader(renderer: *c.SDL_Renderer, screen: Screen) void {
 fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     const cx: f32 = kWindowW / 2;
 
-    // The two list entries sit as a pair, with Launch set apart below them -
+    // The three list entries sit as a group, with Launch set apart below -
     // it leaves the launcher rather than moving within it.
-    const kEntryY: f32 = 150;
-    const kEntryGap: f32 = 44;
+    const kEntryY: f32 = 132;
+    const kEntryGap: f32 = 38;
 
     for (kMainItems[0..kMainLaunch], 0..) |label, i| {
         const y = kEntryY + kEntryGap * @as(f32, @floatFromInt(i));
@@ -435,7 +605,7 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     const box_w = w + 72;
     const box_h = 8 * scale + 28;
     const box_x = cx - box_w / 2;
-    const box_y: f32 = 268;
+    const box_y: f32 = 248;
     const selected = v.cursor == kMainLaunch;
 
     // Green whether or not it is selected - it is the one action the window
@@ -445,12 +615,15 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     if (selected) drawOutline(renderer, box_x - 8, box_y - 8, box_w + 16, box_h + 16, 4, kColorFrameHi);
     drawTextCentered(renderer, cx, box_y + 14, kColorLaunchText, label, scale);
 
-    // The game cannot start without its assets, and a ROM dropped on the
-    // window is the shortest way to get them.
-    if (!v.have_assets) {
-        const hint_y: f32 = box_y + box_h + 16;
-        drawTextCentered(renderer, cx, hint_y, kColorSelect, "NO ASSETS YET", kScale);
-        drawTextCentered(renderer, cx, hint_y + kRowH, kColorTextDim, "DRAG A .SFC ROM ONTO THIS WINDOW", kScale);
+    // Whether the game can actually start, said plainly. Presence is not
+    // enough - a .dat left over from another build loads and then misbehaves
+    // in ways that look like game bugs, so it is checked against the digest
+    // the asset builder produces and reported as its own state.
+    const state_y = box_y + box_h + 18;
+    drawTextCentered(renderer, cx, state_y, v.assets.colour(), v.assets.line(), kScale);
+
+    if (v.assets == .missing) {
+        drawTextCentered(renderer, cx, state_y + kRowH, kColorTextDim, "DRAG A .SFC ROM ONTO THIS WINDOW", kScale);
     }
 }
 
@@ -481,12 +654,12 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
     const footer_y: f32 = kWindowH - 32 - kRowH * 2 - 6;
     switch (v.screen) {
         .main => {
-            drawText(renderer, 40, footer_y, kColorTextDim, "UP/DOWN MOVE   ENTER SELECT");
-            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "B BUILD ASSETS   ESC QUIT");
+            drawText(renderer, 40, footer_y, kColorTextDim, "MOVE  UP/DOWN OR STICK");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "SELECT A/ENTER   QUIT B/ESC");
         },
         .settings, .features => {
-            drawText(renderer, 40, footer_y, kColorTextDim, "UP/DOWN MOVE   LEFT/RIGHT CHANGE");
-            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "S SAVE   ESC BACK");
+            drawText(renderer, 40, footer_y, kColorTextDim, "CHANGE  LEFT/RIGHT OR A");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "SAVE X/S   BACK B/ESC");
         },
     }
 
@@ -645,12 +818,17 @@ pub fn main(init: std.process.Init.Minimal) !void {
     };
     defer c.SDL_DestroyRenderer(renderer);
 
-    // Any pad plugged in can drive the list, same as in the game.
+    // Any pad can drive the menu, and one plugged in later works too.
+    var pads = Pads{};
+    defer pads.closeAll();
     var pad_count: c_int = 0;
-    if (c.SDL_GetGamepads(&pad_count)) |pads| {
-        for (pads[0..@intCast(pad_count)]) |id| _ = c.SDL_OpenGamepad(id);
-        c.SDL_free(pads);
+    if (c.SDL_GetGamepads(&pad_count)) |ids| {
+        for (ids[0..@intCast(pad_count)]) |id| pads.open(id);
+        c.SDL_free(ids);
     }
+
+    var vrepeat = Repeat{};
+    var hrepeat = Repeat{};
 
     var screen: Screen = .main;
     var main_cursor: usize = 0;
@@ -661,145 +839,158 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var dirty = false;
     var launch = false;
     var status: []const u8 = "";
-    var have_assets = fileio.exists(kAssetsPath);
+    var assets = checkAssets(alloc);
     var running = true;
     var event: c.SDL_Event = undefined;
 
-    const listIndex = struct {
-        fn f(sc: Screen) usize {
-            return if (sc == .features) 1 else 0;
-        }
-    }.f;
-
     while (running) {
-        const li = listIndex(screen);
-        const view = View{
-            .screen = screen,
-            .cursor = if (screen == .main) main_cursor else list_cursor[li],
-            .top = list_top[li],
-            .status = status,
-            .dirty = dirty,
-            .have_assets = have_assets,
-        };
+        const now = c.SDL_GetTicks();
+        var confirm = false;
+        var back = false;
+        var save = false;
+        var build = false;
+        // Presses arrive as events so that a tap shorter than a frame still
+        // counts; the poll below only decides when a held direction repeats.
+        var tap_v: i32 = 0;
+        var tap_h: i32 = 0;
 
         while (c.SDL_PollEvent(&event)) {
-            var move: i32 = 0;
-            var adjust: i32 = 0;
-            var confirm = false;
-            var back = false;
-
             switch (event.type) {
                 c.SDL_EVENT_QUIT => running = false,
+                c.SDL_EVENT_GAMEPAD_ADDED => pads.open(event.gdevice.which),
+                c.SDL_EVENT_GAMEPAD_REMOVED => pads.close(event.gdevice.which),
 
                 // A ROM dropped on the window is the quickest path from a
                 // fresh checkout to a playable game.
                 c.SDL_EVENT_DROP_FILE => {
                     if (event.drop.data) |path| {
                         status = "CHECKING ROM...";
-                        drawScreen(renderer, &ini, view);
+                        drawScreen(renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets));
                         status = buildAssetsFromDrop(alloc, path);
-                        have_assets = fileio.exists(kAssetsPath);
+                        assets = checkAssets(alloc);
                     }
                 },
 
                 c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
                     c.SDLK_ESCAPE => back = true,
-                    c.SDLK_UP => move = -1,
-                    c.SDLK_DOWN => move = 1,
-                    c.SDLK_LEFT => adjust = -1,
-                    c.SDLK_RIGHT, c.SDLK_SPACE => adjust = 1,
-                    c.SDLK_RETURN => confirm = true,
-                    c.SDLK_B => {
-                        // Drawing a frame first, so the window does not just
-                        // freeze for the second or two this takes.
-                        status = "BUILDING ASSETS...";
-                        drawScreen(renderer, &ini, view);
-                        status = buildAssets(alloc);
-                        have_assets = fileio.exists(kAssetsPath);
+                    c.SDLK_RETURN, c.SDLK_SPACE => confirm = true,
+                    c.SDLK_S => save = true,
+                    c.SDLK_B => build = true,
+                    c.SDLK_UP => tap_v -= 1,
+                    c.SDLK_DOWN => tap_v += 1,
+                    c.SDLK_LEFT => tap_h -= 1,
+                    c.SDLK_RIGHT => tap_h += 1,
+                    else => {},
+                },
+
+                // A is select, B is back, X saves. Directions are polled
+                // rather than taken from events, so holding one repeats.
+                c.SDL_EVENT_GAMEPAD_BUTTON_DOWN => switch (event.gbutton.button) {
+                    c.SDL_GAMEPAD_BUTTON_SOUTH, c.SDL_GAMEPAD_BUTTON_START => confirm = true,
+                    c.SDL_GAMEPAD_BUTTON_EAST => back = true,
+                    c.SDL_GAMEPAD_BUTTON_WEST => save = true,
+                    c.SDL_GAMEPAD_BUTTON_DPAD_UP => tap_v -= 1,
+                    c.SDL_GAMEPAD_BUTTON_DPAD_DOWN => tap_v += 1,
+                    c.SDL_GAMEPAD_BUTTON_DPAD_LEFT => tap_h -= 1,
+                    c.SDL_GAMEPAD_BUTTON_DPAD_RIGHT => tap_h += 1,
+                    else => {},
+                },
+                else => {},
+            }
+        }
+
+        // Directions come from the current state of every input rather than
+        // from key events, so the keyboard and the pads behave alike and a
+        // held direction repeats.
+        const keys = c.SDL_GetKeyboardState(null);
+        var vdir: i32 = 0;
+        var hdir: i32 = 0;
+        if (keys[c.SDL_SCANCODE_UP]) vdir -= 1;
+        if (keys[c.SDL_SCANCODE_DOWN]) vdir += 1;
+        if (keys[c.SDL_SCANCODE_LEFT]) hdir -= 1;
+        if (keys[c.SDL_SCANCODE_RIGHT]) hdir += 1;
+        vdir = std.math.sign(vdir + pads.direction(.vertical));
+        hdir = std.math.sign(hdir + pads.direction(.horizontal));
+
+        var move: i32 = 0;
+        var adjust: i32 = 0;
+        if (tap_v != 0) {
+            move = std.math.sign(tap_v);
+            vrepeat.arm(move, now);
+        } else {
+            move = vrepeat.step(vdir, now);
+        }
+        if (tap_h != 0) {
+            adjust = std.math.sign(tap_h);
+            hrepeat.arm(adjust, now);
+        } else {
+            adjust = hrepeat.step(hdir, now);
+        }
+
+        if (back) {
+            // Back steps out of a list, and quits from the menu.
+            if (screen == .main) running = false else screen = .main;
+            status = "";
+        }
+
+        if (save and screen != .main) {
+            ini.save("zelda3.ini") catch |err| {
+                std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
+                status = "COULD NOT SAVE";
+                continue;
+            };
+            dirty = false;
+            status = "SAVED";
+        }
+
+        if (screen == .main) {
+            if (move != 0) {
+                const n: i32 = @intCast(kMainItems.len);
+                var at: i32 = @intCast(main_cursor);
+                at = @mod(at + move + n, n);
+                main_cursor = @intCast(at);
+                status = "";
+            }
+            if (confirm) {
+                switch (main_cursor) {
+                    0 => {
+                        screen = .settings;
+                        status = "";
                     },
-                    c.SDLK_S => {
+                    1 => {
+                        screen = .features;
+                        status = "";
+                    },
+                    kMainBuild => build = true,
+                    else => {
                         ini.save("zelda3.ini") catch |err| {
                             std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
                             status = "COULD NOT SAVE";
                             continue;
                         };
                         dirty = false;
-                        status = "SAVED";
-                    },
-                    else => {},
-                },
-                c.SDL_EVENT_GAMEPAD_BUTTON_DOWN => switch (event.gbutton.button) {
-                    c.SDL_GAMEPAD_BUTTON_DPAD_UP => move = -1,
-                    c.SDL_GAMEPAD_BUTTON_DPAD_DOWN => move = 1,
-                    c.SDL_GAMEPAD_BUTTON_DPAD_LEFT => adjust = -1,
-                    c.SDL_GAMEPAD_BUTTON_DPAD_RIGHT => adjust = 1,
-                    c.SDL_GAMEPAD_BUTTON_SOUTH => confirm = true,
-                    c.SDL_GAMEPAD_BUTTON_START => confirm = true,
-                    c.SDL_GAMEPAD_BUTTON_EAST => back = true,
-                    else => {},
-                },
-                else => {},
-            }
 
-            if (back) {
-                // Escape steps out of a list, and quits from the menu.
-                if (screen == .main) running = false else screen = .main;
-                status = "";
-                continue;
-            }
-
-            if (screen == .main) {
-                if (move != 0) {
-                    const n: i32 = @intCast(kMainItems.len);
-                    var at: i32 = @intCast(main_cursor);
-                    at = @mod(at + move + n, n);
-                    main_cursor = @intCast(at);
-                    status = "";
-                }
-                if (confirm) {
-                    switch (main_cursor) {
-                        0 => {
-                            screen = .settings;
-                            status = "";
-                        },
-                        1 => {
-                            screen = .features;
-                            status = "";
-                        },
-                        else => {
-                            ini.save("zelda3.ini") catch |err| {
-                                std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
-                                status = "COULD NOT SAVE";
+                        // The game cannot start without its assets, so build
+                        // them rather than letting it fail.
+                        if (assets == .missing) {
+                            if (g_rom_path == null) {
+                                status = "DRAG A .SFC ROM HERE FIRST";
                                 continue;
-                            };
-                            dirty = false;
-
-                            // The game cannot start without its assets, so
-                            // build them rather than letting it fail.
-                            if (!have_assets) {
-                                if (g_rom_path == null) {
-                                    status = "DRAG A .SFC ROM HERE FIRST";
-                                    continue;
-                                }
-                                status = "BUILDING ASSETS...";
-                                drawScreen(renderer, &ini, view);
-                                status = buildAssets(alloc);
-                                have_assets = fileio.exists(kAssetsPath);
-                                if (!have_assets) continue;
                             }
-
+                            build = true;
+                        } else {
                             launch = true;
                             running = false;
-                        },
-                    }
+                        }
+                    },
                 }
-                continue;
             }
-
+        } else {
             // The two lists behave the same; only their range differs.
-            // Enter changes a value here, the same as right.
             if (confirm) adjust = 1;
+            const li = listIndex(screen);
             const range = screenRange(screen);
+
             if (move != 0) {
                 // Step over the section headings.
                 var at: i32 = @intCast(list_cursor[li]);
@@ -825,26 +1016,30 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     status = "";
                 }
             }
+
+            // Keep the cursor inside the visible window.
+            if (list_cursor[li] < list_top[li]) list_top[li] = list_cursor[li];
+            if (list_cursor[li] >= list_top[li] + kVisibleRows)
+                list_top[li] = list_cursor[li] - kVisibleRows + 1;
+            if (list_top[li] < range.from) list_top[li] = range.from;
         }
 
-        // Keep the cursor inside the visible window.
-        if (screen != .main) {
-            const li2 = listIndex(screen);
-            const range = screenRange(screen);
-            if (list_cursor[li2] < list_top[li2]) list_top[li2] = list_cursor[li2];
-            if (list_cursor[li2] >= list_top[li2] + kVisibleRows)
-                list_top[li2] = list_cursor[li2] - kVisibleRows + 1;
-            if (list_top[li2] < range.from) list_top[li2] = range.from;
+        if (build) {
+            // Draw a frame first, so the window does not simply freeze for
+            // the second or two this takes.
+            status = "BUILDING ASSETS...";
+            drawScreen(renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets));
+            status = buildAssets(alloc);
+            assets = checkAssets(alloc);
+
+            // Enter on Launch with no assets builds them and then goes.
+            if (main_cursor == kMainLaunch and screen == .main and assets != .missing) {
+                launch = true;
+                running = false;
+            }
         }
 
-        drawScreen(renderer, &ini, .{
-            .screen = screen,
-            .cursor = if (screen == .main) main_cursor else list_cursor[listIndex(screen)],
-            .top = list_top[listIndex(screen)],
-            .status = status,
-            .dirty = dirty,
-            .have_assets = have_assets,
-        });
+        drawScreen(renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets));
         c.SDL_Delay(16);
     }
 
@@ -1030,23 +1225,37 @@ test "the on-screen strings fit the window" {
     const max_chars = usable / kCell;
 
     for ([_][]const u8{
-        "UP/DOWN MOVE   ENTER SELECT",
-        "B BUILD ASSETS   ESC QUIT",
-        "UP/DOWN MOVE   LEFT/RIGHT CHANGE",
-        "S SAVE   ESC BACK",
+        // Footers.
+        "MOVE  UP/DOWN OR STICK",
+        "SELECT A/ENTER   QUIT B/ESC",
+        "CHANGE  LEFT/RIGHT OR A",
+        "SAVE X/S   BACK B/ESC",
+        // Headers.
         "SETTINGS",
         "FEATURES",
-        "NO ASSETS YET",
+        "ESC BACK",
+        // Asset states and the hint under them.
+        "ASSETS MISSING",
+        "ASSETS VERIFIED",
+        "ASSETS PRESENT - CHECKSUM DIFFERS",
         "DRAG A .SFC ROM ONTO THIS WINDOW",
-        "DRAG A .SFC ROM HERE FIRST",
-        "US ROM VERIFIED - ASSETS BUILT",
-        "WRONG REGION - NEEDS THE US ROM",
-        "COULD NOT READ THAT FILE",
-        "UNRECOGNISED ROM",
-        "NOT A .SFC FILE",
+        // Every status line the loop can put up.
+        "ASSETS BUILT",
         "BUILDING ASSETS...",
         "CHECKING ROM...",
+        "COULD NOT BUILD ASSETS",
+        "COULD NOT READ ROM",
+        "COULD NOT READ THAT FILE",
+        "COULD NOT SAVE",
+        "COULD NOT WRITE ASSETS",
+        "DRAG A .SFC ROM HERE FIRST",
+        "NEED zelda3.sfc TO BUILD ASSETS",
+        "NOT A .SFC FILE",
+        "ROM IS NOT THE US RELEASE",
+        "SAVED",
+        "UNRECOGNISED ROM",
         "UNSAVED CHANGES",
+        "US ROM VERIFIED - ASSETS BUILT",
     }) |line| {
         testing.expect(line.len <= max_chars) catch |err| {
             std.debug.print("too wide ({d} > {d}): {s}\n", .{ line.len, max_chars, line });
@@ -1060,4 +1269,46 @@ test "the on-screen strings fit the window" {
         const line = try std.fmt.bufPrint(&buf, "{s} ROM - NEEDS THE US ONE", .{regionName(lang)});
         try testing.expect(line.len <= max_chars);
     }
+}
+
+test "the asset check tells the three states apart" {
+    const alloc = testing.allocator;
+
+    try testing.expectEqual(AssetState.missing, checkAssetsAt(alloc, "no-such-file.dat"));
+
+    // Anything that is not the file the builder produces is reported as
+    // present but unrecognised rather than waved through - a stale .dat loads
+    // and then misbehaves in ways that look like game bugs.
+    const scratch = "zelda3_assets_checktest.dat";
+    try fileio.writeWholeFile(scratch, "not an asset file");
+    defer _ = fileio.remove(scratch);
+    try testing.expectEqual(AssetState.unrecognised, checkAssetsAt(alloc, scratch));
+
+    // An empty file is not a crash.
+    const empty = "zelda3_assets_emptytest.dat";
+    try fileio.writeWholeFile(empty, "");
+    defer _ = fileio.remove(empty);
+    try testing.expectEqual(AssetState.unrecognised, checkAssetsAt(alloc, empty));
+
+    // And the real thing, when this machine has one.
+    if (fileio.exists("zig-out/bin/zelda3_assets.dat"))
+        try testing.expectEqual(AssetState.verified, checkAssetsAt(alloc, "zig-out/bin/zelda3_assets.dat"));
+}
+
+test "a corrupted asset file is not reported as verified" {
+    const alloc = testing.allocator;
+    if (!fileio.exists("zig-out/bin/zelda3_assets.dat")) return error.SkipZigTest;
+
+    const good = try fileio.readWholeFile(alloc, "zig-out/bin/zelda3_assets.dat");
+    defer alloc.free(good);
+    try testing.expect(good.len > 500_000);
+
+    const copy = try alloc.dupe(u8, good);
+    defer alloc.free(copy);
+    copy[500_000] ^= 0xff; // one bit, deep inside the payload
+
+    const scratch = "zelda3_assets_corrupttest.dat";
+    try fileio.writeWholeFile(scratch, copy);
+    defer _ = fileio.remove(scratch);
+    try testing.expectEqual(AssetState.unrecognised, checkAssetsAt(alloc, scratch));
 }

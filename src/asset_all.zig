@@ -198,7 +198,7 @@ const fileio = @import("fileio.zig");
 /// on disk that this very program can overwrite - once the launcher has built
 /// the assets once, comparing to that file proves nothing. This digest came
 /// from the Python tool's output and does not change.
-const kReferenceDigest = "0fe2e4bd75d70f06fb9a74cd3a9cb336c838149b831b56e8792114a89292c793";
+pub const kReferenceDigest = "0fe2e4bd75d70f06fb9a74cd3a9cb336c838149b831b56e8792114a89292c793";
 
 test "the whole asset file matches the digest of the Python tool's output" {
     const alloc = testing.allocator;
