@@ -45,6 +45,9 @@ const kColorTextDim = Rgb{ .r = 0x88, .g = 0x98, .b = 0x88 };
 const kColorValue = Rgb{ .r = 0x90, .g = 0xc0, .b = 0xf8 };
 const kColorSelect = Rgb{ .r = 0xf8, .g = 0xd8, .b = 0x78 };
 const kColorRowHi = Rgb{ .r = 0x28, .g = 0x28, .b = 0x50 };
+const kColorLaunchBg = Rgb{ .r = 0x00, .g = 0xe0, .b = 0x18 };
+const kColorLaunchBgDim = Rgb{ .r = 0x0c, .g = 0x58, .b = 0x14 };
+const kColorLaunchText = Rgb{ .r = 0x00, .g = 0x18, .b = 0x00 };
 const kColorSection = Rgb{ .r = 0x78, .g = 0xd8, .b = 0x98 };
 
 // ---------------------------------------------------------------- settings
@@ -292,13 +295,18 @@ fn drawFrame(r: *c.SDL_Renderer, x: f32, y: f32, w: f32, h: f32) void {
 }
 
 fn drawText(r: *c.SDL_Renderer, x: f32, y: f32, col: Rgb, text: []const u8) void {
+    drawTextScaled(r, x, y, col, text, kScale);
+}
+
+/// SDL's debug font is a fixed 8x8, so size comes from the render scale.
+fn drawTextScaled(r: *c.SDL_Renderer, x: f32, y: f32, col: Rgb, text: []const u8, scale: f32) void {
     var buf: [256]u8 = undefined;
     const n = @min(text.len, buf.len - 1);
     @memcpy(buf[0..n], text[0..n]);
     buf[n] = 0;
     setColor(r, col);
-    _ = c.SDL_SetRenderScale(r, kScale, kScale);
-    _ = c.SDL_RenderDebugText(r, x / kScale, y / kScale, @ptrCast(&buf));
+    _ = c.SDL_SetRenderScale(r, scale, scale);
+    _ = c.SDL_RenderDebugText(r, x / scale, y / scale, @ptrCast(&buf));
     _ = c.SDL_SetRenderScale(r, 1, 1);
 }
 
@@ -308,40 +316,115 @@ fn isSection(s: Setting) bool {
     return std.mem.eql(u8, s.section, kSectionMark);
 }
 
-fn firstSelectable() usize {
-    for (kSettings, 0..) |s, i| if (!isSection(s)) return i;
-    return 0;
+fn firstSelectable(from: usize, to: usize) usize {
+    var i = from;
+    while (i < to) : (i += 1) if (!isSection(kSettings[i])) return i;
+    return from;
 }
 
-/// Draws the whole screen. Split out of the loop so that the slow paths -
-/// building assets - can put a frame up before they block.
-fn drawScreen(
-    renderer: *c.SDL_Renderer,
-    ini: *const Ini,
+/// The launcher is a short menu and the two lists it opens.
+const Screen = enum { main, settings, features };
+
+/// Where the FEATURES heading sits, so the two lists are slices of the one
+/// schema instead of separate tables that could drift out of step with it.
+const kFeaturesStart = blk: {
+    for (kSettings, 0..) |s, i| {
+        if (isSection(s) and std.mem.eql(u8, s.label, "FEATURES")) break :blk i;
+    }
+    @compileError("the settings schema has no FEATURES section");
+};
+
+fn screenRange(screen: Screen) struct { from: usize, to: usize } {
+    return switch (screen) {
+        .settings => .{ .from = 0, .to = kFeaturesStart },
+        .features => .{ .from = kFeaturesStart, .to = kSettings.len },
+        .main => .{ .from = 0, .to = 0 },
+    };
+}
+
+const kMainItems = [_][]const u8{ "Settings", "Features", "Launch" };
+const kMainLaunch = 2;
+
+/// State the drawing needs. Passed as one value because the slow paths -
+/// building assets - draw a frame before they block, and threading eight
+/// arguments through those calls was its own small mess.
+const View = struct {
+    screen: Screen,
     cursor: usize,
     top: usize,
     status: []const u8,
     dirty: bool,
     have_assets: bool,
-) void {
+};
+
+fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     fillRect(renderer, 0, 0, kWindowW, kWindowH, kColorBg);
     drawFrame(renderer, 16, 16, kWindowW - 32, kWindowH - 32);
 
     drawText(renderer, 40, 36, kColorSelect, "THE LEGEND OF ZELDA");
     drawText(renderer, 40 + kCell * 20, 36, kColorTextDim, "LAUNCHER");
 
+    switch (v.screen) {
+        .main => drawMain(renderer, v),
+        .settings, .features => drawList(renderer, ini, v),
+    }
+
+    drawFooter(renderer, v);
+    _ = c.SDL_RenderPresent(renderer);
+}
+
+fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
+    var y: f32 = 140;
+    for (kMainItems, 0..) |label, i| {
+        const selected = i == v.cursor;
+
+        if (i == kMainLaunch) {
+            // Launch is the thing people came for, so it is a button rather
+            // than another row: bigger type on a green field.
+            const scale = kScale * 2;
+            const w: f32 = @floatFromInt(label.len * 8 * @as(usize, scale));
+            const box_w = w + 32;
+            const box_h: f32 = 8 * scale + 20;
+            const bg = if (selected) kColorLaunchBg else kColorLaunchBgDim;
+            fillRect(renderer, 72, y - 10, box_w, box_h, bg);
+            if (selected) {
+                drawText(renderer, 44, y + 8, kColorSelect, ">");
+            }
+            drawTextScaled(renderer, 88, y, kColorLaunchText, label, scale);
+            y += box_h + 10;
+            continue;
+        }
+
+        if (selected) {
+            fillRect(renderer, 32, y - 3, kWindowW - 64, kRowH, kColorRowHi);
+            drawText(renderer, 36, y, kColorSelect, ">");
+        }
+        drawText(renderer, 56, y, if (selected) kColorSelect else kColorText, label);
+        y += kRowH + 10;
+    }
+
+    // The game cannot start without its assets, and a ROM dropped on the
+    // window is the shortest way to get them.
+    if (!v.have_assets) {
+        drawText(renderer, 40, y + 12, kColorSelect, "NO ASSETS YET");
+        drawText(renderer, 40, y + 12 + kRowH, kColorTextDim, "DRAG A .SFC ROM ONTO THIS WINDOW");
+    }
+}
+
+fn drawList(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
+    const range = screenRange(v.screen);
     var y: f32 = 36 + kRowH + 8;
-    var i = top;
-    while (i < kSettings.len and i < top + kVisibleRows) : (i += 1) {
+    var i = v.top;
+    while (i < range.to and i < v.top + kVisibleRows) : (i += 1) {
         const s = kSettings[i];
         if (isSection(s)) {
             drawText(renderer, 40, y, kColorSection, s.label);
         } else {
-            if (i == cursor) {
+            if (i == v.cursor) {
                 fillRect(renderer, 32, y - 3, kWindowW - 64, kRowH, kColorRowHi);
                 drawText(renderer, 36, y, kColorSelect, ">");
             }
-            drawText(renderer, 56, y, if (i == cursor) kColorSelect else kColorText, s.label);
+            drawText(renderer, 56, y, if (i == v.cursor) kColorSelect else kColorText, s.label);
             var vbuf: [64]u8 = undefined;
             const shown = displayValue(&vbuf, s, ini.values[i] orelse "(missing)");
             const dim = s.kind == .text;
@@ -349,22 +432,27 @@ fn drawScreen(
         }
         y += kRowH;
     }
+}
 
+fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
     const footer_y: f32 = kWindowH - 32 - kRowH * 2 - 6;
-    drawText(renderer, 40, footer_y, kColorTextDim, "ARROWS MOVE/CHANGE   S SAVE");
-    drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "ENTER PLAY   B ASSETS   ESC QUIT");
+    switch (v.screen) {
+        .main => {
+            drawText(renderer, 40, footer_y, kColorTextDim, "UP/DOWN MOVE   ENTER SELECT");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "B BUILD ASSETS   ESC QUIT");
+        },
+        .settings, .features => {
+            drawText(renderer, 40, footer_y, kColorTextDim, "ARROWS MOVE/CHANGE   S SAVE");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "ESC BACK");
+        },
+    }
 
     // One line above the footer, in order of what the player most needs to
-    // know: what just happened, then that the game cannot start yet, then
-    // that there are edits worth saving.
-    if (status.len != 0)
-        drawText(renderer, 40, footer_y - kRowH, kColorSection, status)
-    else if (!have_assets)
-        drawText(renderer, 40, footer_y - kRowH, kColorSelect, "NO ASSETS - PRESS B TO BUILD")
-    else if (dirty)
+    // know: what just happened, then that there are edits worth saving.
+    if (v.status.len != 0)
+        drawText(renderer, 40, footer_y - kRowH, kColorSection, v.status)
+    else if (v.dirty)
         drawText(renderer, 40, footer_y - kRowH, kColorSelect, "UNSAVED CHANGES");
-
-    _ = c.SDL_RenderPresent(renderer);
 }
 
 /// Where the ROM was found: beside the game, or in the directory the
@@ -383,6 +471,65 @@ fn findRom(start_dir: []const u8, buf: []u8) ?[:0]const u8 {
     if (fileio.exists(joined.ptr)) return joined;
     return null;
 }
+
+/// True for a path ending in a SNES ROM extension, whatever it is called.
+/// .smc is accepted alongside .sfc because it is the same image with a copier
+/// header, which the loader strips; the hash check below is the real gate.
+fn looksLikeRom(path: []const u8) bool {
+    if (path.len < 4) return false;
+    const ext = path[path.len - 4 ..];
+    return std.ascii.eqlIgnoreCase(ext, ".sfc") or std.ascii.eqlIgnoreCase(ext, ".smc");
+}
+
+fn regionName(lang: rom_mod.Language) []const u8 {
+    return switch (lang) {
+        .us => "US",
+        .de => "GERMAN",
+        .fr, .fr_c => "FRENCH",
+        .en => "ENGLISH",
+        .es => "SPANISH",
+        .pl => "POLISH",
+        .pt => "PORTUGUESE",
+        .redux => "REDUX",
+        .nl => "DUTCH",
+        .sv => "SWEDISH",
+    };
+}
+
+/// Builds the assets from a ROM the user dropped on the window. The name is
+/// not trusted: the file is identified by hashing it, the same way the
+/// Python tool does, and only the US release can be built from.
+fn buildAssetsFromDrop(alloc: std.mem.Allocator, path: [*:0]const u8) []const u8 {
+    if (!looksLikeRom(std.mem.span(path))) return "NOT A .SFC FILE";
+
+    var rom = rom_mod.Rom.load(alloc, path) catch return "COULD NOT READ THAT FILE";
+    defer rom.deinit();
+
+    const lang = rom.language orelse return "UNRECOGNISED ROM";
+    if (lang != .us) {
+        // Naming the region makes it obvious this is the wrong dump rather
+        // than a corrupt one.
+        g_status_buf = undefined;
+        return std.fmt.bufPrint(&g_status_buf, "{s} ROM - NEEDS THE US ONE", .{regionName(lang)}) catch
+            "WRONG REGION - NEEDS THE US ROM";
+    }
+
+    const data = asset_all.buildFile(alloc, rom) catch return "COULD NOT BUILD ASSETS";
+    defer alloc.free(data);
+    fileio.writeWholeFile(kAssetsPath, data) catch return "COULD NOT WRITE ASSETS";
+
+    // Remember it, so B works later without another drop.
+    const span = std.mem.span(path);
+    if (span.len < g_rom_buf.len) {
+        @memcpy(g_rom_buf[0..span.len], span);
+        g_rom_buf[span.len] = 0;
+        g_rom_path = g_rom_buf[0..span.len :0];
+    }
+    return "US ROM VERIFIED - ASSETS BUILT";
+}
+
+/// Backing store for status lines that are built at runtime.
+var g_status_buf: [64]u8 = undefined;
 
 /// Builds zelda3_assets.dat from the ROM, replacing what the Python resource
 /// tool did. Returns a message for the status line either way.
@@ -462,8 +609,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
         c.SDL_free(pads);
     }
 
-    var cursor: usize = firstSelectable();
-    var top: usize = 0;
+    var screen: Screen = .main;
+    var main_cursor: usize = 0;
+    // Each list keeps its own place, so stepping out and back in does not
+    // dump the cursor at the top again.
+    var list_cursor = [_]usize{ firstSelectable(0, kFeaturesStart), firstSelectable(kFeaturesStart, kSettings.len) };
+    var list_top = [_]usize{ 0, kFeaturesStart };
     var dirty = false;
     var launch = false;
     var status: []const u8 = "";
@@ -471,16 +622,45 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var running = true;
     var event: c.SDL_Event = undefined;
 
+    const listIndex = struct {
+        fn f(sc: Screen) usize {
+            return if (sc == .features) 1 else 0;
+        }
+    }.f;
+
     while (running) {
+        const li = listIndex(screen);
+        const view = View{
+            .screen = screen,
+            .cursor = if (screen == .main) main_cursor else list_cursor[li],
+            .top = list_top[li],
+            .status = status,
+            .dirty = dirty,
+            .have_assets = have_assets,
+        };
+
         while (c.SDL_PollEvent(&event)) {
             var move: i32 = 0;
             var adjust: i32 = 0;
             var confirm = false;
+            var back = false;
 
             switch (event.type) {
                 c.SDL_EVENT_QUIT => running = false,
+
+                // A ROM dropped on the window is the quickest path from a
+                // fresh checkout to a playable game.
+                c.SDL_EVENT_DROP_FILE => {
+                    if (event.drop.data) |path| {
+                        status = "CHECKING ROM...";
+                        drawScreen(renderer, &ini, view);
+                        status = buildAssetsFromDrop(alloc, path);
+                        have_assets = fileio.exists(kAssetsPath);
+                    }
+                },
+
                 c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
-                    c.SDLK_ESCAPE => running = false,
+                    c.SDLK_ESCAPE => back = true,
                     c.SDLK_UP => move = -1,
                     c.SDLK_DOWN => move = 1,
                     c.SDLK_LEFT => adjust = -1,
@@ -490,7 +670,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         // Drawing a frame first, so the window does not just
                         // freeze for the second or two this takes.
                         status = "BUILDING ASSETS...";
-                        drawScreen(renderer, &ini, cursor, top, status, dirty, have_assets);
+                        drawScreen(renderer, &ini, view);
                         status = buildAssets(alloc);
                         have_assets = fileio.exists(kAssetsPath);
                     },
@@ -510,65 +690,118 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     c.SDL_GAMEPAD_BUTTON_DPAD_DOWN => move = 1,
                     c.SDL_GAMEPAD_BUTTON_DPAD_LEFT => adjust = -1,
                     c.SDL_GAMEPAD_BUTTON_DPAD_RIGHT => adjust = 1,
-                    c.SDL_GAMEPAD_BUTTON_SOUTH => adjust = 1,
+                    c.SDL_GAMEPAD_BUTTON_SOUTH => confirm = true,
                     c.SDL_GAMEPAD_BUTTON_START => confirm = true,
-                    c.SDL_GAMEPAD_BUTTON_EAST => running = false,
+                    c.SDL_GAMEPAD_BUTTON_EAST => back = true,
                     else => {},
                 },
                 else => {},
             }
 
+            if (back) {
+                // Escape steps out of a list, and quits from the menu.
+                if (screen == .main) running = false else screen = .main;
+                status = "";
+                continue;
+            }
+
+            if (screen == .main) {
+                if (move != 0) {
+                    const n: i32 = @intCast(kMainItems.len);
+                    var at: i32 = @intCast(main_cursor);
+                    at = @mod(at + move + n, n);
+                    main_cursor = @intCast(at);
+                    status = "";
+                }
+                if (confirm) {
+                    switch (main_cursor) {
+                        0 => {
+                            screen = .settings;
+                            status = "";
+                        },
+                        1 => {
+                            screen = .features;
+                            status = "";
+                        },
+                        else => {
+                            ini.save("zelda3.ini") catch |err| {
+                                std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
+                                status = "COULD NOT SAVE";
+                                continue;
+                            };
+                            dirty = false;
+
+                            // The game cannot start without its assets, so
+                            // build them rather than letting it fail.
+                            if (!have_assets) {
+                                if (g_rom_path == null) {
+                                    status = "DRAG A .SFC ROM HERE FIRST";
+                                    continue;
+                                }
+                                status = "BUILDING ASSETS...";
+                                drawScreen(renderer, &ini, view);
+                                status = buildAssets(alloc);
+                                have_assets = fileio.exists(kAssetsPath);
+                                if (!have_assets) continue;
+                            }
+
+                            launch = true;
+                            running = false;
+                        },
+                    }
+                }
+                continue;
+            }
+
+            // The two lists behave the same; only their range differs.
+            // Enter changes a value here, the same as right.
+            if (confirm) adjust = 1;
+            const range = screenRange(screen);
             if (move != 0) {
                 // Step over the section headings.
-                var at: i32 = @intCast(cursor);
+                var at: i32 = @intCast(list_cursor[li]);
+                const from: i32 = @intCast(range.from);
+                const to: i32 = @intCast(range.to);
                 while (true) {
                     at += move;
-                    if (at < 0) at = @as(i32, @intCast(kSettings.len)) - 1;
-                    if (at >= @as(i32, @intCast(kSettings.len))) at = 0;
+                    if (at < from) at = to - 1;
+                    if (at >= to) at = from;
                     if (!isSection(kSettings[@intCast(at)])) break;
                 }
-                cursor = @intCast(at);
+                list_cursor[li] = @intCast(at);
                 status = "";
             }
 
             if (adjust != 0) {
                 var buf: [64]u8 = undefined;
-                const cur = ini.values[cursor] orelse "";
-                if (cycle(alloc, &buf, kSettings[cursor], cur, adjust)) |next| {
-                    try ini.set(cursor, next);
+                const at = list_cursor[li];
+                const cur = ini.values[at] orelse "";
+                if (cycle(alloc, &buf, kSettings[at], cur, adjust)) |next| {
+                    try ini.set(at, next);
                     dirty = true;
                     status = "";
                 }
             }
-
-            if (confirm) {
-                ini.save("zelda3.ini") catch |err| {
-                    std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
-                    status = "COULD NOT SAVE";
-                    continue;
-                };
-                dirty = false;
-
-                // The game cannot start without its assets, so build them
-                // rather than making the player find out by watching it fail.
-                if (!have_assets) {
-                    status = "BUILDING ASSETS...";
-                    drawScreen(renderer, &ini, cursor, top, status, dirty, have_assets);
-                    status = buildAssets(alloc);
-                    have_assets = fileio.exists(kAssetsPath);
-                    if (!have_assets) continue;
-                }
-
-                launch = true;
-                running = false;
-            }
         }
 
         // Keep the cursor inside the visible window.
-        if (cursor < top) top = cursor;
-        if (cursor >= top + kVisibleRows) top = cursor - kVisibleRows + 1;
+        if (screen != .main) {
+            const li2 = listIndex(screen);
+            const range = screenRange(screen);
+            if (list_cursor[li2] < list_top[li2]) list_top[li2] = list_cursor[li2];
+            if (list_cursor[li2] >= list_top[li2] + kVisibleRows)
+                list_top[li2] = list_cursor[li2] - kVisibleRows + 1;
+            if (list_top[li2] < range.from) list_top[li2] = range.from;
+        }
 
-        drawScreen(renderer, &ini, cursor, top, status, dirty, have_assets);
+        drawScreen(renderer, &ini, .{
+            .screen = screen,
+            .cursor = if (screen == .main) main_cursor else list_cursor[listIndex(screen)],
+            .top = list_top[listIndex(screen)],
+            .status = status,
+            .dirty = dirty,
+            .have_assets = have_assets,
+        });
         c.SDL_Delay(16);
     }
 
@@ -696,4 +929,90 @@ test "the shipped ini survives a save unchanged" {
     const back = try fileio.readWholeFile(testing.allocator, scratch);
     defer testing.allocator.free(back);
     try testing.expectEqualStrings(original, back);
+}
+
+test "the schema splits cleanly into the two menus" {
+    // Everything before the FEATURES heading belongs to Settings, and
+    // everything from it belongs to Features. If a section is ever added
+    // after Features this silently puts it on the wrong screen, so check it.
+    const settings = screenRange(.settings);
+    const features = screenRange(.features);
+
+    try testing.expect(settings.to > settings.from);
+    try testing.expect(features.to > features.from);
+    try testing.expectEqual(settings.to, features.from);
+    try testing.expectEqual(kSettings.len, features.to);
+
+    for (kSettings[settings.from..settings.to]) |s| {
+        if (isSection(s)) continue;
+        try testing.expect(!std.mem.eql(u8, s.section, "Features"));
+    }
+    for (kSettings[features.from..features.to]) |s| {
+        if (isSection(s)) continue;
+        try testing.expectEqualStrings("Features", s.section);
+    }
+}
+
+test "each menu opens on a real setting rather than a heading" {
+    const settings = screenRange(.settings);
+    const features = screenRange(.features);
+
+    const a = firstSelectable(settings.from, settings.to);
+    try testing.expect(a >= settings.from and a < settings.to);
+    try testing.expect(!isSection(kSettings[a]));
+
+    const b = firstSelectable(features.from, features.to);
+    try testing.expect(b >= features.from and b < features.to);
+    try testing.expect(!isSection(kSettings[b]));
+}
+
+test "a dropped file is judged by its extension, not its name" {
+    // The name carries no meaning - people rename their dumps - so anything
+    // ending in a SNES ROM extension is worth hashing, and nothing else is.
+    for ([_][]const u8{
+        "zelda3.sfc", "Zelda3.SFC",        "/tmp/some rom.sfc",
+        "alttp.smc",  "/a/b/HEADERED.SmC", "x.sfc",
+    }) |path| try testing.expect(looksLikeRom(path));
+
+    for ([_][]const u8{
+        "zelda3.dat", "rom.zip", "sfc", ".sfc2", "", "a.sf", "zelda3.sfc.txt",
+    }) |path| try testing.expect(!looksLikeRom(path));
+}
+
+test "the on-screen strings fit the window" {
+    // The debug font is 8 pixels wide before scaling, and the text starts 40
+    // pixels in with the frame 16 pixels from the right edge. Anything longer
+    // runs off the side, which is how the first version of the footer shipped.
+    const usable = kWindowW - 40 - 16;
+    const max_chars = usable / kCell;
+
+    for ([_][]const u8{
+        "UP/DOWN MOVE   ENTER SELECT",
+        "B BUILD ASSETS   ESC QUIT",
+        "ARROWS MOVE/CHANGE   S SAVE",
+        "ESC BACK",
+        "NO ASSETS YET",
+        "DRAG A .SFC ROM ONTO THIS WINDOW",
+        "DRAG A .SFC ROM HERE FIRST",
+        "US ROM VERIFIED - ASSETS BUILT",
+        "WRONG REGION - NEEDS THE US ROM",
+        "COULD NOT READ THAT FILE",
+        "UNRECOGNISED ROM",
+        "NOT A .SFC FILE",
+        "BUILDING ASSETS...",
+        "CHECKING ROM...",
+        "UNSAVED CHANGES",
+    }) |line| {
+        testing.expect(line.len <= max_chars) catch |err| {
+            std.debug.print("too wide ({d} > {d}): {s}\n", .{ line.len, max_chars, line });
+            return err;
+        };
+    }
+
+    // The longest region name has to fit the sentence it goes into.
+    for (std.enums.values(rom_mod.Language)) |lang| {
+        var buf: [64]u8 = undefined;
+        const line = try std.fmt.bufPrint(&buf, "{s} ROM - NEEDS THE US ONE", .{regionName(lang)});
+        try testing.expect(line.len <= max_chars);
+    }
 }
