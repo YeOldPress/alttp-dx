@@ -373,6 +373,20 @@ fn firstSelectable(from: usize, to: usize) usize {
     return from;
 }
 
+/// A question laid over whatever screen is showing.
+const Modal = enum {
+    none,
+    /// Asked before leaving, so a stray B does not close the window.
+    quit,
+    /// Asked when Build Assets is chosen, since the ROM arrives by drag.
+    rom,
+};
+
+const kQuitChoices = [_][]const u8{ "Quit", "Stay" };
+/// Stay is the default, so pressing the button again backs out rather than
+/// confirming what the first press only meant to ask about.
+const kQuitStay = 1;
+
 /// The launcher is a short menu and the two lists it opens.
 const Screen = enum { main, settings, features };
 
@@ -435,19 +449,16 @@ const Pads = struct {
         return n;
     }
 
-    /// Sums the d-pads and left sticks into one direction, so any pad drives
-    /// the menu and neither input beats the other.
-    fn direction(self: *const Pads, comptime axis: enum { vertical, horizontal }) i32 {
+    /// Where the left sticks are pushed. Only the sticks: buttons and keys
+    /// arrive as events, because a genuinely analog input is the one thing
+    /// that has to be read as state rather than as presses.
+    fn stickDirection(self: *const Pads, comptime axis: enum { vertical, horizontal }) i32 {
         const kDeadzone = 16000;
         var dir: i32 = 0;
         for (self.items) |slot| {
             const pad = slot orelse continue;
-            const neg = if (axis == .vertical) c.SDL_GAMEPAD_BUTTON_DPAD_UP else c.SDL_GAMEPAD_BUTTON_DPAD_LEFT;
-            const pos = if (axis == .vertical) c.SDL_GAMEPAD_BUTTON_DPAD_DOWN else c.SDL_GAMEPAD_BUTTON_DPAD_RIGHT;
-            if (c.SDL_GetGamepadButton(pad, neg)) dir -= 1;
-            if (c.SDL_GetGamepadButton(pad, pos)) dir += 1;
-
             const stick = if (axis == .vertical) c.SDL_GAMEPAD_AXIS_LEFTY else c.SDL_GAMEPAD_AXIS_LEFTX;
+            if (!c.SDL_GamepadHasAxis(pad, stick)) continue;
             const v = c.SDL_GetGamepadAxis(pad, stick);
             if (v < -kDeadzone) dir -= 1;
             if (v > kDeadzone) dir += 1;
@@ -504,6 +515,51 @@ fn faceAction(which: c.SDL_JoystickID, button: u8) enum { confirm, back, save, n
         else => .none,
     };
 }
+
+/// Which direction keys and pad buttons are down, tracked from presses and
+/// releases rather than read back as state.
+///
+/// Reading the keyboard state each frame looked equivalent and is not: if a
+/// release goes missing - the window loses focus mid-press, or the events are
+/// synthetic - the direction stays down forever and the repeat below runs
+/// away, walking the list and changing every setting it passes. Pairs of
+/// events cannot get stuck, and focus loss clears the lot anyway.
+const Held = struct {
+    up: bool = false,
+    down: bool = false,
+    left: bool = false,
+    right: bool = false,
+
+    fn vertical(self: Held) i32 {
+        return @as(i32, if (self.down) 1 else 0) - @as(i32, if (self.up) 1 else 0);
+    }
+
+    fn horizontal(self: Held) i32 {
+        return @as(i32, if (self.right) 1 else 0) - @as(i32, if (self.left) 1 else 0);
+    }
+
+    fn set(self: *Held, key: c.SDL_Keycode, down: bool) bool {
+        switch (key) {
+            c.SDLK_UP => self.up = down,
+            c.SDLK_DOWN => self.down = down,
+            c.SDLK_LEFT => self.left = down,
+            c.SDLK_RIGHT => self.right = down,
+            else => return false,
+        }
+        return true;
+    }
+
+    fn setButton(self: *Held, button: u8, down: bool) bool {
+        switch (button) {
+            c.SDL_GAMEPAD_BUTTON_DPAD_UP => self.up = down,
+            c.SDL_GAMEPAD_BUTTON_DPAD_DOWN => self.down = down,
+            c.SDL_GAMEPAD_BUTTON_DPAD_LEFT => self.left = down,
+            c.SDL_GAMEPAD_BUTTON_DPAD_RIGHT => self.right = down,
+            else => return false,
+        }
+        return true;
+    }
+};
 
 /// Turns a held direction into one step immediately and then a steady stream,
 /// so a list of forty settings can be crossed without forty presses.
@@ -594,6 +650,8 @@ fn checkAssetsAt(alloc: std.mem.Allocator, path: [*:0]const u8) AssetState {
 /// arguments through those calls was its own small mess.
 const View = struct {
     screen: Screen,
+    modal: Modal = .none,
+    quit_choice: usize = kQuitStay,
     cursor: usize,
     top: usize,
     status: []const u8,
@@ -614,10 +672,14 @@ fn viewOf(
     status: []const u8,
     dirty: bool,
     assets: AssetState,
+    modal: Modal,
+    quit_choice: usize,
 ) View {
     const li = listIndex(screen);
     return .{
         .screen = screen,
+        .modal = modal,
+        .quit_choice = quit_choice,
         .cursor = if (screen == .main) main_cursor else list_cursor[li],
         .top = list_top[li],
         .status = status,
@@ -638,6 +700,7 @@ fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     }
 
     drawFooter(renderer, v);
+    if (v.modal != .none) drawModal(renderer, v);
     _ = c.SDL_RenderPresent(renderer);
 }
 
@@ -661,13 +724,58 @@ fn drawHeader(renderer: *c.SDL_Renderer, screen: Screen) void {
     fillRect(renderer, 40, 36 + kRowH, kWindowW - 80, 2, kColorFrame);
 }
 
+/// A rectangle on screen. Drawing and hit testing share these so the two
+/// cannot drift apart: a button that moves but stays clickable where it used
+/// to be is the kind of fault nobody notices until a click misses.
+const Rect = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+
+    fn contains(self: Rect, px: f32, py: f32) bool {
+        return px >= self.x and px < self.x + self.w and py >= self.y and py < self.y + self.h;
+    }
+};
+
+// The menu's group of entries, then the Launch button below them.
+const kEntryY: f32 = 124;
+const kEntryGap: f32 = 32;
+const kLaunchY: f32 = 250;
+const kLaunchScale: f32 = kScale * 2;
+const kListStartY: f32 = 36 + kRowH + 14;
+
+fn mainEntryRect(i: usize) Rect {
+    if (i == kMainLaunch) return launchRect();
+    // Wider than the highlight, so aiming at a short word still lands.
+    const y = kEntryY + kEntryGap * @as(f32, @floatFromInt(i));
+    return .{ .x = kWindowW / 2 - 150, .y = y - 8, .w = 300, .h = kRowH + 10 };
+}
+
+fn launchRect() Rect {
+    const w = textWidth(kMainItems[kMainLaunch], kLaunchScale) + 72;
+    return .{
+        .x = kWindowW / 2 - w / 2,
+        .y = kLaunchY,
+        .w = w,
+        .h = 8 * kLaunchScale + 28,
+    };
+}
+
+/// Which row of a list sits under a point, as an index into kSettings.
+fn listRowAt(v: View, py: f32) ?usize {
+    const range = screenRange(v.screen);
+    var i = v.top;
+    var y: f32 = kListStartY;
+    while (i < range.to and i < v.top + kVisibleRows) : (i += 1) {
+        if (py >= y - 3 and py < y - 3 + kRowH and !isSection(kSettings[i])) return i;
+        y += kRowH;
+    }
+    return null;
+}
+
 fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     const cx: f32 = kWindowW / 2;
-
-    // The three list entries sit as a group, with Launch set apart below -
-    // it leaves the launcher rather than moving within it.
-    const kEntryY: f32 = 124;
-    const kEntryGap: f32 = 32;
 
     for (kMainItems[0..kMainLaunch], 0..) |label, i| {
         const y = kEntryY + kEntryGap * @as(f32, @floatFromInt(i));
@@ -684,13 +792,13 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     }
 
     // Launch: a button, centred, big enough to be the obvious thing to press.
-    const scale: f32 = kScale * 2;
+    const scale = kLaunchScale;
     const label = kMainItems[kMainLaunch];
-    const w = textWidth(label, scale);
-    const box_w = w + 72;
-    const box_h = 8 * scale + 28;
-    const box_x = cx - box_w / 2;
-    const box_y: f32 = 250;
+    const box = launchRect();
+    const box_w = box.w;
+    const box_h = box.h;
+    const box_x = box.x;
+    const box_y = box.y;
     const selected = v.cursor == kMainLaunch;
 
     // Green whether or not it is selected - it is the one action the window
@@ -715,7 +823,7 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
 
 fn drawList(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     const range = screenRange(v.screen);
-    var y: f32 = 36 + kRowH + 14;
+    var y: f32 = kListStartY;
     var i = v.top;
     while (i < range.to and i < v.top + kVisibleRows) : (i += 1) {
         const s = kSettings[i];
@@ -736,8 +844,80 @@ fn drawList(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     }
 }
 
+/// Where the modal's panel sits, and where its two answers sit inside it.
+fn modalRect() Rect {
+    return .{ .x = 70, .y = 150, .w = kWindowW - 140, .h = 190 };
+}
+
+fn modalChoiceRect(i: usize) Rect {
+    const box = modalRect();
+    const w: f32 = 150;
+    const gap: f32 = 30;
+    const total = w * 2 + gap;
+    const x = box.x + (box.w - total) / 2 + (w + gap) * @as(f32, @floatFromInt(i));
+    return .{ .x = x, .y = box.y + box.h - 66, .w = w, .h = kRowH + 16 };
+}
+
+fn drawModal(renderer: *c.SDL_Renderer, v: View) void {
+    const box = modalRect();
+    const cx = box.x + box.w / 2;
+
+    // A frame paints its own interior, which is what blanks the menu behind.
+    drawFrame(renderer, box.x, box.y, box.w, box.h);
+
+    switch (v.modal) {
+        .quit => {
+            drawTextCentered(renderer, cx, box.y + 34, kColorSelect, "LEAVE THE LAUNCHER?", kScale);
+            if (v.dirty)
+                drawTextCentered(renderer, cx, box.y + 34 + kRowH, kColorWarn, "UNSAVED CHANGES WILL BE LOST", kScale);
+
+            for (kQuitChoices, 0..) |label, i| {
+                const r = modalChoiceRect(i);
+                const selected = i == v.quit_choice;
+                if (selected) fillRect(renderer, r.x, r.y, r.w, r.h, kColorRowHi);
+                drawOutline(renderer, r.x, r.y, r.w, r.h, 2, if (selected) kColorFrameHi else kColorFrameLo);
+                drawTextCentered(renderer, r.x + r.w / 2, r.y + 8, if (selected) kColorSelect else kColorText, label, kScale);
+            }
+        },
+        .rom => {
+            drawTextCentered(renderer, cx, box.y + 26, kColorSelect, "DROP A ROM ON THIS WINDOW", kScale);
+            drawTextCentered(renderer, cx, box.y + 26 + kRowH, kColorTextDim, "ANY .SFC FILE - THE NAME DOES", kScale);
+            drawTextCentered(renderer, cx, box.y + 26 + kRowH * 2, kColorTextDim, "NOT MATTER, IT IS CHECKED", kScale);
+
+            // Offer the one already sitting beside the game, if there is one.
+            if (g_rom_path != null) {
+                drawTextCentered(renderer, cx, box.y + 120, kColorText, "OR PRESS A/ENTER TO USE", kScale);
+                drawTextCentered(renderer, cx, box.y + 120 + kRowH, kColorValue, kRomPath, kScale);
+            } else {
+                drawTextCentered(renderer, cx, box.y + 130, kColorTextDim, "B/ESC TO CANCEL", kScale);
+            }
+        },
+        .none => {},
+    }
+}
+
 fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
     const footer_y: f32 = kWindowH - 32 - kRowH * 2 - 6;
+
+    // While a question is up the keys mean something else, so say that
+    // instead of the screen underneath's hints.
+    if (v.modal != .none) {
+        switch (v.modal) {
+            .quit => {
+                drawText(renderer, 40, footer_y, kColorTextDim, "LEFT/RIGHT CHOOSE");
+                drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "A/ENTER CONFIRM   B/ESC CANCEL");
+            },
+            .rom => {
+                drawText(renderer, 40, footer_y, kColorTextDim, "DROP A FILE ON THE WINDOW");
+                drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "B/ESC CANCEL");
+            },
+            .none => {},
+        }
+        if (v.status.len != 0)
+            drawText(renderer, 40, footer_y - kRowH, kColorSection, v.status);
+        return;
+    }
+
     switch (v.screen) {
         .main => {
             drawText(renderer, 40, footer_y, kColorTextDim, "SELECT A/ENTER   SAVE X/S");
@@ -877,6 +1057,16 @@ fn reportPads() void {
         const kind = c.SDL_GetGamepadType(pad);
         const real = c.SDL_GetRealGamepadType(pad);
         std.debug.print("{s}  (type {d}, real type {d})\n", .{ name, kind, real });
+        std.debug.print("  axes: LEFTX={d} LEFTY={d} RIGHTX={d} RIGHTY={d}\n", .{
+            c.SDL_GetGamepadAxis(pad, c.SDL_GAMEPAD_AXIS_LEFTX),
+            c.SDL_GetGamepadAxis(pad, c.SDL_GAMEPAD_AXIS_LEFTY),
+            c.SDL_GetGamepadAxis(pad, c.SDL_GAMEPAD_AXIS_RIGHTX),
+            c.SDL_GetGamepadAxis(pad, c.SDL_GAMEPAD_AXIS_RIGHTY),
+        });
+        std.debug.print("  has LEFTX={} LEFTY={}\n", .{
+            c.SDL_GamepadHasAxis(pad, c.SDL_GAMEPAD_AXIS_LEFTX),
+            c.SDL_GamepadHasAxis(pad, c.SDL_GAMEPAD_AXIS_LEFTY),
+        });
 
         for ([_]struct { pos: []const u8, button: c_int }{
             .{ .pos = "south", .button = c.SDL_GAMEPAD_BUTTON_SOUTH },
@@ -978,6 +1168,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var vrepeat = Repeat{};
     var hrepeat = Repeat{};
+    var modal: Modal = .none;
+    var quit_choice: usize = kQuitStay;
+    var held = Held{};
 
     var screen: Screen = .main;
     var main_cursor: usize = 0;
@@ -1002,6 +1195,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
         // counts; the poll below only decides when a held direction repeats.
         var tap_v: i32 = 0;
         var tap_h: i32 = 0;
+        var hover_x: f32 = 0;
+        var hover_y: f32 = 0;
+        var hovered = false;
+        var clicked = false;
+        var wheel: f32 = 0;
 
         while (c.SDL_PollEvent(&event)) {
             switch (event.type) {
@@ -1014,29 +1212,61 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 c.SDL_EVENT_DROP_FILE => {
                     if (event.drop.data) |path| {
                         status = "CHECKING ROM...";
-                        drawScreen(renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets));
+                        drawScreen(renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice));
                         status = buildAssetsFromDrop(alloc, path);
                         assets = checkAssets(alloc);
+                        // A drop that worked answers the question; one that
+                        // did not leaves it up so another can be tried.
+                        if (assets == .verified) modal = .none;
                     }
                 },
 
-                c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
-                    c.SDLK_ESCAPE => back = true,
-                    c.SDLK_RETURN, c.SDLK_SPACE => confirm = true,
-                    c.SDLK_S => save = true,
-                    c.SDLK_B => build = true,
-                    c.SDLK_UP => tap_v -= 1,
-                    c.SDLK_DOWN => tap_v += 1,
-                    c.SDLK_LEFT => tap_h -= 1,
-                    c.SDLK_RIGHT => tap_h += 1,
-                    else => {},
+                // The mouse drives the same cursor the keys do, so nothing
+                // needs its own notion of what is selected.
+                c.SDL_EVENT_MOUSE_MOTION => {
+                    hover_x = event.motion.x;
+                    hover_y = event.motion.y;
+                    hovered = true;
                 },
+                c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                    hover_x = event.button.x;
+                    hover_y = event.button.y;
+                    hovered = true;
+                    if (event.button.button == c.SDL_BUTTON_LEFT) clicked = true;
+                    if (event.button.button == c.SDL_BUTTON_RIGHT) back = true;
+                },
+                c.SDL_EVENT_MOUSE_WHEEL => wheel += event.wheel.y,
+
+                // Anything that stops the window seeing releases has to
+                // clear what it thinks is held, or a direction sticks on.
+                c.SDL_EVENT_WINDOW_FOCUS_LOST => held = .{},
+
+                c.SDL_EVENT_KEY_DOWN => {
+                    if (held.set(event.key.key, true)) {
+                        switch (event.key.key) {
+                            c.SDLK_UP => tap_v -= 1,
+                            c.SDLK_DOWN => tap_v += 1,
+                            c.SDLK_LEFT => tap_h -= 1,
+                            c.SDLK_RIGHT => tap_h += 1,
+                            else => {},
+                        }
+                    } else switch (event.key.key) {
+                        c.SDLK_ESCAPE => back = true,
+                        c.SDLK_RETURN, c.SDLK_SPACE => confirm = true,
+                        c.SDLK_S => save = true,
+                        c.SDLK_B => build = true,
+                        else => {},
+                    }
+                },
+                c.SDL_EVENT_KEY_UP => _ = held.set(event.key.key, false),
+                c.SDL_EVENT_GAMEPAD_BUTTON_UP => _ = held.setButton(event.gbutton.button, false),
 
                 // A is select, B is back, X saves. Directions are polled
                 // rather than taken from events, so holding one repeats.
                 c.SDL_EVENT_GAMEPAD_BUTTON_DOWN => {
                     // The d-pad and Start mean the same thing everywhere, so
                     // they go by position; the face buttons go by label.
+                    _ = held.setButton(event.gbutton.button, true);
                     switch (event.gbutton.button) {
                         c.SDL_GAMEPAD_BUTTON_START => confirm = true,
                         c.SDL_GAMEPAD_BUTTON_DPAD_UP => tap_v -= 1,
@@ -1058,15 +1288,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
         // Directions come from the current state of every input rather than
         // from key events, so the keyboard and the pads behave alike and a
         // held direction repeats.
-        const keys = c.SDL_GetKeyboardState(null);
-        var vdir: i32 = 0;
-        var hdir: i32 = 0;
-        if (keys[c.SDL_SCANCODE_UP]) vdir -= 1;
-        if (keys[c.SDL_SCANCODE_DOWN]) vdir += 1;
-        if (keys[c.SDL_SCANCODE_LEFT]) hdir -= 1;
-        if (keys[c.SDL_SCANCODE_RIGHT]) hdir += 1;
-        vdir = std.math.sign(vdir + pads.direction(.vertical));
-        hdir = std.math.sign(hdir + pads.direction(.horizontal));
+        const vdir = std.math.sign(held.vertical() + pads.stickDirection(.vertical));
+        const hdir = std.math.sign(held.horizontal() + pads.stickDirection(.horizontal));
 
         var move: i32 = 0;
         var adjust: i32 = 0;
@@ -1083,25 +1306,89 @@ pub fn main(init: std.process.Init.Minimal) !void {
             adjust = hrepeat.step(hdir, now);
         }
 
-        if (back) {
-            // Back steps out of a list, and quits from the menu.
-            if (screen == .main) running = false else screen = .main;
-            status = "";
+        // Saving works from any screen, which is the whole point of it being
+        // on the menu as well as on a key.
+        if (save) {
+            if (!dirty) {
+                status = "NO CHANGES TO SAVE";
+            } else {
+                ini.save("zelda3.ini") catch |err| {
+                    std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
+                    status = "COULD NOT SAVE";
+                    continue;
+                };
+                dirty = false;
+                status = "SAVED";
+            }
         }
 
-        if (save and !dirty) {
-            status = "NO CHANGES TO SAVE";
-        } else if (save) {
-            ini.save("zelda3.ini") catch |err| {
-                std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
-                status = "COULD NOT SAVE";
-                continue;
-            };
-            dirty = false;
-            status = "SAVED";
-        }
+        // A question on top of the screen takes the input until answered.
+        if (modal != .none) {
+            switch (modal) {
+                .quit => {
+                    if (hovered) {
+                        for (0..kQuitChoices.len) |i| {
+                            if (modalChoiceRect(i).contains(hover_x, hover_y)) quit_choice = i;
+                        }
+                    }
+                    const step = if (adjust != 0) adjust else move;
+                    if (step != 0) quit_choice = 1 - quit_choice;
 
-        if (screen == .main) {
+                    var over_choice = false;
+                    if (clicked) {
+                        for (0..kQuitChoices.len) |i| {
+                            if (modalChoiceRect(i).contains(hover_x, hover_y)) {
+                                quit_choice = i;
+                                over_choice = true;
+                            }
+                        }
+                    }
+                    if (confirm or over_choice) {
+                        if (quit_choice == kQuitStay) modal = .none else running = false;
+                    }
+                    if (back) modal = .none;
+                },
+                .rom => {
+                    // Enter takes the ROM already sitting beside the game,
+                    // when there is one; otherwise only a drop will do.
+                    if (confirm or (clicked and modalRect().contains(hover_x, hover_y))) {
+                        if (g_rom_path != null) {
+                            build = true;
+                            modal = .none;
+                        } else {
+                            status = "DRAG A .SFC ROM HERE FIRST";
+                        }
+                    }
+                    if (back) modal = .none;
+                },
+                .none => {},
+            }
+        } else if (screen == .main) {
+            if (back) {
+                // Ask rather than closing: B sits next to A on a pad, and
+                // this window is one press from gone.
+                modal = .quit;
+                quit_choice = kQuitStay;
+                status = "";
+            }
+
+            // The pointer drives the same cursor the keys do.
+            if (hovered) {
+                for (0..kMainItems.len) |i| {
+                    if (mainEntryRect(i).contains(hover_x, hover_y)) main_cursor = i;
+                }
+            }
+            if (clicked) {
+                var over = false;
+                for (0..kMainItems.len) |i| {
+                    if (mainEntryRect(i).contains(hover_x, hover_y)) {
+                        main_cursor = i;
+                        over = true;
+                    }
+                }
+                if (over) confirm = true;
+            }
+
             if (move != 0) {
                 const n: i32 = @intCast(kMainItems.len);
                 var at: i32 = @intCast(main_cursor);
@@ -1120,7 +1407,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         status = "";
                     },
                     kMainSave => save = true,
-                    kMainBuild => build = true,
+                    kMainBuild => {
+                        modal = .rom;
+                        status = "";
+                    },
                     else => {
                         ini.save("zelda3.ini") catch |err| {
                             std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
@@ -1129,14 +1419,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         };
                         dirty = false;
 
-                        // The game cannot start without its assets, so build
-                        // them rather than letting it fail.
+                        // The game cannot start without its assets, so ask
+                        // for a ROM rather than letting it fail.
                         if (assets == .missing) {
-                            if (g_rom_path == null) {
-                                status = "DRAG A .SFC ROM HERE FIRST";
-                                continue;
-                            }
-                            build = true;
+                            modal = .rom;
                         } else {
                             launch = true;
                             running = false;
@@ -1145,10 +1431,30 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 }
             }
         } else {
+            if (back) {
+                screen = .main;
+                status = "";
+            }
+
             // The two lists behave the same; only their range differs.
-            if (confirm) adjust = 1;
             const li = listIndex(screen);
             const range = screenRange(screen);
+
+            if (hovered) {
+                const v = viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice);
+                if (listRowAt(v, hover_y)) |row| list_cursor[li] = row;
+            }
+            if (clicked) {
+                const v = viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice);
+                if (listRowAt(v, hover_y)) |row| {
+                    list_cursor[li] = row;
+                    confirm = true;
+                }
+            }
+            // The wheel scrolls the selection, which drags the window with it.
+            if (wheel != 0) move = if (wheel > 0) -1 else 1;
+
+            if (confirm) adjust = 1;
 
             if (move != 0) {
                 // Step over the section headings.
@@ -1187,7 +1493,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             // Draw a frame first, so the window does not simply freeze for
             // the second or two this takes.
             status = "BUILDING ASSETS...";
-            drawScreen(renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets));
+            drawScreen(renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice));
             status = buildAssets(alloc);
             assets = checkAssets(alloc);
 
@@ -1198,7 +1504,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             }
         }
 
-        drawScreen(renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets));
+        drawScreen(renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice));
         c.SDL_Delay(16);
     }
 
@@ -1393,6 +1699,16 @@ test "the on-screen strings fit the window" {
         "THE LEGEND OF ZELDA",
         "A LINK TO THE PAST",
         "LAUNCHER",
+        "LEFT/RIGHT CHOOSE",
+        "A/ENTER CONFIRM   B/ESC CANCEL",
+        "DROP A FILE ON THE WINDOW",
+        "B/ESC CANCEL",
+        "LEAVE THE LAUNCHER?",
+        "UNSAVED CHANGES WILL BE LOST",
+        "DROP A ROM ON THIS WINDOW",
+        "ANY .SFC FILE - THE NAME DOES",
+        "NOT MATTER, IT IS CHECKED",
+        "OR PRESS A/ENTER TO USE",
         "SETTINGS",
         "FEATURES",
         "ESC BACK",
@@ -1529,4 +1845,74 @@ test "cycling a named choice writes the value, not the name" {
         const next = cycle(alloc, &buf, setting, opts.values[0], 1).?;
         try testing.expectEqualStrings(opts.values[1], next);
     }
+}
+
+test "clickable areas line up with what is drawn" {
+    // Hit testing and drawing share their geometry, but they can still be
+    // wrong together, so check the shape of it: rows in order, no overlaps,
+    // and the launch button below the entries rather than on top of one.
+    var prev = mainEntryRect(0);
+    try testing.expect(prev.w > 0 and prev.h > 0);
+
+    for (1..kMainItems.len) |i| {
+        const r = mainEntryRect(i);
+        testing.expect(r.y >= prev.y + prev.h) catch |err| {
+            std.debug.print("entry {d} at y={d} overlaps the one above ending at {d}\n", .{ i, r.y, prev.y + prev.h });
+            return err;
+        };
+        prev = r;
+    }
+
+    // Everything stays inside the frame.
+    for (0..kMainItems.len) |i| {
+        const r = mainEntryRect(i);
+        try testing.expect(r.x >= 16 and r.x + r.w <= kWindowW - 16);
+        try testing.expect(r.y >= 16 and r.y + r.h <= kWindowH - 16);
+    }
+}
+
+test "the modal's answers sit inside it and apart from each other" {
+    const box = modalRect();
+    const a = modalChoiceRect(0);
+    const b = modalChoiceRect(1);
+
+    for ([_]Rect{ a, b }) |r| {
+        try testing.expect(r.x >= box.x and r.x + r.w <= box.x + box.w);
+        try testing.expect(r.y >= box.y and r.y + r.h <= box.y + box.h);
+    }
+    // Apart, and in the order they are drawn.
+    try testing.expect(a.x + a.w < b.x);
+
+    // A click on one is not a click on the other.
+    try testing.expect(a.contains(a.x + a.w / 2, a.y + a.h / 2));
+    try testing.expect(!b.contains(a.x + a.w / 2, a.y + a.h / 2));
+}
+
+test "a click on a list row picks that row" {
+    const v = View{
+        .screen = .settings,
+        .cursor = 0,
+        .top = 0,
+        .status = "",
+        .dirty = false,
+        .assets = .verified,
+    };
+
+    // Walk down the drawn rows and check each y maps back to its own entry,
+    // skipping the headings, which are not selectable.
+    var y: f32 = kListStartY;
+    var i: usize = 0;
+    while (i < kVisibleRows and i < screenRange(.settings).to) : (i += 1) {
+        const hit = listRowAt(v, y + 2);
+        if (isSection(kSettings[i])) {
+            try testing.expect(hit == null);
+        } else {
+            try testing.expectEqual(@as(?usize, i), hit);
+        }
+        y += kRowH;
+    }
+
+    // Above and below the list is nothing at all.
+    try testing.expect(listRowAt(v, kListStartY - 20) == null);
+    try testing.expect(listRowAt(v, kListStartY + kRowH * kVisibleRows + 40) == null);
 }
