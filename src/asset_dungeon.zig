@@ -157,6 +157,97 @@ pub fn buildRooms(alloc: std.mem.Allocator, rom: Rom) !Rooms {
     };
 }
 
+/// Appends `little` to `big`, reusing any overlap: if `big` already ends
+/// with a prefix of `little`, only the remainder is added. Returns where
+/// `little` starts. This is append_scan_bytes, and it is what lets the room
+/// header table be smaller than 320 times fourteen bytes.
+fn appendScanBytes(alloc: std.mem.Allocator, big: *std.ArrayList(u8), little: []const u8) !u16 {
+    var n: usize = @min(little.len, big.items.len);
+    while (true) : (n -= 1) {
+        if (n == 0 or std.mem.eql(u8, big.items[big.items.len - n ..], little[0..n])) {
+            const offset = big.items.len - n;
+            try big.appendSlice(alloc, little[n..]);
+            return @intCast(offset);
+        }
+    }
+}
+
+pub const Headers = struct {
+    data: []u8,
+    offsets: [kRoomCount]u16,
+
+    pub fn deinit(self: *Headers, alloc: std.mem.Allocator) void {
+        alloc.free(self.data);
+        self.* = undefined;
+    }
+};
+
+/// Every room's fourteen byte header, overlapped so that rooms sharing a
+/// tail share the bytes.
+///
+/// The header is copied out of the ROM except for two bytes that the Python
+/// takes apart into fields and reassembles, narrowing them on the way.
+pub fn buildHeaders(alloc: std.mem.Allocator, rom: Rom) !Headers {
+    var data: std.ArrayList(u8) = .empty;
+    errdefer data.deinit(alloc);
+    var offsets: [kRoomCount]u16 = @splat(0);
+
+    for (0..kRoomCount) |i| {
+        var hp: u32 = 0x40000 | @as(u32, rom.getWord(0x04f502 + @as(u32, @intCast(i)) * 2));
+        // One room points at a slot that is not a header; the Python sends it
+        // somewhere harmlessly full of zeros instead.
+        if (hp == 0x4ffef) hp = 0x82edc5;
+
+        var h: [14]u8 = undefined;
+        for (&h, 0..) |*b, k| b.* = rom.getByte(hp + @as(u32, @intCast(k)));
+        // Byte 0 splits into a background mode, a collision type and a
+        // lights-out flag, which between them miss bit 1. Byte 8 carries
+        // only the last staircase's destination plane in its low two bits;
+        // the rest of it is not part of the header the game reads.
+        h[0] &= 0xfd;
+        h[8] &= 0x03;
+
+        offsets[i] = try appendScanBytes(alloc, &data, &h);
+    }
+    return .{ .data = try data.toOwnedSlice(alloc), .offsets = offsets };
+}
+
+/// Chest contents, regrouped from the ROM's order into room order. The top
+/// bit of the room word marks a big chest and is carried through.
+pub fn buildChests(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+
+    for (0..kRoomCount) |room| {
+        for (0..504 / 3) |k| {
+            const ea = 0x81e96e + @as(u32, @intCast(k)) * 3;
+            const w = rom.getWord(ea);
+            if ((w & 0x7fff) != room) continue;
+            const big = (w & 0x8000) != 0;
+            try out.append(alloc, @intCast(room & 0xff));
+            try out.append(alloc, @as(u8, @intCast(room >> 8)) | (if (big) @as(u8, 0x80) else 0));
+            try out.append(alloc, rom.getByte(ea + 2));
+        }
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+/// Rooms whose pits hurt the player, as a sorted list of room numbers.
+pub fn buildPitsHurtPlayer(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
+    var out: std.ArrayList(u16) = .empty;
+    defer out.deinit(alloc);
+
+    for (0..kRoomCount) |room| {
+        for (0..57) |k| {
+            if (rom.getWord(0x80990c + @as(u32, @intCast(k)) * 2) == room) {
+                try out.append(alloc, @intCast(room));
+                break;
+            }
+        }
+    }
+    return alloc.dupe(u8, std.mem.sliceAsBytes(out.items));
+}
+
 const testing = std.testing;
 const fileio = @import("fileio.zig");
 
@@ -201,4 +292,30 @@ test "the dungeon rooms match the reference asset file" {
     try testing.expectEqualSlices(u8, contents.find("kDungeonRoom").?, rooms.data);
     try testing.expectEqualSlices(u8, contents.find("kDungeonRoomOffs").?, std.mem.sliceAsBytes(rooms.offsets[0..]));
     try testing.expectEqualSlices(u8, contents.find("kDungeonRoomDoorOffs").?, std.mem.sliceAsBytes(rooms.door_offsets[0..]));
+}
+
+test "the dungeon headers, chests and pit rooms match the reference" {
+    const alloc = testing.allocator;
+    if (!fileio.exists("zelda3.sfc") or !fileio.exists("zig-out/bin/zelda3_assets.dat"))
+        return error.SkipZigTest;
+
+    var rom = try Rom.load(alloc, "zelda3.sfc");
+    defer rom.deinit();
+    const dat = try fileio.readWholeFile(alloc, "zig-out/bin/zelda3_assets.dat");
+    defer alloc.free(dat);
+    var contents = try pack.read(alloc, dat);
+    defer contents.deinit(alloc);
+
+    var headers = try buildHeaders(alloc, rom);
+    defer headers.deinit(alloc);
+    try testing.expectEqualSlices(u8, contents.find("kDungeonRoomHeaders").?, headers.data);
+    try testing.expectEqualSlices(u8, contents.find("kDungeonRoomHeadersOffs").?, std.mem.sliceAsBytes(headers.offsets[0..]));
+
+    const chests = try buildChests(alloc, rom);
+    defer alloc.free(chests);
+    try testing.expectEqualSlices(u8, contents.find("kDungeonRoomChests").?, chests);
+
+    const pits = try buildPitsHurtPlayer(alloc, rom);
+    defer alloc.free(pits);
+    try testing.expectEqualSlices(u8, contents.find("kDungeonPitsHurtPlayer").?, pits);
 }
