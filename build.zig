@@ -81,6 +81,18 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests for the ported Zig modules");
     test_step.dependOn(&b.addRunArtifact(tests).step);
 
+    const launcher_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/launcher.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    addSdlIncludes(b, launcher_tests.root_module);
+    linkSdlLibs(b, launcher_tests.root_module);
+    test_step.dependOn(&b.addRunArtifact(launcher_tests).step);
+
     // Every module that sees SDL headers or symbols, C and Zig alike.
     for ([_]*std.Build.Module{ exe.root_module, zig_obj.root_module, tests.root_module }) |m| {
         addSdlIncludes(b, m);
@@ -93,6 +105,27 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .macos) {
         exe.root_module.linkFramework("OpenGL", .{});
     }
+
+    // The launcher is its own binary: it edits zelda3.ini and starts the game,
+    // so it stays clear of the game's own startup path.
+    const launcher = b.addExecutable(.{
+        .name = "zelda3-launcher",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/launcher.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    addSdlIncludes(b, launcher.root_module);
+    linkSdlLibs(b, launcher.root_module);
+    b.installArtifact(launcher);
+
+    const launcher_run = b.addRunArtifact(launcher);
+    launcher_run.step.dependOn(b.getInstallStep());
+    if (b.args) |args| launcher_run.addArgs(args);
+    const launcher_step = b.step("launcher", "Build and run the launcher");
+    launcher_step.dependOn(&launcher_run.step);
 
     b.installArtifact(exe);
 
