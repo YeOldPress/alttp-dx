@@ -93,6 +93,17 @@ pub fn build(b: *std.Build) void {
     linkSdlLibs(b, launcher_tests.root_module);
     test_step.dependOn(&b.addRunArtifact(launcher_tests).step);
 
+    // The asset tooling needs no SDL; it is plain byte wrangling.
+    const asset_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/asset_pack.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(asset_tests).step);
+
     // Every module that sees SDL headers or symbols, C and Zig alike.
     for ([_]*std.Build.Module{ exe.root_module, zig_obj.root_module, tests.root_module }) |m| {
         addSdlIncludes(b, m);

@@ -8,41 +8,13 @@
 //! Drawing uses SDL3's built in 8x8 font (SDL_RenderDebugText), so the launcher
 //! needs no font file and no toolkit - just the SDL the game already links.
 const std = @import("std");
+const fileio = @import("fileio.zig");
 
 const c = @cImport({
     // translate-c cannot parse arm_neon.h, which SDL pulls in on ARM targets.
     @cDefine("SDL_DISABLE_NEON", "1");
     @cInclude("SDL3/SDL.h");
 });
-
-extern fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
-extern fn fclose(f: *anyopaque) c_int;
-extern fn fread(ptr: *anyopaque, size: usize, n: usize, f: *anyopaque) usize;
-extern fn fwrite(ptr: *const anyopaque, size: usize, n: usize, f: *anyopaque) usize;
-extern fn fseek(f: *anyopaque, off: c_long, whence: c_int) c_int;
-extern fn ftell(f: *anyopaque) c_long;
-extern fn remove(path: [*:0]const u8) c_int;
-
-/// Reads a whole file. The rest of this port talks to stdio directly rather
-/// than through std.Io, so the launcher matches it.
-fn readWholeFile(alloc: std.mem.Allocator, path: [*:0]const u8) ![]u8 {
-    const f = fopen(path, "rb") orelse return error.FileNotFound;
-    defer _ = fclose(f);
-    if (fseek(f, 0, 2) != 0) return error.SeekFailed; // SEEK_END
-    const len = ftell(f);
-    if (len < 0) return error.SeekFailed;
-    if (fseek(f, 0, 0) != 0) return error.SeekFailed; // SEEK_SET
-    const buf = try alloc.alloc(u8, @intCast(len));
-    errdefer alloc.free(buf);
-    if (buf.len != 0 and fread(buf.ptr, 1, buf.len, f) != buf.len) return error.ReadFailed;
-    return buf;
-}
-
-fn writeWholeFile(path: [*:0]const u8, data: []const u8) !void {
-    const f = fopen(path, "wb") orelse return error.OpenFailed;
-    defer _ = fclose(f);
-    if (data.len != 0 and fwrite(data.ptr, 1, data.len, f) != data.len) return error.WriteFailed;
-}
 
 /// The game binary, expected next to the launcher.
 const kGameExe = "./zelda3";
@@ -160,7 +132,7 @@ const Ini = struct {
     crlf: bool,
 
     fn load(alloc: std.mem.Allocator, path: [*:0]const u8) !Ini {
-        const text = try readWholeFile(alloc, path);
+        const text = try fileio.readWholeFile(alloc, path);
         var self = Ini{
             .alloc = alloc,
             .text = text,
@@ -236,7 +208,7 @@ const Ini = struct {
             if (!written) try out.appendSlice(self.alloc, line);
             if (idx + 1 < self.lines.items.len) try out.appendSlice(self.alloc, eol);
         }
-        try writeWholeFile(path, out.items);
+        try fileio.writeWholeFile(path, out.items);
     }
 };
 
@@ -517,14 +489,14 @@ test "an untouched ini round trips byte for byte" {
     const src =
         "# a comment\r\n[Graphics]\r\n# another\r\nWindowScale = 3\r\n\r\nLinearFiltering = 0\r\n";
     const path = "zig-cache-roundtrip.ini";
-    try writeWholeFile(path, src);
-    defer _ = remove(path);
+    try fileio.writeWholeFile(path, src);
+    defer _ = fileio.remove(path);
 
     var ini = try Ini.load(testing.allocator, path);
     defer ini.deinit();
     try ini.save(path);
 
-    const back = try readWholeFile(testing.allocator, path);
+    const back = try fileio.readWholeFile(testing.allocator, path);
     defer testing.allocator.free(back);
     try testing.expectEqualStrings(src, back);
 }
@@ -533,8 +505,8 @@ test "changing a value leaves every other line alone" {
     const src =
         "# keep me\n[Graphics]\n# and me\nWindowScale = 3\nLinearFiltering = 0\n";
     const path = "zig-cache-edit.ini";
-    try writeWholeFile(path, src);
-    defer _ = remove(path);
+    try fileio.writeWholeFile(path, src);
+    defer _ = fileio.remove(path);
 
     var ini = try Ini.load(testing.allocator, path);
     defer ini.deinit();
@@ -550,7 +522,7 @@ test "changing a value leaves every other line alone" {
     try ini.set(si, next);
     try ini.save(path);
 
-    const back = try readWholeFile(testing.allocator, path);
+    const back = try fileio.readWholeFile(testing.allocator, path);
     defer testing.allocator.free(back);
     try testing.expectEqualStrings(
         "# keep me\n[Graphics]\n# and me\nWindowScale = 4\nLinearFiltering = 0\n",
@@ -606,17 +578,17 @@ test "the shipped ini survives a save unchanged" {
     // The real file, with its CRLF endings and every comment, is what a player
     // stands to lose if the writer is wrong. Save it to a scratch path and
     // compare rather than writing over the original.
-    const original = try readWholeFile(testing.allocator, "zelda3.ini");
+    const original = try fileio.readWholeFile(testing.allocator, "zelda3.ini");
     defer testing.allocator.free(original);
 
     var ini = try Ini.load(testing.allocator, "zelda3.ini");
     defer ini.deinit();
 
     const scratch = "zig-cache-shipped.ini";
-    defer _ = remove(scratch);
+    defer _ = fileio.remove(scratch);
     try ini.save(scratch);
 
-    const back = try readWholeFile(testing.allocator, scratch);
+    const back = try fileio.readWholeFile(testing.allocator, scratch);
     defer testing.allocator.free(back);
     try testing.expectEqualStrings(original, back);
 }
