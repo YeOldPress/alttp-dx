@@ -155,6 +155,43 @@ pub const kMiscAssets = [_]MiscAsset{
     .{ .name = "kMap32ToMap16_2", .kind = .uint8, .addr = 0x848000, .count = 2218 * 6 },
     .{ .name = "kMap32ToMap16_3", .kind = .uint8, .addr = 0x84b400, .count = 2218 * 6 },
 
+    // Entrances and starting points. Every field is its own array indexed by
+    // entrance number, and the Python emits them in that order, so each one
+    // is the ROM table as it stands. Door settings and the starting points'
+    // two odd fields are built separately below.
+    .{ .name = "kEntranceData_rooms", .kind = .uint16, .addr = 0x82c813, .count = 133, .words = true },
+    .{ .name = "kEntranceData_relativeCoords", .kind = .uint8, .addr = 0x82c91d, .count = 133 * 8 },
+    .{ .name = "kEntranceData_scrollX", .kind = .uint16, .addr = 0x82cd45, .count = 133, .words = true },
+    .{ .name = "kEntranceData_scrollY", .kind = .uint16, .addr = 0x82ce4f, .count = 133, .words = true },
+    .{ .name = "kEntranceData_playerX", .kind = .uint16, .addr = 0x82d063, .count = 133, .words = true },
+    .{ .name = "kEntranceData_playerY", .kind = .uint16, .addr = 0x82cf59, .count = 133, .words = true },
+    .{ .name = "kEntranceData_cameraX", .kind = .uint16, .addr = 0x82d277, .count = 133, .words = true },
+    .{ .name = "kEntranceData_cameraY", .kind = .uint16, .addr = 0x82d16d, .count = 133, .words = true },
+    .{ .name = "kEntranceData_blockset", .kind = .uint8, .addr = 0x82d381, .count = 133 },
+    .{ .name = "kEntranceData_floor", .kind = .int8, .addr = 0x82d406, .count = 133 },
+    .{ .name = "kEntranceData_palace", .kind = .int8, .addr = 0x82d48b, .count = 133 },
+    .{ .name = "kEntranceData_doorwayOrientation", .kind = .uint8, .addr = 0x82d510, .count = 133 },
+    .{ .name = "kEntranceData_startingBg", .kind = .uint8, .addr = 0x82d595, .count = 133 },
+    .{ .name = "kEntranceData_quadrant1", .kind = .uint8, .addr = 0x82d61a, .count = 133 },
+    .{ .name = "kEntranceData_quadrant2", .kind = .uint8, .addr = 0x82d69f, .count = 133 },
+    .{ .name = "kEntranceData_musicTrack", .kind = .uint8, .addr = 0x82d82e, .count = 133 },
+
+    .{ .name = "kStartingPoint_rooms", .kind = .uint16, .addr = 0x82db6e, .count = 7, .words = true },
+    .{ .name = "kStartingPoint_relativeCoords", .kind = .uint8, .addr = 0x82db7c, .count = 7 * 8 },
+    .{ .name = "kStartingPoint_scrollX", .kind = .uint16, .addr = 0x82dbb4, .count = 7, .words = true },
+    .{ .name = "kStartingPoint_scrollY", .kind = .uint16, .addr = 0x82dbc2, .count = 7, .words = true },
+    .{ .name = "kStartingPoint_playerX", .kind = .uint16, .addr = 0x82dbde, .count = 7, .words = true },
+    .{ .name = "kStartingPoint_playerY", .kind = .uint16, .addr = 0x82dbd0, .count = 7, .words = true },
+    .{ .name = "kStartingPoint_cameraX", .kind = .uint16, .addr = 0x82dbfa, .count = 7, .words = true },
+    .{ .name = "kStartingPoint_cameraY", .kind = .uint16, .addr = 0x82dbec, .count = 7, .words = true },
+    .{ .name = "kStartingPoint_blockset", .kind = .uint8, .addr = 0x82dc08, .count = 7 },
+    .{ .name = "kStartingPoint_floor", .kind = .int8, .addr = 0x82dc0f, .count = 7 },
+    .{ .name = "kStartingPoint_palace", .kind = .int8, .addr = 0x82dc16, .count = 7 },
+    .{ .name = "kStartingPoint_startingBg", .kind = .uint8, .addr = 0x82dc1d, .count = 7 },
+    .{ .name = "kStartingPoint_quadrant1", .kind = .uint8, .addr = 0x82dc24, .count = 7 },
+    .{ .name = "kStartingPoint_quadrant2", .kind = .uint8, .addr = 0x82dc2b, .count = 7 },
+    .{ .name = "kStartingPoint_musicTrack", .kind = .uint8, .addr = 0x82dc4e, .count = 7 },
+
     // Dungeon tile attributes and the movable block and torch tables, which
     // print_dungeon_map emits alongside the data it builds from YAML.
     .{ .name = "kDungAttrsForTile_Offs", .kind = .uint16, .addr = 0x8e9000, .count = 21, .words = true },
@@ -239,6 +276,27 @@ fn bgTilemapLength(rom: Rom, start: u32) u32 {
 pub fn buildBgTilemap(alloc: std.mem.Allocator, rom: Rom, index: usize) ![]u8 {
     const start = kBgTilemapPtrs[index];
     return rom.getBytes(alloc, start, bgTilemapLength(rom, start));
+}
+
+/// House exit doors. The stored word is taken apart into a kind and a
+/// position and put back together, which drops the two bits that neither
+/// field covers - so this is not a copy of the table.
+pub fn buildDoorSettings(alloc: std.mem.Allocator, rom: Rom, addr: u32, count: usize) ![]u8 {
+    const out = try alloc.alloc(u16, count);
+    defer alloc.free(out);
+    for (out, 0..) |*v, i| {
+        const x = rom.getWord(addr + @as(u32, @intCast(i)) * 2);
+        v.* = if (x == 0 or x == 0xffff) x else x & 0xbffe;
+    }
+    return alloc.dupe(u8, std.mem.sliceAsBytes(out));
+}
+
+/// A starting point records which entrance it belongs to, stored as a word
+/// but emitted as a byte.
+pub fn buildStartingPointEntrance(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
+    const out = try alloc.alloc(u8, 7);
+    for (out, 0..) |*v, i| v.* = @truncate(rom.getWord(0x82dc40 + @as(u32, @intCast(i)) * 2));
+    return out;
 }
 
 const testing = std.testing;
@@ -512,4 +570,25 @@ test {
     _ = @import("asset_overworld.zig");
     _ = @import("asset_dungeon.zig");
     _ = @import("asset_dialogue.zig");
+}
+
+test "the entrance door settings and starting point fields match the reference" {
+    var f = try Fixture.open();
+    defer f.close();
+
+    const ent = try buildDoorSettings(testing.allocator, f.rom, 0x82d724, 133);
+    defer testing.allocator.free(ent);
+    try testing.expectEqualSlices(u8, f.contents.find("kEntranceData_doorSettings").?, ent);
+
+    const sp = try buildDoorSettings(testing.allocator, f.rom, 0x82dc32, 7);
+    defer testing.allocator.free(sp);
+    try testing.expectEqualSlices(u8, f.contents.find("kStartingPoint_doorSettings").?, sp);
+
+    const which = try buildStartingPointEntrance(testing.allocator, f.rom);
+    defer testing.allocator.free(which);
+    try testing.expectEqualSlices(u8, f.contents.find("kStartingPoint_entrance").?, which);
+
+    // Starting points have no doorway orientation; the field is all zero.
+    const zeros = [_]u8{0} ** 7;
+    try testing.expectEqualSlices(u8, f.contents.find("kStartingPoint_doorwayOrientation").?, &zeros);
 }
