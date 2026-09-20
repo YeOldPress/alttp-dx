@@ -4060,9 +4060,16 @@ pub export fn LinkItem_Net() callconv(.c) void {
 
     vars.link_var30d.* +%= 1;
     vars.link_delay_timer_spin_attack.* = 3;
-    vars.player_handler_timer.* = kBugNetTimers[
-        (vars.link_direction_facing.* >> 1) *% 10 +% vars.link_var30d.*
-    ];
+    // link_var30d is bumped before this lookup and only reset afterwards, so the
+    // last step of each swing indexes one past its ten-entry block - entry 40 of
+    // 40 for the final direction. The C reads past the table there; the value is
+    // dead, because that is exactly the var30d == 10 case below, which stores 0
+    // over it. Skip the read instead of reproducing it.
+    {
+        const idx: usize = (vars.link_direction_facing.* >> 1) *% 10 +% vars.link_var30d.*;
+        if (idx < kBugNetTimers.len)
+            vars.player_handler_timer.* = kBugNetTimers[idx];
+    }
 
     if (vars.link_var30d.* == 10) {
         vars.link_var30d.* = 0;
