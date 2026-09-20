@@ -248,6 +248,53 @@ pub fn buildPitsHurtPlayer(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
     return alloc.dupe(u8, std.mem.sliceAsBytes(out.items));
 }
 
+pub const Layers = struct {
+    data: []u8,
+    offsets: []u16,
+
+    pub fn deinit(self: *Layers, alloc: std.mem.Allocator) void {
+        alloc.free(self.data);
+        alloc.free(self.offsets);
+        self.* = undefined;
+    }
+};
+
+/// The default and overlay rooms: a single layer of objects each, with no
+/// door list, reached through a table of 24 bit pointers.
+pub fn buildLayerSet(alloc: std.mem.Allocator, rom: Rom, ptr_table: u32, count: usize) !Layers {
+    var data: std.ArrayList(u8) = .empty;
+    errdefer data.deinit(alloc);
+    const offsets = try alloc.alloc(u16, count);
+    errdefer alloc.free(offsets);
+
+    for (0..count) |i| {
+        const ptr = ptr_table + @as(u32, @intCast(i)) * 3;
+        var q = @as(u32, rom.getByte(ptr)) |
+            (@as(u32, rom.getByte(ptr + 1)) << 8) |
+            (@as(u32, rom.getByte(ptr + 2)) << 16);
+
+        offsets[i] = @intCast(data.items.len);
+        while (true) {
+            const w = @as(u16, rom.getByte(q)) | (@as(u16, rom.getByte(q + 1)) << 8);
+            if (w == 0xffff) {
+                try data.appendSlice(alloc, &.{ rom.getByte(q), rom.getByte(q + 1) });
+                break;
+            }
+            try data.appendSlice(alloc, &.{ rom.getByte(q), rom.getByte(q + 1), rom.getByte(q + 2) });
+            q += 3;
+        }
+    }
+    return .{ .data = try data.toOwnedSlice(alloc), .offsets = offsets };
+}
+
+pub fn buildDefaultRooms(alloc: std.mem.Allocator, rom: Rom) !Layers {
+    return buildLayerSet(alloc, rom, 0x84ef2f, 8);
+}
+
+pub fn buildOverlayRooms(alloc: std.mem.Allocator, rom: Rom) !Layers {
+    return buildLayerSet(alloc, rom, 0x84ecc0, 19);
+}
+
 const testing = std.testing;
 const fileio = @import("fileio.zig");
 
@@ -318,4 +365,27 @@ test "the dungeon headers, chests and pit rooms match the reference" {
     const pits = try buildPitsHurtPlayer(alloc, rom);
     defer alloc.free(pits);
     try testing.expectEqualSlices(u8, contents.find("kDungeonPitsHurtPlayer").?, pits);
+}
+
+test "the default and overlay rooms match the reference asset file" {
+    const alloc = testing.allocator;
+    if (!fileio.exists("zelda3.sfc") or !fileio.exists("zig-out/bin/zelda3_assets.dat"))
+        return error.SkipZigTest;
+
+    var rom = try Rom.load(alloc, "zelda3.sfc");
+    defer rom.deinit();
+    const dat = try fileio.readWholeFile(alloc, "zig-out/bin/zelda3_assets.dat");
+    defer alloc.free(dat);
+    var contents = try pack.read(alloc, dat);
+    defer contents.deinit(alloc);
+
+    var def = try buildDefaultRooms(alloc, rom);
+    defer def.deinit(alloc);
+    try testing.expectEqualSlices(u8, contents.find("kDungeonRoomDefault").?, def.data);
+    try testing.expectEqualSlices(u8, contents.find("kDungeonRoomDefaultOffs").?, std.mem.sliceAsBytes(def.offsets));
+
+    var ov = try buildOverlayRooms(alloc, rom);
+    defer ov.deinit(alloc);
+    try testing.expectEqualSlices(u8, contents.find("kDungeonRoomOverlay").?, ov.data);
+    try testing.expectEqualSlices(u8, contents.find("kDungeonRoomOverlayOffs").?, std.mem.sliceAsBytes(ov.offsets));
 }

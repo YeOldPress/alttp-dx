@@ -230,6 +230,23 @@ pub fn buildDialogue(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
     return build_mod.packArrays(alloc, &.{lang_entry});
 }
 
+/// kDialogueFont: the 256 glyph tiles and the width of each character.
+///
+/// The Python decodes the tiles into a PNG, reads it back and re-encodes
+/// them, and measures each glyph's width from its pixels. Both come back as
+/// what the ROM already holds, so this is the tiles and the width table
+/// straight out of it.
+pub fn buildDialogueFont(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
+    const tiles = try rom.getBytes(alloc, 0x8e8000, 256 * 16);
+    defer alloc.free(tiles);
+    const widths = try rom.getBytes(alloc, 0x8ecadf, 99);
+    defer alloc.free(widths);
+
+    const entry = try build_mod.packArrays(alloc, &.{ tiles, widths });
+    defer alloc.free(entry);
+    return build_mod.packArrays(alloc, &.{entry});
+}
+
 /// kDialogueMap: which language each dialogue and font entry belongs to. The
 /// US build has one, with no flags - it uses the original command encoding
 /// and is the language the ROM was read from.
@@ -257,6 +274,10 @@ test "the dialogue matches the reference asset file" {
     const got = try buildDialogue(alloc, rom);
     defer alloc.free(got);
     try testing.expectEqualSlices(u8, contents.find("kDialogue").?, got);
+
+    const font = try buildDialogueFont(alloc, rom);
+    defer alloc.free(font);
+    try testing.expectEqualSlices(u8, contents.find("kDialogueFont").?, font);
 
     const map = try buildDialogueMap(alloc);
     defer alloc.free(map);

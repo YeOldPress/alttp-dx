@@ -299,6 +299,43 @@ pub fn buildStartingPointEntrance(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
     return out;
 }
 
+/// How many bytes of floor layout each dungeon map has. These are not
+/// recorded in the ROM; they were measured when the game was taken apart.
+const kDungMapSizes = [_]usize{ 75, 125, 50, 75, 175, 75, 50, 75, 50, 200, 150, 75, 100, 200 };
+
+/// The dungeon map screens. The tile data for a map is only as long as the
+/// layout has non-empty cells, so its length has to be counted first - 0xf
+/// marks an empty one.
+pub fn buildDungeonMap(alloc: std.mem.Allocator, rom: Rom, tiles: bool) ![]u8 {
+    var blocks: [kDungMapSizes.len][]u8 = undefined;
+    var done: usize = 0;
+    defer {
+        for (blocks[0..done]) |b| alloc.free(b);
+    }
+
+    while (done < kDungMapSizes.len) : (done += 1) {
+        const i: u32 = @intCast(done);
+        const layout_addr = 0xa0000 + @as(u32, rom.getWord(0x8af605 + i * 2));
+        const layout = try rom.getBytes(alloc, layout_addr, kDungMapSizes[done]);
+        if (!tiles) {
+            blocks[done] = layout;
+            continue;
+        }
+        defer alloc.free(layout);
+
+        var used: usize = 0;
+        for (layout) |b| {
+            if (b != 0xf) used += 1;
+        }
+        const tiles_addr = 0xa0000 + @as(u32, rom.getWord(0x8afbe4 + i * 2));
+        blocks[done] = try rom.getBytes(alloc, tiles_addr, used);
+    }
+
+    var as_const: [kDungMapSizes.len][]const u8 = undefined;
+    for (&as_const, blocks) |*dst, src| dst.* = src;
+    return packArrays(alloc, &as_const);
+}
+
 const testing = std.testing;
 const fileio = @import("fileio.zig");
 
@@ -591,4 +628,17 @@ test "the entrance door settings and starting point fields match the reference" 
     // Starting points have no doorway orientation; the field is all zero.
     const zeros = [_]u8{0} ** 7;
     try testing.expectEqualSlices(u8, f.contents.find("kStartingPoint_doorwayOrientation").?, &zeros);
+}
+
+test "the dungeon map screens match the reference asset file" {
+    var f = try Fixture.open();
+    defer f.close();
+
+    const layout = try buildDungeonMap(testing.allocator, f.rom, false);
+    defer testing.allocator.free(layout);
+    try testing.expectEqualSlices(u8, f.contents.find("kDungMap_FloorLayout").?, layout);
+
+    const tiles = try buildDungeonMap(testing.allocator, f.rom, true);
+    defer testing.allocator.free(tiles);
+    try testing.expectEqualSlices(u8, f.contents.find("kDungMap_Tiles").?, tiles);
 }
