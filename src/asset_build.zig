@@ -163,6 +163,8 @@ pub const kMiscAssets = [_]MiscAsset{
     .{ .name = "kTorchDataInit", .kind = .uint16, .addr = 0x84f36a, .count = 144, .words = true },
     .{ .name = "kTorchDataJunk", .kind = .uint16, .addr = 0x84f48a, .count = 48, .words = true },
 
+    .{ .name = "kDungeonRoomTeleMsg", .kind = .uint16, .addr = 0x87f61d, .count = 320, .words = true },
+
     // These two come from print_dungeon_map's neighbourhood rather than
     // print_misc, but they are the same shape.
     .{ .name = "kMap8DataToTileAttr", .kind = .uint8, .addr = 0x8e9459, .count = 512 },
@@ -508,4 +510,5 @@ test "the background tilemaps match the reference asset file" {
 test {
     // Pull the overworld tables' tests into this root as well.
     _ = @import("asset_overworld.zig");
+    _ = @import("asset_dungeon.zig");
 }
