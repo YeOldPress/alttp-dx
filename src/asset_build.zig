@@ -607,6 +607,7 @@ test {
     _ = @import("asset_overworld.zig");
     _ = @import("asset_dungeon.zig");
     _ = @import("asset_dialogue.zig");
+    _ = @import("asset_music.zig");
 }
 
 test "the entrance door settings and starting point fields match the reference" {
