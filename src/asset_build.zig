@@ -511,4 +511,5 @@ test {
     // Pull the overworld tables' tests into this root as well.
     _ = @import("asset_overworld.zig");
     _ = @import("asset_dungeon.zig");
+    _ = @import("asset_dialogue.zig");
 }
