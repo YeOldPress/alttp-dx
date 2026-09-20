@@ -9,6 +9,8 @@
 //! needs no font file and no toolkit - just the SDL the game already links.
 const std = @import("std");
 const fileio = @import("fileio.zig");
+const rom_mod = @import("rom.zig");
+const asset_all = @import("asset_all.zig");
 
 const c = @cImport({
     // translate-c cannot parse arm_neon.h, which SDL pulls in on ARM targets.
@@ -18,6 +20,8 @@ const c = @cImport({
 
 /// The game binary, expected next to the launcher.
 const kGameExe = "./zelda3";
+const kRomPath = "zelda3.sfc";
+const kAssetsPath = "zelda3_assets.dat";
 
 const kWindowW = 640;
 const kWindowH = 480;
@@ -309,8 +313,93 @@ fn firstSelectable() usize {
     return 0;
 }
 
-pub fn main() !void {
+/// Draws the whole screen. Split out of the loop so that the slow paths -
+/// building assets - can put a frame up before they block.
+fn drawScreen(
+    renderer: *c.SDL_Renderer,
+    ini: *const Ini,
+    cursor: usize,
+    top: usize,
+    status: []const u8,
+    dirty: bool,
+    have_assets: bool,
+) void {
+    fillRect(renderer, 0, 0, kWindowW, kWindowH, kColorBg);
+    drawFrame(renderer, 16, 16, kWindowW - 32, kWindowH - 32);
+
+    drawText(renderer, 40, 36, kColorSelect, "THE LEGEND OF ZELDA");
+    drawText(renderer, 40 + kCell * 20, 36, kColorTextDim, "LAUNCHER");
+
+    var y: f32 = 36 + kRowH + 8;
+    var i = top;
+    while (i < kSettings.len and i < top + kVisibleRows) : (i += 1) {
+        const s = kSettings[i];
+        if (isSection(s)) {
+            drawText(renderer, 40, y, kColorSection, s.label);
+        } else {
+            if (i == cursor) {
+                fillRect(renderer, 32, y - 3, kWindowW - 64, kRowH, kColorRowHi);
+                drawText(renderer, 36, y, kColorSelect, ">");
+            }
+            drawText(renderer, 56, y, if (i == cursor) kColorSelect else kColorText, s.label);
+            var vbuf: [64]u8 = undefined;
+            const shown = displayValue(&vbuf, s, ini.values[i] orelse "(missing)");
+            const dim = s.kind == .text;
+            drawText(renderer, 400, y, if (dim) kColorTextDim else kColorValue, shown);
+        }
+        y += kRowH;
+    }
+
+    const footer_y: f32 = kWindowH - 32 - kRowH * 2 - 6;
+    drawText(renderer, 40, footer_y, kColorTextDim, "ARROWS MOVE/CHANGE   S SAVE");
+    drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "ENTER PLAY   B ASSETS   ESC QUIT");
+
+    // One line above the footer, in order of what the player most needs to
+    // know: what just happened, then that the game cannot start yet, then
+    // that there are edits worth saving.
+    if (status.len != 0)
+        drawText(renderer, 40, footer_y - kRowH, kColorSection, status)
+    else if (!have_assets)
+        drawText(renderer, 40, footer_y - kRowH, kColorSelect, "NO ASSETS - PRESS B TO BUILD")
+    else if (dirty)
+        drawText(renderer, 40, footer_y - kRowH, kColorSelect, "UNSAVED CHANGES");
+
+    _ = c.SDL_RenderPresent(renderer);
+}
+
+/// Builds zelda3_assets.dat from the ROM, replacing what the Python resource
+/// tool did. Returns a message for the status line either way.
+fn buildAssets(alloc: std.mem.Allocator) []const u8 {
+    if (!fileio.exists(kRomPath)) return "NEED " ++ kRomPath ++ " TO BUILD ASSETS";
+
+    var rom = rom_mod.Rom.load(alloc, kRomPath) catch return "COULD NOT READ ROM";
+    defer rom.deinit();
+    if (rom.language != .us) return "ROM IS NOT THE US RELEASE";
+
+    const data = asset_all.buildFile(alloc, rom) catch return "COULD NOT BUILD ASSETS";
+    defer alloc.free(data);
+
+    fileio.writeWholeFile(kAssetsPath, data) catch return "COULD NOT WRITE ASSETS";
+    return "ASSETS BUILT";
+}
+
+pub fn main(init: std.process.Init.Minimal) !void {
     const alloc = std.heap.c_allocator;
+
+    // Building the assets without opening a window, for scripts and for
+    // checking the result against the Python tool's output.
+    var args = init.args.iterate();
+    _ = args.next();
+    while (args.next()) |a| {
+        if (std.mem.eql(u8, a, "--build-assets")) {
+            const msg = buildAssets(alloc);
+            std.debug.print("{s}\n", .{msg});
+            if (!fileio.exists(kAssetsPath)) return error.BuildFailed;
+            return;
+        }
+        std.debug.print("unknown option: {s}\n", .{a});
+        return error.BadUsage;
+    }
 
     var ini = Ini.load(alloc, "zelda3.ini") catch |err| {
         std.debug.print("Could not read zelda3.ini: {s}\n", .{@errorName(err)});
@@ -348,6 +437,7 @@ pub fn main() !void {
     var dirty = false;
     var launch = false;
     var status: []const u8 = "";
+    var have_assets = fileio.exists(kAssetsPath);
     var running = true;
     var event: c.SDL_Event = undefined;
 
@@ -366,6 +456,14 @@ pub fn main() !void {
                     c.SDLK_LEFT => adjust = -1,
                     c.SDLK_RIGHT, c.SDLK_SPACE => adjust = 1,
                     c.SDLK_RETURN => confirm = true,
+                    c.SDLK_B => {
+                        // Drawing a frame first, so the window does not just
+                        // freeze for the second or two this takes.
+                        status = "BUILDING ASSETS...";
+                        drawScreen(renderer, &ini, cursor, top, status, dirty, have_assets);
+                        status = buildAssets(alloc);
+                        have_assets = fileio.exists(kAssetsPath);
+                    },
                     c.SDLK_S => {
                         ini.save("zelda3.ini") catch |err| {
                             std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
@@ -420,6 +518,17 @@ pub fn main() !void {
                     continue;
                 };
                 dirty = false;
+
+                // The game cannot start without its assets, so build them
+                // rather than making the player find out by watching it fail.
+                if (!have_assets) {
+                    status = "BUILDING ASSETS...";
+                    drawScreen(renderer, &ini, cursor, top, status, dirty, have_assets);
+                    status = buildAssets(alloc);
+                    have_assets = fileio.exists(kAssetsPath);
+                    if (!have_assets) continue;
+                }
+
                 launch = true;
                 running = false;
             }
@@ -429,41 +538,7 @@ pub fn main() !void {
         if (cursor < top) top = cursor;
         if (cursor >= top + kVisibleRows) top = cursor - kVisibleRows + 1;
 
-        fillRect(renderer, 0, 0, kWindowW, kWindowH, kColorBg);
-        drawFrame(renderer, 16, 16, kWindowW - 32, kWindowH - 32);
-
-        drawText(renderer, 40, 36, kColorSelect, "THE LEGEND OF ZELDA");
-        drawText(renderer, 40 + kCell * 20, 36, kColorTextDim, "LAUNCHER");
-
-        var y: f32 = 36 + kRowH + 8;
-        var i = top;
-        while (i < kSettings.len and i < top + kVisibleRows) : (i += 1) {
-            const s = kSettings[i];
-            if (isSection(s)) {
-                drawText(renderer, 40, y, kColorSection, s.label);
-            } else {
-                if (i == cursor) {
-                    fillRect(renderer, 32, y - 3, kWindowW - 64, kRowH, kColorRowHi);
-                    drawText(renderer, 36, y, kColorSelect, ">");
-                }
-                drawText(renderer, 56, y, if (i == cursor) kColorSelect else kColorText, s.label);
-                var vbuf: [64]u8 = undefined;
-                const shown = displayValue(&vbuf, s, ini.values[i] orelse "(missing)");
-                const dim = s.kind == .text;
-                drawText(renderer, 400, y, if (dim) kColorTextDim else kColorValue, shown);
-            }
-            y += kRowH;
-        }
-
-        const footer_y: f32 = kWindowH - 32 - kRowH * 2 - 6;
-        drawText(renderer, 40, footer_y, kColorTextDim, "ARROWS MOVE/CHANGE   S SAVE");
-        drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "ENTER SAVE+PLAY   ESC QUIT");
-        if (status.len != 0)
-            drawText(renderer, 40, footer_y - kRowH, kColorSection, status)
-        else if (dirty)
-            drawText(renderer, 40, footer_y - kRowH, kColorSelect, "UNSAVED CHANGES");
-
-        _ = c.SDL_RenderPresent(renderer);
+        drawScreen(renderer, &ini, cursor, top, status, dirty, have_assets);
         c.SDL_Delay(16);
     }
 
