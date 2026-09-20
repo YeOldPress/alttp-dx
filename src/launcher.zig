@@ -8,6 +8,7 @@
 //! Drawing uses SDL3's built in 8x8 font (SDL_RenderDebugText), so the launcher
 //! needs no font file and no toolkit - just the SDL the game already links.
 const std = @import("std");
+const builtin = @import("builtin");
 const fileio = @import("fileio.zig");
 const rom_mod = @import("rom.zig");
 const asset_all = @import("asset_all.zig");
@@ -423,6 +424,55 @@ const Pads = struct {
     }
 };
 
+/// Configures the joystick layer the same way the game does, so a pad
+/// behaves identically in both.
+///
+/// On macOS a pad can arrive through GameController and through HIDAPI at
+/// once, and the two disagree about which button sits where - which is how a
+/// SNES pad ends up with A and B doing the same job. HIDAPI maps these
+/// correctly, so GameController is left out of it. It also decides which
+/// letters SDL reports on the faces, so the launcher has to match the game or
+/// the two read the same pad differently.
+fn configureJoysticks() void {
+    if (builtin.os.tag == .macos) {
+        _ = c.SDL_SetHint(c.SDL_HINT_JOYSTICK_MFI, "0");
+    }
+}
+
+/// What a face button means, worked out from the label printed on it rather
+/// than where it sits.
+///
+/// SDL reports face buttons by position, and the layouts disagree: the button
+/// marked A is on the bottom of an Xbox pad and on the right of a Nintendo
+/// one, which is the same place B sits on the Xbox. Routing by position
+/// therefore turns A into cancel on Nintendo hardware - on the main menu,
+/// pressing A closed the launcher.
+fn faceAction(which: c.SDL_JoystickID, button: u8) enum { confirm, back, save, none } {
+    const pad = c.SDL_GetGamepadFromID(which);
+    const label = if (pad != null)
+        c.SDL_GetGamepadButtonLabel(pad, button)
+    else
+        c.SDL_GAMEPAD_BUTTON_LABEL_UNKNOWN;
+
+    // Position is the fallback only when there is no label to go on. Letting
+    // an unhandled label fall through to it put both Y and X on save.
+    if (label == c.SDL_GAMEPAD_BUTTON_LABEL_UNKNOWN) {
+        return switch (button) {
+            c.SDL_GAMEPAD_BUTTON_SOUTH => .confirm,
+            c.SDL_GAMEPAD_BUTTON_EAST => .back,
+            c.SDL_GAMEPAD_BUTTON_WEST => .save,
+            else => .none,
+        };
+    }
+
+    return switch (label) {
+        c.SDL_GAMEPAD_BUTTON_LABEL_A, c.SDL_GAMEPAD_BUTTON_LABEL_CROSS => .confirm,
+        c.SDL_GAMEPAD_BUTTON_LABEL_B, c.SDL_GAMEPAD_BUTTON_LABEL_CIRCLE => .back,
+        c.SDL_GAMEPAD_BUTTON_LABEL_X, c.SDL_GAMEPAD_BUTTON_LABEL_SQUARE => .save,
+        else => .none,
+    };
+}
+
 /// Turns a held direction into one step immediately and then a steady stream,
 /// so a list of forty settings can be crossed without forty presses.
 const Repeat = struct {
@@ -763,6 +813,64 @@ fn buildAssets(alloc: std.mem.Allocator) []const u8 {
     return "ASSETS BUILT";
 }
 
+/// Prints what SDL makes of every pad plugged in: its name, and which label
+/// is printed on each face button. Face buttons are routed by label, so this
+/// is the thing to look at when a button does the wrong job.
+fn reportPads() void {
+    configureJoysticks();
+    if (!c.SDL_Init(c.SDL_INIT_GAMEPAD)) {
+        std.debug.print("could not start SDL: {s}\n", .{c.SDL_GetError()});
+        return;
+    }
+    defer c.SDL_Quit();
+
+    var count: c_int = 0;
+    const ids = c.SDL_GetGamepads(&count) orelse {
+        std.debug.print("no gamepads\n", .{});
+        return;
+    };
+    defer c.SDL_free(ids);
+
+    if (count == 0) std.debug.print("no gamepads\n", .{});
+
+    for (ids[0..@intCast(count)]) |id| {
+        const pad = c.SDL_OpenGamepad(id) orelse continue;
+        defer c.SDL_CloseGamepad(pad);
+
+        const name: []const u8 = if (c.SDL_GetGamepadName(pad)) |n| std.mem.span(n) else "(unnamed)";
+        const kind = c.SDL_GetGamepadType(pad);
+        const real = c.SDL_GetRealGamepadType(pad);
+        std.debug.print("{s}  (type {d}, real type {d})\n", .{ name, kind, real });
+
+        for ([_]struct { pos: []const u8, button: c_int }{
+            .{ .pos = "south", .button = c.SDL_GAMEPAD_BUTTON_SOUTH },
+            .{ .pos = "east", .button = c.SDL_GAMEPAD_BUTTON_EAST },
+            .{ .pos = "west", .button = c.SDL_GAMEPAD_BUTTON_WEST },
+            .{ .pos = "north", .button = c.SDL_GAMEPAD_BUTTON_NORTH },
+        }) |b| {
+            const label = c.SDL_GetGamepadButtonLabel(pad, @intCast(b.button));
+            const printed: []const u8 = switch (label) {
+                c.SDL_GAMEPAD_BUTTON_LABEL_A => "A",
+                c.SDL_GAMEPAD_BUTTON_LABEL_B => "B",
+                c.SDL_GAMEPAD_BUTTON_LABEL_X => "X",
+                c.SDL_GAMEPAD_BUTTON_LABEL_Y => "Y",
+                c.SDL_GAMEPAD_BUTTON_LABEL_CROSS => "cross",
+                c.SDL_GAMEPAD_BUTTON_LABEL_CIRCLE => "circle",
+                c.SDL_GAMEPAD_BUTTON_LABEL_SQUARE => "square",
+                c.SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE => "triangle",
+                else => "unknown",
+            };
+            const does: []const u8 = switch (faceAction(c.SDL_GetGamepadID(pad), @intCast(b.button))) {
+                .confirm => "select",
+                .back => "back",
+                .save => "save",
+                .none => "-",
+            };
+            std.debug.print("  {s:<6} labelled {s:<8} does {s}\n", .{ b.pos, printed, does });
+        }
+    }
+}
+
 pub fn main(init: std.process.Init.Minimal) !void {
     const alloc = std.heap.c_allocator;
 
@@ -790,6 +898,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
             if (!fileio.exists(kAssetsPath)) return error.BuildFailed;
             return;
         }
+        if (std.mem.eql(u8, a, "--pad-info")) {
+            reportPads();
+            return;
+        }
         std.debug.print("unknown option: {s}\n", .{a});
         return error.BadUsage;
     }
@@ -800,6 +912,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     };
     defer ini.deinit();
 
+    configureJoysticks();
     if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_GAMEPAD)) {
         std.debug.print("Failed to init SDL: {s}\n", .{c.SDL_GetError()});
         return error.SdlInit;
@@ -885,15 +998,22 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
                 // A is select, B is back, X saves. Directions are polled
                 // rather than taken from events, so holding one repeats.
-                c.SDL_EVENT_GAMEPAD_BUTTON_DOWN => switch (event.gbutton.button) {
-                    c.SDL_GAMEPAD_BUTTON_SOUTH, c.SDL_GAMEPAD_BUTTON_START => confirm = true,
-                    c.SDL_GAMEPAD_BUTTON_EAST => back = true,
-                    c.SDL_GAMEPAD_BUTTON_WEST => save = true,
-                    c.SDL_GAMEPAD_BUTTON_DPAD_UP => tap_v -= 1,
-                    c.SDL_GAMEPAD_BUTTON_DPAD_DOWN => tap_v += 1,
-                    c.SDL_GAMEPAD_BUTTON_DPAD_LEFT => tap_h -= 1,
-                    c.SDL_GAMEPAD_BUTTON_DPAD_RIGHT => tap_h += 1,
-                    else => {},
+                c.SDL_EVENT_GAMEPAD_BUTTON_DOWN => {
+                    // The d-pad and Start mean the same thing everywhere, so
+                    // they go by position; the face buttons go by label.
+                    switch (event.gbutton.button) {
+                        c.SDL_GAMEPAD_BUTTON_START => confirm = true,
+                        c.SDL_GAMEPAD_BUTTON_DPAD_UP => tap_v -= 1,
+                        c.SDL_GAMEPAD_BUTTON_DPAD_DOWN => tap_v += 1,
+                        c.SDL_GAMEPAD_BUTTON_DPAD_LEFT => tap_h -= 1,
+                        c.SDL_GAMEPAD_BUTTON_DPAD_RIGHT => tap_h += 1,
+                        else => switch (faceAction(event.gbutton.which, event.gbutton.button)) {
+                            .confirm => confirm = true,
+                            .back => back = true,
+                            .save => save = true,
+                            .none => {},
+                        },
+                    }
                 },
                 else => {},
             }
