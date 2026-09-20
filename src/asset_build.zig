@@ -141,6 +141,20 @@ pub const kMiscAssets = [_]MiscAsset{
 
     .{ .name = "kOverworldMapPaletteData", .kind = .uint16, .addr = 0x8adb27, .count = 256, .words = true },
 
+    // Link's sprite sheet. The Python decodes the ROM's 4bpp tiles into a
+    // paletted PNG and compile_resources reads that back and re-encodes it,
+    // which is the identity - see the round-trip test below - so the port
+    // copies the bytes and skips the image entirely.
+    .{ .name = "kLinkGraphics", .kind = .uint8, .addr = 0x108000, .count = 0x800 * 448 / 32 },
+
+    // The map32 to map16 lookup, one table per quadrant. The Python writes
+    // these out as a text file of unpacked values and reads them back, which
+    // is another identity - see the round-trip test below.
+    .{ .name = "kMap32ToMap16_0", .kind = .uint8, .addr = 0x838000, .count = 2218 * 6 },
+    .{ .name = "kMap32ToMap16_1", .kind = .uint8, .addr = 0x83b400, .count = 2218 * 6 },
+    .{ .name = "kMap32ToMap16_2", .kind = .uint8, .addr = 0x848000, .count = 2218 * 6 },
+    .{ .name = "kMap32ToMap16_3", .kind = .uint8, .addr = 0x84b400, .count = 2218 * 6 },
+
     // These two come from print_dungeon_map's neighbourhood rather than
     // print_misc, but they are the same shape.
     .{ .name = "kMap8DataToTileAttr", .kind = .uint8, .addr = 0x8e9459, .count = 512 },
@@ -296,4 +310,128 @@ test "the overworld map blocks match the reference asset file" {
     const lo = try buildOverworldLobytes(testing.allocator, f.rom);
     defer testing.allocator.free(lo);
     try testing.expectEqualSlices(u8, f.contents.find("kOverworld_Lobytes_Comp").?, lo);
+}
+
+/// Unpacks SNES 4bpp tiles into one byte per pixel, laid out as a 128 pixel
+/// wide sheet. This is sprite_sheets.decode_4bit_tileset_link.
+fn decodeLinkSheet(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
+    const height = 448;
+    const data = try rom.getBytes(alloc, 0x108000, 0x800 * height / 32);
+    defer alloc.free(data);
+
+    const dst = try alloc.alloc(u8, 128 * height);
+    errdefer alloc.free(dst);
+    @memset(dst, 0);
+
+    for (0..16 * height / 8) |i| {
+        const offs = i * 32;
+        const toffs = (i % 16) * 8 + (i / 16) * 8 * 128;
+        for (0..8) |y| {
+            const d0 = data[offs + y * 2 + 0];
+            const d1 = data[offs + y * 2 + 1];
+            const d2 = data[offs + y * 2 + 16];
+            const d3 = data[offs + y * 2 + 17];
+            for (0..8) |x| {
+                const xs: u3 = @intCast(x);
+                const t = ((d0 >> xs) & 1) * 1 + ((d1 >> xs) & 1) * 2 +
+                    ((d2 >> xs) & 1) * 4 + ((d3 >> xs) & 1) * 8;
+                dst[toffs + y * 128 + (7 - x)] = t;
+            }
+        }
+    }
+    return dst;
+}
+
+/// Packs a 128 pixel wide sheet back into SNES 4bpp tiles. This is
+/// print_link_graphics' encode_4bit_sprite over the whole sheet.
+fn encodeLinkSheet(alloc: std.mem.Allocator, sheet: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+
+    for (0..56) |ty| {
+        for (0..16) |tx| {
+            const offset = ty * 128 * 8 + tx * 8;
+            var b = [_]u8{0} ** 32;
+            for (0..8) |y| {
+                for (0..8) |x| {
+                    const v = sheet[offset + y * 128 + x];
+                    const sh: u3 = @intCast(7 - x);
+                    b[y * 2 + 0] |= (v & 1) << sh;
+                    b[y * 2 + 1] |= (v >> 1 & 1) << sh;
+                    b[y * 2 + 16] |= (v >> 2 & 1) << sh;
+                    b[y * 2 + 17] |= (v >> 3 & 1) << sh;
+                }
+            }
+            try out.appendSlice(alloc, &b);
+        }
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+// kLinkGraphics is emitted as a straight copy of the ROM. That is only valid
+// because unpacking the tiles and packing them again gives back what went in,
+// which is what the Python does the long way through a PNG. If that were ever
+// untrue the copy would be silently wrong, so it is checked rather than
+// assumed.
+test "unpacking and repacking Link's tiles is the identity" {
+    var f = try Fixture.open();
+    defer f.close();
+
+    const sheet = try decodeLinkSheet(testing.allocator, f.rom);
+    defer testing.allocator.free(sheet);
+
+    const repacked = try encodeLinkSheet(testing.allocator, sheet);
+    defer testing.allocator.free(repacked);
+
+    const raw = try f.rom.getBytes(testing.allocator, 0x108000, 0x800 * 448 / 32);
+    defer testing.allocator.free(raw);
+
+    try testing.expectEqualSlices(u8, raw, repacked);
+    try testing.expectEqualSlices(u8, f.contents.find("kLinkGraphics").?, repacked);
+}
+
+/// Six packed bytes to four 12 bit tile numbers, as extract_resources does.
+/// The low byte of each entry is stored first, then the four high nibbles
+/// share the last two bytes.
+fn unpackMap32(b: *const [6]u8) [4]u16 {
+    return .{
+        @as(u16, b[0]) | (@as(u16, b[4] >> 4) << 8),
+        @as(u16, b[1]) | (@as(u16, b[4] & 0xf) << 8),
+        @as(u16, b[2]) | (@as(u16, b[5] >> 4) << 8),
+        @as(u16, b[3]) | (@as(u16, b[5] & 0xf) << 8),
+    };
+}
+
+/// The inverse, as compile_resources does it.
+fn packMap32(v: [4]u16) [6]u8 {
+    return .{
+        @intCast(v[0] & 0xff),
+        @intCast(v[1] & 0xff),
+        @intCast(v[2] & 0xff),
+        @intCast(v[3] & 0xff),
+        @intCast((v[0] >> 8) << 4 | (v[1] >> 8)),
+        @intCast((v[2] >> 8) << 4 | (v[3] >> 8)),
+    };
+}
+
+// Same reasoning as the Link tiles: these four assets are emitted as straight
+// copies, which only holds because unpacking and repacking round-trips.
+test "unpacking and repacking the map32 tables is the identity" {
+    var f = try Fixture.open();
+    defer f.close();
+
+    for ([_]u32{ 0x838000, 0x83b400, 0x848000, 0x84b400 }, 0..) |addr, k| {
+        const raw = try f.rom.getBytes(testing.allocator, addr, 2218 * 6);
+        defer testing.allocator.free(raw);
+
+        for (0..2218) |i| {
+            const entry = raw[i * 6 ..][0..6];
+            const repacked = packMap32(unpackMap32(entry));
+            try testing.expectEqualSlices(u8, entry, &repacked);
+        }
+
+        var name_buf: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "kMap32ToMap16_{d}", .{k});
+        try testing.expectEqualSlices(u8, f.contents.find(name).?, raw);
+    }
 }
