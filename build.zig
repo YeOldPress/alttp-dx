@@ -25,6 +25,16 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // The SNES emulation is its own module so that nothing under src/ has to
+    // reach across the directory with a relative path. The dependency only
+    // goes one way: snes/ never imports the game.
+    const snes_mod = b.createModule(.{
+        .root_source_file = b.path("snes/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
     const exe = b.addExecutable(.{
         .name = "zelda3",
         .root_module = b.createModule(.{
@@ -52,6 +62,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     zig_obj.root_module.addIncludePath(b.path("."));
+    zig_obj.root_module.addImport("snes", snes_mod);
     exe.root_module.addObject(zig_obj);
 
     const tests = b.addTest(.{
@@ -63,6 +74,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     tests.root_module.addIncludePath(b.path("."));
+    tests.root_module.addImport("snes", snes_mod);
     // Exercise the same C/Zig boundaries as the game while the port is in
     // progress. Real implementations replace the former panic-only stubs.
     tests.root_module.addCSourceFiles(.{
@@ -80,6 +92,18 @@ pub fn build(b: *std.Build) void {
     }
     const test_step = b.step("test", "Run tests for the ported Zig modules");
     test_step.dependOn(&b.addRunArtifact(tests).step);
+
+    // Tests in a dependency module are not discovered through the module that
+    // imports it, so the emulation gets its own run.
+    const snes_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("snes/test_root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(snes_tests).step);
 
     const launcher_tests = b.addTest(.{
         .root_module = b.createModule(.{

@@ -12,11 +12,12 @@ const audio = @import("audio.zig");
 const main_mod = @import("main.zig");
 const poly = @import("poly.zig");
 const nmi = @import("nmi.zig");
-const ppu_mod = @import("../snes/ppu.zig");
-const ppu_types = @import("../snes/ppu_types.zig");
-const dma_mod = @import("../snes/dma.zig");
-const dsp_mod = @import("../snes/dsp.zig");
-const snes_types = @import("../snes/snes_types.zig");
+const snes_pkg = @import("snes");
+const ppu_mod = snes_pkg.ppu;
+const ppu_types = snes_pkg.ppu_types;
+const dma_mod = snes_pkg.dma;
+const dsp_mod = snes_pkg.dsp;
+const snes_types = snes_pkg.snes_types;
 
 const Ppu = ppu_types.Ppu;
 const Dma = dma_mod.Dma;

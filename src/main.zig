@@ -9,8 +9,9 @@ const opengl = @import("opengl.zig");
 const audio = @import("audio.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const emu = @import("zelda_cpu_infra.zig");
-const ppu_mod = @import("../snes/ppu.zig");
-const ppu_types = @import("../snes/ppu_types.zig");
+const snes_pkg = @import("snes");
+const ppu_mod = snes_pkg.ppu;
+const ppu_types = snes_pkg.ppu_types;
 
 const RendererFuncs = opengl.RendererFuncs;
 const MemBlk = util.MemBlk;
@@ -1101,10 +1102,10 @@ fn LoadLinkGraphics() void {
 }
 
 const kAssetsSig = [48]u8{
-    90,  101, 108, 100, 97,  51,  95,  118, 48,  32,  32,  32,
-    32,  32,  10,  0,   27,  174, 233, 45,  74,  174, 252, 50,
-    49,  27,  153, 197, 27,  43,  216, 197, 132, 101, 173, 169,
-    36,  108, 15,  155, 176, 169, 57,  131, 174, 101, 51,  207,
+    90, 101, 108, 100, 97,  51,  95,  118, 48,  32,  32,  32,
+    32, 32,  10,  0,   27,  174, 233, 45,  74,  174, 252, 50,
+    49, 27,  153, 197, 27,  43,  216, 197, 132, 101, 173, 169,
+    36, 108, 15,  155, 176, 169, 57,  131, 174, 101, 51,  207,
 };
 
 fn LoadAssets() void {

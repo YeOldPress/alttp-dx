@@ -5,7 +5,8 @@
 //! spc_player_tables.zig.
 const std = @import("std");
 const audio = @import("audio.zig");
-const dsp_mod = @import("../snes/dsp.zig");
+const snes_pkg = @import("snes");
+const dsp_mod = snes_pkg.dsp;
 const maps = @import("spc_player_tables.zig");
 
 const SpcPlayer = audio.SpcPlayer;
@@ -267,10 +268,10 @@ fn PitchSlideToNote_Check(p: *SpcPlayer, c: *Channel) void {
 const kEffectByteLength = [27]u8{ 1, 1, 2, 3, 0, 1, 2, 1, 2, 1, 1, 3, 0, 1, 2, 3, 1, 3, 3, 0, 1, 3, 0, 3, 3, 3, 1 };
 
 const kEchoFirParameters = [32]i8{
-    127, 0,   0,   0,   0,  0,  0,   0,
-    88,  -65, -37, -16, -2, 7,  12,  12,
-    12,  33,  43,  43,  19, -2, -13, -7,
-    52,  51,  0,   -39, -27, 1, -4,  -21,
+    127, 0,   0,   0,   0,   0,  0,   0,
+    88,  -65, -37, -16, -2,  7,  12,  12,
+    12,  33,  43,  43,  19,  -2, -13, -7,
+    52,  51,  0,   -39, -27, 1,  -4,  -21,
 };
 
 /// Reads the next byte of the channel's pattern stream.

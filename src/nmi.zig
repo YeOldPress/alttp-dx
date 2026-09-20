@@ -4,7 +4,8 @@
 const std = @import("std");
 const vars = @import("variables.zig");
 const rtl = @import("zelda_rtl_types.zig");
-const ppu_types = @import("../snes/ppu_types.zig");
+const snes_pkg = @import("snes");
+const ppu_types = snes_pkg.ppu_types;
 
 const Ppu = ppu_types.Ppu;
 const g_zenv = &rtl.g_zenv;
@@ -178,8 +179,8 @@ fn ppu() *Ppu {
 }
 
 const kNmiVramAddrs = [_]u8{
-    0,  0,  4,  8,  12, 8,  12, 0,  4,  0,  8,  4,  12, 4,  12, 0,
-    8,  16, 20, 24, 28, 24, 28, 16, 20, 16, 24, 20, 28, 20, 28, 16,
+    0,  0,  4,   8,  12, 8,  12, 0,  4,  0,  8,  4,  12, 4,  12, 0,
+    8,  16, 20,  24, 28, 24, 28, 16, 20, 16, 24, 20, 28, 20, 28, 16,
     24, 96, 104,
 };
 
@@ -418,7 +419,7 @@ pub export fn NMI_DoUpdates() callconv(.c) void { // 8089e0
     }
 
     if (nmi_update_tilemap_dst.* != 0) {
-        CopyToVram(@as(u32, nmi_update_tilemap_dst.*) * 256, g_ram[0x10000 + @as(u32, nmi_update_tilemap_src.*)..].ptr, 0x200);
+        CopyToVram(@as(u32, nmi_update_tilemap_dst.*) * 256, g_ram[0x10000 + @as(u32, nmi_update_tilemap_src.*) ..].ptr, 0x200);
         nmi_update_tilemap_dst.* = 0;
     }
 
@@ -773,7 +774,8 @@ test "HandleStripes14 copies a plain stripe" {
     var buf = [_]u8{
         0x00, 0x40, // vram word address 0x0040
         0x00, 0x03, // increment by 1, copy, length 3+1 = 4
-        0xaa, 0xbb, 0xcc, 0xdd,
+        0xaa, 0xbb,
+        0xcc, 0xdd,
         0x80, // terminator
     };
     HandleStripes14(&buf);

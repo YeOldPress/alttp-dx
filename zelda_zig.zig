@@ -2,25 +2,14 @@
 //! C is referenced here so that its `export` symbols get linked into the
 //! executable, replacing the C file of the same name.
 //!
-//! This lives at the repo root so that both src/ and snes/ fall inside the
-//! module path.
+//! This lives at the repo root so that every src/ file falls inside the module
+//! path. The SNES emulation is its own module, reached as `@import("snes")`.
 const builtin = @import("builtin");
 
 comptime {
+    _ = @import("snes");
     _ = @import("src/util.zig");
     _ = @import("src/config.zig");
-    _ = @import("snes/input.zig");
-    _ = @import("snes/cart.zig");
-    _ = @import("snes/dma.zig");
-    _ = @import("snes/apu.zig");
-    _ = @import("snes/snes_other.zig");
-    _ = @import("snes/dsp.zig");
-    _ = @import("snes/cpu_types.zig");
-    _ = @import("snes/ppu_types.zig");
-    _ = @import("snes/snes.zig");
-    _ = @import("snes/spc.zig");
-    _ = @import("snes/cpu.zig");
-    _ = @import("snes/ppu.zig");
     _ = @import("src/variables.zig");
     _ = @import("src/poly.zig");
     _ = @import("src/tile_detect.zig");
@@ -29,7 +18,6 @@ comptime {
     _ = @import("src/nmi.zig");
     _ = @import("src/features.zig");
     _ = @import("src/tagalong.zig");
-    _ = @import("snes/tracing.zig");
     _ = @import("src/select_file.zig");
     _ = @import("src/opengl.zig");
     _ = @import("src/audio.zig");
