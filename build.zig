@@ -139,6 +139,14 @@ pub fn build(b: *std.Build) void {
     const launcher_step = b.step("launcher", "Build and run the launcher");
     launcher_step.dependOn(&launcher_run.step);
 
+    // Making zelda3_assets.dat without opening a window, for a first build or
+    // for CI. The launcher does this itself when the assets are missing.
+    const assets_run = b.addRunArtifact(launcher);
+    assets_run.step.dependOn(b.getInstallStep());
+    assets_run.addArg("--build-assets");
+    const assets_step = b.step("assets", "Build zelda3_assets.dat from zelda3.sfc");
+    assets_step.dependOn(&assets_run.step);
+
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

@@ -367,12 +367,29 @@ fn drawScreen(
     _ = c.SDL_RenderPresent(renderer);
 }
 
+/// Where the ROM was found: beside the game, or in the directory the
+/// launcher was started from. Null when there is none to be had. The path
+/// points into g_rom_buf, which is why that is not a local.
+var g_rom_path: ?[:0]const u8 = null;
+var g_rom_buf: [4096]u8 = undefined;
+
+/// Looks for the ROM beside the game first, then where the launcher was
+/// started. Building assets is a one-off, and making someone move a file to
+/// do it is a poor greeting.
+fn findRom(start_dir: []const u8, buf: []u8) ?[:0]const u8 {
+    if (fileio.exists(kRomPath)) return kRomPath;
+
+    const joined = std.fmt.bufPrintZ(buf, "{s}/{s}", .{ start_dir, kRomPath }) catch return null;
+    if (fileio.exists(joined.ptr)) return joined;
+    return null;
+}
+
 /// Builds zelda3_assets.dat from the ROM, replacing what the Python resource
 /// tool did. Returns a message for the status line either way.
 fn buildAssets(alloc: std.mem.Allocator) []const u8 {
-    if (!fileio.exists(kRomPath)) return "NEED " ++ kRomPath ++ " TO BUILD ASSETS";
+    const path = g_rom_path orelse return "NEED " ++ kRomPath ++ " TO BUILD ASSETS";
 
-    var rom = rom_mod.Rom.load(alloc, kRomPath) catch return "COULD NOT READ ROM";
+    var rom = rom_mod.Rom.load(alloc, path.ptr) catch return "COULD NOT READ ROM";
     defer rom.deinit();
     if (rom.language != .us) return "ROM IS NOT THE US RELEASE";
 
@@ -385,6 +402,19 @@ fn buildAssets(alloc: std.mem.Allocator) []const u8 {
 
 pub fn main(init: std.process.Init.Minimal) !void {
     const alloc = std.heap.c_allocator;
+
+    // The game reads zelda3.ini and zelda3_assets.dat from the working
+    // directory, and inherits ours when we start it. Moving into the
+    // directory the binaries were installed to makes the launcher edit the
+    // same files the game will read, whatever directory it was started from.
+    var start_dir_buf: [4096]u8 = undefined;
+    const start_dir = fileio.workingDirectory(&start_dir_buf) catch ".";
+
+    if (c.SDL_GetBasePath()) |base| {
+        fileio.setWorkingDirectory(base) catch {};
+    }
+
+    g_rom_path = findRom(start_dir, &g_rom_buf);
 
     // Building the assets without opening a window, for scripts and for
     // checking the result against the Python tool's output.

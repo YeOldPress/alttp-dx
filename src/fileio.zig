@@ -35,6 +35,22 @@ pub fn writeWholeFile(path: [*:0]const u8, data: []const u8) !void {
     if (data.len != 0 and fwrite(data.ptr, 1, data.len, f) != data.len) return error.WriteFailed;
 }
 
+pub extern fn chdir(path: [*:0]const u8) c_int;
+pub extern fn getcwd(buf: [*]u8, size: usize) ?[*:0]u8;
+
+/// Moves the process into `path`. The game resolves its config and assets
+/// against the working directory, so anything that launches it has to agree
+/// about what that directory is.
+pub fn setWorkingDirectory(path: [*:0]const u8) !void {
+    if (chdir(path) != 0) return error.ChdirFailed;
+}
+
+/// The working directory, into `buf`.
+pub fn workingDirectory(buf: []u8) ![:0]const u8 {
+    const p = getcwd(buf.ptr, buf.len) orelse return error.GetCwdFailed;
+    return std.mem.span(p);
+}
+
 /// True if the file can be opened for reading. Used by tests that need a file
 /// the repository does not ship.
 pub fn exists(path: [*:0]const u8) bool {

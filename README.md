@@ -17,14 +17,24 @@ Build with Zig 0.16.0 and SDL3. All game code is handwritten Zig; third-party
 OpenGL loading, stb_image, and Opus remain C dependencies.
 
 ```sh
-zig build
+zig build                          # game and launcher into zig-out/bin
 zig build test
 zig build -Doptimize=ReleaseSafe
-zig build run
+zig build launcher                 # settings, asset building, and play
+zig build assets                   # just build zelda3_assets.dat, no window
+zig build run                      # run the game directly
 ```
 
-Run from the repository root with `zelda3_assets.dat` extracted from your own
-ROM using the asset instructions below. The executable is `zig-out/bin/zelda3`.
+Put your own US ROM at `zelda3.sfc` in the repository root, then run `zig build
+launcher`. The launcher builds `zelda3_assets.dat` from it - press B, or just
+press enter to play and it builds them first - edits everything in
+`zelda3.ini`, and starts the game. No Python, Pillow or PyYAML is needed; the
+asset importer is Zig and produces a file identical to the one the old
+`assets/restool.py` produced.
+
+The binaries are `zig-out/bin/zelda3` and `zig-out/bin/zelda3-launcher`. The
+game reads `zelda3.ini` and `zelda3_assets.dat` from the working directory, so
+run it from `zig-out/bin` (the launcher moves there for you).
 SDL3 must be installed and discoverable through `pkg-config --cflags/--libs
 sdl3` or the system library search paths. (SDL3 ships no `sdl3-config`.)
 

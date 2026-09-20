@@ -193,6 +193,34 @@ pub fn buildFile(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
 const testing = std.testing;
 const fileio = @import("fileio.zig");
 
+/// SHA-256 of zelda3_assets.dat as assets/restool.py builds it from the US
+/// ROM. Pinned here because the test below otherwise compares against a file
+/// on disk that this very program can overwrite - once the launcher has built
+/// the assets once, comparing to that file proves nothing. This digest came
+/// from the Python tool's output and does not change.
+const kReferenceDigest = "0fe2e4bd75d70f06fb9a74cd3a9cb336c838149b831b56e8792114a89292c793";
+
+test "the whole asset file matches the digest of the Python tool's output" {
+    const alloc = testing.allocator;
+    if (!fileio.exists("zelda3.sfc")) return error.SkipZigTest;
+
+    var rom = try Rom.load(alloc, "zelda3.sfc");
+    defer rom.deinit();
+    if (rom.language != .us) return error.SkipZigTest;
+
+    const got = try buildFile(alloc, rom);
+    defer alloc.free(got);
+
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(got, &digest, .{});
+
+    var hex: [64]u8 = undefined;
+    for (digest, 0..) |byte, i| {
+        _ = std.fmt.bufPrint(hex[i * 2 ..][0..2], "{x:0>2}", .{byte}) catch unreachable;
+    }
+    try testing.expectEqualStrings(kReferenceDigest, &hex);
+}
+
 test "the whole asset file is rebuilt byte for byte" {
     const alloc = testing.allocator;
     if (!fileio.exists("zelda3.sfc") or !fileio.exists("zig-out/bin/zelda3_assets.dat"))
