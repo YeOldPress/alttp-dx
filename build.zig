@@ -93,10 +93,11 @@ pub fn build(b: *std.Build) void {
     linkSdlLibs(b, launcher_tests.root_module);
     test_step.dependOn(&b.addRunArtifact(launcher_tests).step);
 
-    // The asset tooling needs no SDL; it is plain byte wrangling.
+    // The asset tooling needs no SDL; it is plain byte wrangling. Rooting the
+    // test at asset_build.zig picks up rom.zig and asset_pack.zig with it.
     const asset_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/asset_pack.zig"),
+            .root_source_file = b.path("src/asset_build.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
