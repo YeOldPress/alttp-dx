@@ -646,9 +646,12 @@ fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
 fn drawHeader(renderer: *c.SDL_Renderer, screen: Screen) void {
     const cx: f32 = kWindowW / 2;
     if (screen == .main) {
-        drawTextCentered(renderer, cx, 44, kColorSelect, "THE LEGEND OF ZELDA", kScale);
-        drawTextCentered(renderer, cx, 44 + kRowH, kColorTextDim, "LAUNCHER", kScale);
-        fillRect(renderer, 60, 44 + kRowH * 2 + 6, kWindowW - 120, 2, kColorFrame);
+        // The game's own title, then what this program is. Three lines, so
+        // everything below starts lower than it used to.
+        drawTextCentered(renderer, cx, 36, kColorSelect, "THE LEGEND OF ZELDA", kScale);
+        drawTextCentered(renderer, cx, 36 + kRowH, kColorSelect, "A LINK TO THE PAST", kScale);
+        drawTextCentered(renderer, cx, 36 + kRowH * 2, kColorTextDim, "LAUNCHER", kScale);
+        fillRect(renderer, 60, 36 + kRowH * 3 + 6, kWindowW - 120, 2, kColorFrame);
         return;
     }
 
@@ -663,8 +666,8 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
 
     // The three list entries sit as a group, with Launch set apart below -
     // it leaves the launcher rather than moving within it.
-    const kEntryY: f32 = 118;
-    const kEntryGap: f32 = 34;
+    const kEntryY: f32 = 124;
+    const kEntryGap: f32 = 32;
 
     for (kMainItems[0..kMainLaunch], 0..) |label, i| {
         const y = kEntryY + kEntryGap * @as(f32, @floatFromInt(i));
@@ -687,7 +690,7 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     const box_w = w + 72;
     const box_h = 8 * scale + 28;
     const box_x = cx - box_w / 2;
-    const box_y: f32 = 252;
+    const box_y: f32 = 250;
     const selected = v.cursor == kMainLaunch;
 
     // Green whether or not it is selected - it is the one action the window
@@ -702,6 +705,7 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     // in ways that look like game bugs, so it is checked against the digest
     // the asset builder produces and reported as its own state.
     const state_y = box_y + box_h + 18;
+
     drawTextCentered(renderer, cx, state_y, v.assets.colour(), v.assets.line(), kScale);
 
     if (v.assets == .missing) {
@@ -951,7 +955,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
     defer c.SDL_Quit();
 
-    const window = c.SDL_CreateWindow("The Legend of Zelda - Launcher", kWindowW, kWindowH, 0) orelse {
+    const window = c.SDL_CreateWindow("The Legend of Zelda: A Link to the Past - Launcher", kWindowW, kWindowH, 0) orelse {
         std.debug.print("Failed to create window: {s}\n", .{c.SDL_GetError()});
         return error.SdlWindow;
     };
@@ -1386,6 +1390,9 @@ test "the on-screen strings fit the window" {
         "CHANGE  LEFT/RIGHT OR A",
         "SAVE X/S   BACK B/ESC",
         // Headers.
+        "THE LEGEND OF ZELDA",
+        "A LINK TO THE PAST",
+        "LAUNCHER",
         "SETTINGS",
         "FEATURES",
         "ESC BACK",
