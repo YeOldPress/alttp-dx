@@ -149,6 +149,10 @@ const kWindowTitle = "The Legend of Zelda: A Link to the Past";
 var g_win_flags: c.SDL_WindowFlags = c.SDL_WINDOW_RESIZABLE;
 var g_window: ?*c.SDL_Window = null;
 
+/// Set by the QUIT option on the file select screen; the loop below ends when
+/// the game asks to exit from inside a menu rather than through a window close.
+pub export var g_quit_requested: bool = false;
+
 var g_paused: bool = false;
 var g_turbo: bool = false;
 var g_replay_turbo: bool = true;
@@ -647,6 +651,9 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
                 else => {},
             }
         }
+
+        if (g_quit_requested)
+            running = false;
 
         if (g_paused != audiopaused) {
             audiopaused = g_paused;
