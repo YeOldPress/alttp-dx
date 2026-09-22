@@ -45,6 +45,33 @@ the assets if they're missing and starts the game.
 
 The binaries land in `zig-out/bin` as `zelda3` and `zelda3-launcher`.
 
+### On Windows
+
+Nothing on Windows knows what pkg-config is, so fetch SDL3 yourself and point
+the build at it. Take `SDL3-devel-<version>-mingw.zip` from
+[SDL's releases](https://github.com/libsdl-org/SDL/releases), unzip it
+somewhere, and:
+
+```
+zig build -Dsdl-include=<sdl>\x86_64-w64-mingw32\include ^
+          -Dsdl-lib=<sdl>\x86_64-w64-mingw32\bin
+```
+
+`-Dsdl-lib` points at `bin` rather than `lib` on purpose. That package's import
+library is called `libSDL3.dll.a`, which zig doesn't go looking for, so it
+links against `SDL3.dll` itself instead. If you'd rather use the Visual Studio
+package, point it at `lib\x64`, which has a `SDL3.lib` zig does recognise.
+
+Copy `SDL3.dll` in next to the binaries when you're done, or put it on PATH.
+Nothing starts without it.
+
+You can also build the Windows binaries from Linux or macOS, which is how this
+gets checked:
+
+```sh
+zig build -Dtarget=x86_64-windows -Dsdl-include=... -Dsdl-lib=...
+```
+
 ### The other build steps
 
 ```sh
@@ -303,8 +330,13 @@ the C sources and were removed once there weren't any. `zig build` replaces
 them, and MSBuild can't build a Zig project anyway. Upstream still has working
 versions of all of it.
 
-There's a Nintendo Switch target under `src/platform/switch/`, but its Makefile
-builds the C that's gone, so it doesn't work here. Upstream's does.
+There was a Nintendo Switch target, and upstream still has a working one. Its
+Makefile built the C sources that no longer exist here, so it went with them.
+
+The same goes for the Windows system volume mixer, which upstream drives from
+`volume_control.c`. This build had it compiled out from the moment the C went,
+so that file was doing nothing but sitting there. Volume changes adjust the
+game's own mix instead.
 
 `extract_assets.bat` still calls the Python tool and still works if you have
 Python with Pillow and PyYAML. `zig build assets` replaces it and needs

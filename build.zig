@@ -1,5 +1,8 @@
 const std = @import("std");
 
+var sdl_include: ?[]const u8 = null;
+var sdl_lib: ?[]const u8 = null;
+
 // C sources that have not been ported to Zig yet. As modules are translated,
 // they move out of this list and are referenced from zelda_zig.zig instead.
 const c_sources = [_][]const u8{
@@ -11,7 +14,6 @@ const c_sources = [_][]const u8{
 
 const c_flags = [_][]const u8{
     "-std=gnu11",
-    "-DSYSTEM_VOLUME_MIXER_AVAILABLE=0",
     // The upstream C build used plain clang with no sanitizers. The remaining
     // third-party C reads unaligned uint16s on purpose, which zig's default
     // UBSan traps on; the Zig code uses *align(1) pointers instead, so these
@@ -23,6 +25,20 @@ const c_flags = [_][]const u8{
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
+
+    // Windows has no pkg-config by custom, so the SDL3 location can be given
+    // directly. Either may be used on its own; whatever is not given falls
+    // back to pkg-config and then to a bare -lSDL3.
+    sdl_include = b.option(
+        []const u8,
+        "sdl-include",
+        "Directory holding SDL3/SDL.h, for platforms without pkg-config",
+    );
+    sdl_lib = b.option(
+        []const u8,
+        "sdl-lib",
+        "Directory holding the SDL3 import library or shared library",
+    );
     const optimize = b.standardOptimizeOption(.{});
 
     // The SNES emulation is its own module so that nothing under src/ has to
@@ -142,6 +158,11 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkFramework("OpenGL", .{});
     }
 
+    // The triforce icon, so the Windows binary is not a blank default one.
+    if (target.result.os.tag == .windows) {
+        exe.root_module.addWin32ResourceFile(.{ .file = b.path("src/platform/win32/zelda3.rc") });
+    }
+
     // The launcher is its own binary: it edits zelda3.ini and starts the game,
     // so it stays clear of the game's own startup path.
     const launcher = b.addExecutable(.{
@@ -180,10 +201,16 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 }
 
-// SDL3 is a system dependency. It ships no sdl3-config, so the paths come
-// from pkg-config, which also covers Homebrew installing outside the default
-// search path.
+// SDL3 is a system dependency. It ships no sdl3-config, so the paths come from
+// pkg-config, which also covers Homebrew installing outside the default search
+// path. -Dsdl-include and -Dsdl-lib override that for platforms where
+// pkg-config is not how anyone finds a library, which in practice means
+// Windows.
 fn addSdlIncludes(b: *std.Build, m: *std.Build.Module) void {
+    if (sdl_include) |dir| {
+        m.addIncludePath(.{ .cwd_relative = dir });
+        return;
+    }
     const cflags = sdl3PkgConfig(b, "--cflags") orelse return;
     var it = std.mem.tokenizeAny(u8, cflags, " \r\n");
     while (it.next()) |arg| {
@@ -201,6 +228,11 @@ fn addSdlIncludes(b: *std.Build, m: *std.Build.Module) void {
 }
 
 fn linkSdlLibs(b: *std.Build, m: *std.Build.Module) void {
+    if (sdl_lib) |dir| {
+        m.addLibraryPath(.{ .cwd_relative = dir });
+        m.linkSystemLibrary("SDL3", .{});
+        return;
+    }
     const libs = sdl3PkgConfig(b, "--libs") orelse {
         m.linkSystemLibrary("SDL3", .{});
         return;

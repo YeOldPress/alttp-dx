@@ -24,7 +24,6 @@ extern fn strchr(s: [*:0]const u8, ch: c_int) ?[*:0]u8;
 extern fn memchr(s: [*]const u8, ch: c_int, n: usize) ?[*]u8;
 extern fn memcpy(dst: [*]u8, src: [*]const u8, n: usize) [*]u8;
 extern fn memcmp(a: [*]const u8, b: [*]const u8, n: usize) c_int;
-extern fn vsnprintf(buf: [*]u8, n: usize, fmt: [*:0]const u8, ap: *std.builtin.VaList) c_int;
 extern fn Die(err: [*:0]const u8) noreturn;
 
 const FILE = opaque {};
@@ -183,15 +182,6 @@ pub export fn StrSet(rv: *?[*:0]u8, s: [*:0]const u8) callconv(.c) void {
     const old = rv.*;
     rv.* = news;
     free(old);
-}
-
-pub export fn StrFmt(fmt: [*:0]const u8, ...) callconv(.c) ?[*:0]u8 {
-    var buf: [4096]u8 = undefined;
-    var va = @cVaStart();
-    const n = vsnprintf(&buf, buf.len, fmt, &va);
-    @cVaEnd(&va);
-    if (n < 0 or n >= buf.len) Die("vsnprintf failed");
-    return strdup(@ptrCast(&buf));
 }
 
 pub export fn ByteArray_Resize(arr: *ByteArray, new_size: usize) callconv(.c) void {

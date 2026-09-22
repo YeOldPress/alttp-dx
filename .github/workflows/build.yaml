@@ -41,3 +41,33 @@ jobs:
       run: zig build
     - name: Test
       run: zig build test
+
+  build-windows:
+    name: on Windows
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: mlugg/setup-zig@v1
+      with:
+        version: 0.16.0
+    # No pkg-config on Windows, so SDL3 comes from the upstream release and
+    # gets pointed at directly. The mingw package matches zig's default ABI
+    # for this target. Its import library is libSDL3.dll.a, which zig does not
+    # look for, so -Dsdl-lib points at bin/ and links against SDL3.dll itself.
+    - name: Install SDL3
+      shell: pwsh
+      run: |
+        $ver = "3.4.16"
+        $url = "https://github.com/libsdl-org/SDL/releases/download/release-$ver/SDL3-devel-$ver-mingw.zip"
+        Invoke-WebRequest -Uri $url -OutFile sdl3.zip
+        Expand-Archive sdl3.zip -DestinationPath sdl3
+        $root = "$PWD\sdl3\SDL3-$ver\x86_64-w64-mingw32"
+        "SDL3_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+        # The test binaries link SDL3, so the DLL has to be findable at runtime.
+        "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+    - name: Build
+      shell: pwsh
+      run: zig build -Dsdl-include="$env:SDL3_ROOT\include" -Dsdl-lib="$env:SDL3_ROOT\bin"
+    - name: Test
+      shell: pwsh
+      run: zig build test -Dsdl-include="$env:SDL3_ROOT\include" -Dsdl-lib="$env:SDL3_ROOT\bin"

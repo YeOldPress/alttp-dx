@@ -453,13 +453,21 @@ fn MsuPlayer_Open(mp: *MsuPlayer, orig_track: c_int, resume_from_snapshot: bool)
         _ = fseek(mp.f.?, 0, SEEK_END);
         mp.total_samples_in_file = @intCast(@divTrunc(ftell(mp.f.?) - 8, 4));
         mp.samples_until_repeat = mp.total_samples_in_file -% mp.cur_file_offs;
-        _ = fseek(mp.f.?, @as(c_long, mp.cur_file_offs) * 4 + 8, SEEK_SET);
+        _ = fseek(mp.f.?, msuSeekOffset(mp.cur_file_offs), SEEK_SET);
     } else {
         return openReadError(mp, &fname);
     }
 }
 
 /// The C reaches this through `goto READ_ERROR` into a labelled block.
+/// Byte offset of a sample index in an MSU file, past the 8 byte header.
+///
+/// fseek takes a c_long, which is 64-bit on Linux and macOS but 32-bit on
+/// Windows, so the multiply has to happen in a type that holds it either way.
+fn msuSeekOffset(sample: u32) c_long {
+    return @intCast(@as(i64, sample) * 4 + 8);
+}
+
 fn openReadError(mp: *MsuPlayer, fname: *const [256]u8) void {
     std.debug.print("Unable to read MSU file {s}\n", .{std.mem.sliceTo(fname, 0)});
     MsuPlayer_CloseFile(mp);
@@ -632,7 +640,7 @@ pub export fn MsuPlayer_Mix(mp: *MsuPlayer, audio_buffer_in: [*]i16, audio_sampl
                         return;
                     }
                     mp.cur_file_offs = mp.repeat_position;
-                    _ = fseek(mp.f.?, @as(c_long, mp.cur_file_offs) * 4 + 8, SEEK_SET);
+                    _ = fseek(mp.f.?, msuSeekOffset(mp.cur_file_offs), SEEK_SET);
                 }
                 r = @intCast(@min(@as(u32, 960), mp.samples_until_repeat));
                 if (fread(&mp.buffer, 4, @intCast(r), mp.f.?) != @as(usize, @intCast(r))) {

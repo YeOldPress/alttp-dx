@@ -19,8 +19,10 @@ const c = @cImport({
     @cInclude("SDL3/SDL.h");
 });
 
-/// The game binary, expected next to the launcher.
-const kGameExe = "./zelda3";
+/// The game binary, expected next to the launcher. Spelled relative on
+/// purpose: the launcher has already moved into its own directory, and a
+/// bare name would let PATH answer instead.
+const kGameExe = if (builtin.os.tag == .windows) ".\\zelda3.exe" else "./zelda3";
 const kRomPath = "zelda3.sfc";
 const kAssetsPath = "zelda3_assets.dat";
 
@@ -1115,7 +1117,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     // Building the assets without opening a window, for scripts and for
     // checking the result against the Python tool's output.
-    var args = init.args.iterate();
+    // iterateAllocator rather than iterate: on Windows the command line
+    // arrives as one string that has to be split and decoded, so the
+    // plain iterator is a compile error there. Elsewhere the allocator
+    // goes unused.
+    var args = try init.args.iterateAllocator(alloc);
+    defer args.deinit();
     _ = args.next();
     while (args.next()) |a| {
         if (std.mem.eql(u8, a, "--build-assets")) {

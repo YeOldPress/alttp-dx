@@ -53,8 +53,20 @@ extern fn strcmp(a: [*:0]const u8, b: [*:0]const u8) c_int;
 extern fn getcwd(buf: [*]u8, size: usize) ?[*:0]u8;
 extern fn chdir(path: [*:0]const u8) c_int;
 extern fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
+/// The Windows CRT spells it _mkdir, and it takes no mode.
+extern fn _mkdir(path: [*:0]const u8) c_int;
 extern fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
 extern fn fclose(f: *anyopaque) c_int;
+
+/// Creates the save directory if it is not already there. The condition is
+/// comptime, so only the call that exists on this platform is analysed.
+fn makeSaveDir() void {
+    if (builtin.os.tag == .windows) {
+        _ = _mkdir("saves");
+    } else {
+        _ = mkdir("saves", 0o755);
+    }
+}
 
 // config.h
 const kKeys_Null = 0;
@@ -598,7 +610,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     if (argc >= 1 and !g_run_without_emu)
         _ = LoadRom(argv[0]);
 
-    _ = mkdir("saves", 0o755);
+    makeSaveDir();
 
     ZeldaReadSram();
 
@@ -977,7 +989,8 @@ fn HandleGamepadInput(button: c_int, pressed: bool) void {
 }
 
 fn HandleVolumeAdjustment(volume_adjustment: c_int) void {
-    // SYSTEM_VOLUME_MIXER_AVAILABLE is 0 for this build.
+    // Upstream can drive the Windows system volume mixer from here
+    // instead. This port always adjusts its own mix, on every platform.
     g_sdl_audio_mixer_volume = intMin(intMax(0, g_sdl_audio_mixer_volume +
         volume_adjustment * (kMixMaxVolume >> 4)), kMixMaxVolume);
     ApplyAudioVolume();
