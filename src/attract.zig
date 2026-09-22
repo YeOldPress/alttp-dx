@@ -1,4 +1,4 @@
-//! Port of src/attract.c: the attract-mode story sequence — the legend text
+//! Port of src/attract.c: the attract-mode story sequence: the legend text
 //! crawl, world map zoom, throne room, Zelda's prison and the maiden warp.
 const std = @import("std");
 const vars = @import("variables.zig");

@@ -16387,7 +16387,7 @@ pub export fn Sidenexx_Explode(k: c_int) callconv(.c) void {
         if (v.sprite_subtype2[i] == 1)
             v.sprite_state[i] = 0;
         v.sprite_subtype2[i] -%= 1;
-        // BYTE(cur_sprite_x) += BG2HOFS_copy2 — low byte only.
+        // BYTE(cur_sprite_x) += BG2HOFS_copy2, low byte only.
         const nx: u8 = @as(u8, @truncate(v.cur_sprite_x.*)) +% @as(u8, @truncate(v.BG2HOFS_copy2.*));
         v.cur_sprite_x.* = (v.cur_sprite_x.* & 0xff00) | nx;
         const ny: u8 = @as(u8, @truncate(v.cur_sprite_y.*)) +% @as(u8, @truncate(v.BG2VOFS_copy2.*));
@@ -21575,8 +21575,8 @@ pub export fn Kiki_Draw(k: c_int) callconv(.c) bool {
     var info: a.PrepOamCoordsRet = undefined;
     if (v.sprite_D[i] < 8) {
         const j: usize = @as(usize, v.sprite_D[i]) * 2 + v.sprite_graphics[i];
-        // kKikiDma only holds 32 entries, so the high indices read past its end
-        // — an out-of-bounds read the original game shipped with.
+        // kKikiDma only holds 32 entries, so the high indices read past its
+        // end, an out-of-bounds read the original game shipped with.
         dma_var6_lo[0] = t.kKikiDma[j * 2 + 0];
         dma_var7_lo[0] = t.kKikiDma[j * 2 + 1];
         a.Sprite_DrawMultiple(k, &t.kKiki_Dmd1[j * 2], 2, &info);

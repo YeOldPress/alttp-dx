@@ -799,7 +799,7 @@ pub export fn ZeldaSaveMusicStateToRam_Locked() callconv(.c) void {
 /// no rate conversion of its own, so the mix only comes out at the right pitch
 /// when the buffer it writes into runs at the rate the decoder produces: 48000
 /// for Opuz (see the opus_decoder_create call) and 44100 for plain PCM. The SNES
-/// DSP has no such constraint — dsp_getSamples resamples its 32kHz output to
+/// DSP has no such constraint: dsp_getSamples resamples its 32kHz output to
 /// whatever length it is handed.
 ///
 /// This used to be the user's problem, with a warning telling them to go and set

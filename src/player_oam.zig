@@ -1,4 +1,4 @@
-//! Port of src/player_oam.c: builds Link's OAM every frame — body, sword,
+//! Port of src/player_oam.c: builds Link's OAM every frame: body, sword,
 //! shield, shadow and the foot ripple/grass object.
 //!
 //! The data tables live in player_oam_tables.zig, generated from the C.

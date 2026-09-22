@@ -1374,7 +1374,7 @@ pub export fn Sprite_PrepAndDrawSingleLargeNoPrep(k: c_int, info: *PrepOamCoords
     oam[0].x = @truncate(info.x);
     if (info.y +% 0x10 < 0x100) {
         oam[0].y = @truncate(info.y);
-        // sprite_type 0xEC (thrown item) is 236 — one past the end of this
+        // sprite_type 0xEC (thrown item) is 236, one past the end of this
         // 236-entry table. The C read whatever followed it in memory, and
         // Sprite_EC_ThrownItem overwrites charnum on the very next line, so
         // that value never reaches the screen. Skip the lookup rather than
@@ -1423,7 +1423,7 @@ pub export fn SpriteDraw_SingleSmall(k: c_int) callconv(.c) void {
     oam[0].x = @truncate(info.x);
     if (info.y +% 0x10 < 0x100) {
         oam[0].y = @truncate(info.y);
-        // sprite_type 0xEC (thrown item) is 236 — one past the end of this
+        // sprite_type 0xEC (thrown item) is 236, one past the end of this
         // 236-entry table. The C read whatever followed it in memory, and
         // Sprite_EC_ThrownItem overwrites charnum on the very next line, so
         // that value never reaches the screen. Skip the lookup rather than

@@ -3001,8 +3001,8 @@ pub export fn Dungeon_OpeningLockedDoor_Combined(skip_anim: bool) callconv(.c) v
 // ---------------------------------------------------------------------------
 /// misc.h keeps this as a `static inline` with no linkable symbol, and it
 /// searches *backwards*.
-/// `memcpy(&dung_line_ptrs_row0, tab, 33)` — the 33 bytes starting at 0x7E00BF.
-/// `WORD(level_data[offs])` — unaligned little-endian 16-bit read.
+/// `memcpy(&dung_line_ptrs_row0, tab, 33)`: the 33 bytes starting at 0x7E00BF.
+/// `WORD(level_data[offs])`: unaligned little-endian 16-bit read.
 
 pub export fn PrepareDungeonExitFromBossFight() callconv(.c) void { // 80f945
     c.SavePalaceDeaths();
