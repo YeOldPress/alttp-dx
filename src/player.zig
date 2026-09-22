@@ -4417,10 +4417,16 @@ pub export fn LinkState_TreePull() callconv(.c) void {
                 break :tail;
             vars.link_var30d.* +%= 1;
             const j = vars.link_var30d.*;
-            vars.some_animation_timer_steps.* = tables.kGrabWall_AnimSteps[j];
-            vars.some_animation_timer.* = tables.kGrabWall_AnimTimer[j];
-            if (j != 7)
+            // link_var30d is bumped before these lookups and only reset
+            // afterwards, so the last step indexes one past both seven-entry
+            // tables; see the note on kRodAnimDelays. The values are dead,
+            // because that is the j == 7 case below, which stores over both
+            // before anything reads them. Skip the reads.
+            if (j != 7) {
+                vars.some_animation_timer_steps.* = tables.kGrabWall_AnimSteps[j];
+                vars.some_animation_timer.* = tables.kGrabWall_AnimTimer[j];
                 break :tail;
+            }
 
             vars.link_grabbing_wall.* = 0;
             vars.link_var30d.* = 0;
@@ -7874,6 +7880,42 @@ test "the item handlers survive their last animation step" {
     vars.button_mask_b_y.* = 0;
     vars.player_handler_timer.* = 0;
     vars.link_delay_timer_spin_attack.* = 0;
+}
+
+test "the wall grab survives its last animation step" {
+    // The final step bumps link_var30d to 7 and used to index both seven-entry
+    // grab tables with it, which panics under Zig's bounds checking. Drive the
+    // handler straight to that step.
+    //
+    // button_mask_b_y non-zero means "already mid-animation", so the A and Down
+    // checks are skipped, and some_animation_timer == 0 makes the decrement
+    // underflow, which is what advances the step. bitmask_of_dragstate is set
+    // so the handler returns through treePullResetToNormal rather than running
+    // on into tile detection, which wants a loaded map this test has no use for.
+    vars.link_grabbing_wall.* = 1;
+    vars.button_mask_b_y.* = 4;
+    vars.some_animation_timer.* = 0;
+    vars.link_var30d.* = 6;
+    vars.bitmask_of_dragstate.* = 1;
+
+    LinkState_TreePull();
+
+    // Reaching the last step ends the grab and resets the animation.
+    try std.testing.expectEqual(@as(u8, 0), vars.link_grabbing_wall.*);
+    try std.testing.expectEqual(@as(u8, 0), vars.link_var30d.*);
+    try std.testing.expectEqual(@as(u8, 2), vars.some_animation_timer.*);
+    try std.testing.expectEqual(@as(u8, 0), vars.some_animation_timer_steps.*);
+
+    // The earlier steps cannot be driven from here: they leave through
+    // `break :tail`, which runs on into tile detection and wants a loaded map.
+
+    vars.link_grabbing_wall.* = 0;
+    vars.button_mask_b_y.* = 0;
+    vars.some_animation_timer.* = 0;
+    vars.some_animation_timer_steps.* = 0;
+    vars.link_var30d.* = 0;
+    vars.bitmask_of_dragstate.* = 0;
+    vars.link_state_bits.* = 0;
 }
 
 test "Link_ResetProperties_C clears item and button state" {
