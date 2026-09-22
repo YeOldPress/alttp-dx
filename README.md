@@ -1,304 +1,311 @@
 # alttp-zig
 
-A Zig port of [snesrev/zelda3](https://github.com/snesrev/zelda3), a
-reimplementation of Zelda 3.
+A Link to the Past, reimplemented from scratch and ported to Zig.
 
-This is a fork. The original project is written in C by snesrev and
-contributors; this repository ports that code to Zig. Upstream remains the
-source of the game logic, the asset pipeline and the reverse-engineering work
-behind both — see the [About](#about) section for its credits. The MIT licence
-and the original copyright notices are retained unchanged in `LICENSE.txt`.
+This is a fork of [snesrev/zelda3](https://github.com/snesrev/zelda3). The
+reimplementation is theirs: years of reverse engineering by snesrev and a long
+list of contributors, written in C, covering every part of the game from the
+title screen to the credits. I ported all of it to Zig and then kept going. It
+has its own launcher now, and it builds its own asset file straight out of a
+ROM, so Python isn't part of the picture anymore.
 
-Upstream's discord server is: https://discord.gg/AJJbJAzNNJ
+You bring your own US ROM. No game data ships here, and once the assets are
+built the ROM isn't needed again.
 
-## Zig port (this checkout)
+Upstream's Discord, which is where the interesting conversations happen:
+https://discord.gg/AJJbJAzNNJ
 
-Build with Zig 0.16.0 and SDL3. All game code is handwritten Zig; third-party
-OpenGL loading, stb_image, and Opus remain C dependencies.
+## Getting it running
+
+You need [Zig 0.16.0](https://ziglang.org/download/) and SDL3.
 
 ```sh
-zig build                          # game and launcher into zig-out/bin
+sudo apt install libsdl3-dev   # Ubuntu 25.10 or newer
+sudo dnf install SDL3-devel    # Fedora
+sudo pacman -S sdl3            # Arch
+brew install sdl3              # macOS
+```
+
+Older Ubuntu releases have no SDL3 package and need a source build. SDL3 ships
+no `sdl3-config`, so the build finds it through `pkg-config`, falling back to a
+plain `-lSDL3` if pkg-config doesn't know about it.
+
+Then:
+
+```sh
+git clone https://github.com/YeOldPress/alttp-zig
+cd alttp-zig
+zig build
+zig build launcher
+```
+
+Drop your ROM at `zelda3.sfc` in the repository root before you start the
+launcher, or just drag it onto the window when it asks. Press Launch: it builds
+the assets if they're missing and starts the game.
+
+The binaries land in `zig-out/bin` as `zelda3` and `zelda3-launcher`.
+
+### The other build steps
+
+```sh
 zig build test                     # the port's own tests
-zig build -Doptimize=ReleaseSafe
-zig build launcher                 # settings, asset building, and play
-zig build assets                   # just build zelda3_assets.dat, no window
-zig build run                      # run the game directly
+zig build run                      # skip the launcher, run the game
+zig build assets                   # build zelda3_assets.dat, no window
+zig build -Doptimize=ReleaseSafe   # if the debug build is too slow for you
 ```
-
-SDL3 must be installed and discoverable through `pkg-config --cflags/--libs
-sdl3` or the system library search paths. (SDL3 ships no `sdl3-config`.)
-
-The binaries are `zig-out/bin/zelda3` and `zig-out/bin/zelda3-launcher`. The
-game reads `zelda3.ini` and `zelda3_assets.dat` from the working directory, so
-run it from `zig-out/bin` — the launcher moves there for you.
-
-The conversion is **complete**. Every game routine in `src/` and `snes/` is Zig,
-and no project C source or header remains: the only C still compiled is
-third-party (`gl_core`, `stb_image`, Opus), alongside the usual SDL3, libc and
-OpenGL linkage.
-
-## Assets
-
-You need a copy of the ROM to extract the game's resources — levels, graphics,
-music, text. Once `zelda3_assets.dat` exists the ROM is no longer needed.
-
-Put your own US ROM at `zelda3.sfc` in the repository root, then either:
-
-```sh
-zig build launcher    # choose Build Assets, or just press Launch
-zig build assets      # no window; writes zig-out/bin/zelda3_assets.dat
-```
-
-The importer is Zig. No Python, Pillow or PyYAML is needed, and the file it
-writes is byte-for-byte the one the old `assets/restool.py` produced — a test
-checks it against that digest. A headered `.smc` is fine; the copier header is
-stripped when the ROM is read.
-
-ROMs are recognised by SHA-1, and the US, German and French releases are known.
-Only the US ROM can build the asset file; the other two matter for extracting
-dialogue in their language. The US ROM has this SHA256 hash:
-`66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb`
-
-The Python tool under `assets/` still works and still builds the same file. It
-remains the route for the extra languages, and it needs its libraries:
-
-```sh
-python3 -m pip install -r requirements.txt
-python3 assets/restool.py --extract-from-rom
-python3 assets/restool.py --languages=de
-```
-
-If you move the game somewhere else, take `zelda3_assets.dat` with it.
 
 ## The launcher
 
-`zig build launcher`, or `zig-out/bin/zelda3-launcher`, opens a small window
-that edits `zelda3.ini`, builds the asset file and starts the game. It draws
-with SDL's built-in 8x8 font, so it needs no toolkit and no font file — just
-the SDL the game already links.
+`zig-out/bin/zelda3-launcher`, or `zig build launcher`. It edits `zelda3.ini`,
+builds the asset file and starts the game. It draws with SDL's built-in 8x8
+font, so there's no toolkit and no font file to ship, just the SDL the game
+already links.
 
 | Menu entry | What it does |
 | --- | --- |
-| Settings | General, graphics and sound options |
-| Features | The extras listed under [Additional features](#additional-features) |
+| Settings | General, graphics and sound |
+| Features | The extras listed under [What's different](#whats-different-from-the-original) |
 | Save Settings | Writes `zelda3.ini` |
 | Build Assets | Asks for a ROM, then builds `zelda3_assets.dat` |
 | Launch | Saves the ini and starts the game |
-
-Under the Launch button the launcher says which state the asset file is in:
-**ASSETS VERIFIED** when it matches the digest the importer produces, **ASSETS
-PRESENT - CHECKSUM DIFFERS** when something else is there, usually an older
-file, and **ASSETS MISSING** when there is none. Presence alone is not enough:
-a stale `.dat` loads and then misbehaves in ways that look like game bugs.
-
-Build Assets — and Launch, when there are no assets yet — asks for a ROM. Drop
-any `.sfc` or `.smc` on the window, the name does not matter because the
-contents are checked, or press A/Enter to use the `zelda3.sfc` already sitting
-beside the game.
 
 | | Keyboard | Gamepad | Mouse |
 | --- | --- | --- | --- |
 | Move | Arrows | D-pad or stick | Hover, or wheel |
 | Select, or cycle a value | Enter | A | Left click |
-| Previous/next value | Left/Right | Left/Right | — |
-| Save | S | X | — |
+| Previous/next value | Left/Right | Left/Right | - |
+| Save | S | X | - |
 | Back, or quit | Esc | B | Right click |
 
-Gamepad faces are read by their printed label rather than their position, so on
-a Nintendo pad the button its case labels A is the one that confirms. Held
-directions repeat. Leaving asks first — B sits next to A, and the window is one
-press from gone — and says so when there are unsaved changes.
+Pad faces are read by the label printed on them rather than by position, so on
+a Nintendo pad the button its case calls A is the one that selects. This sounds
+like a detail and cost me an evening, because getting it wrong meant pressing A
+on the main menu closed the launcher.
 
-Settings that are free text (`WindowSize`, `Shader`, `MSUPath`) and the key
-bindings are shown but not editable here; edit `zelda3.ini` for those. The ini
-is rewritten a line at a time, so its comments, ordering and spacing survive.
+Under the Launch button it tells you what state the asset file is in:
 
-## Running the game
+- **ASSETS VERIFIED**, it matches the digest the importer produces
+- **ASSETS PRESENT - CHECKSUM DIFFERS**, something else is there, usually an
+  older file
+- **ASSETS MISSING**, there's nothing to load
+
+That check exists because presence isn't enough. A stale `.dat` loads perfectly
+happily and then the game misbehaves in ways that look like game bugs rather
+than like a bad file, which is a miserable thing to debug.
+
+When it asks for a ROM you can drop any `.sfc` or `.smc` on the window (the
+name doesn't matter, it checks the contents) or press A or Enter to use the
+`zelda3.sfc` sitting beside the game.
+
+Settings that are free text, `WindowSize`, `Shader` and `MSUPath`, plus the key
+bindings, are shown but not editable here. Edit `zelda3.ini` for those. The ini
+gets rewritten a line at a time, so its comments and layout survive the trip.
+
+## Playing
 
 Run `zelda3` from the directory holding `zelda3.ini` and `zelda3_assets.dat`.
+The launcher moves there for you; if you're starting the game yourself, that's
+`zig-out/bin`.
 
-- `zelda3 <rom>` also runs the original machine code side by side and compares
-  the whole RAM state after each frame, verifying the port against the original.
+| Button | Key |
+| ------ | ----------- |
+| Up | Up arrow |
+| Down | Down arrow |
+| Left | Left arrow |
+| Right | Right arrow |
+| Start | Enter |
+| Select | Right shift |
+| A | X |
+| B | Z |
+| X | S |
+| Y | A |
+| L | C |
+| R | V |
+
+Rebindable in `zelda3.ini`, along with the gamepad.
+
+| Key | Action |
+| --- | --- |
+| Tab | Turbo |
+| P / Shift+P | Pause, with and without the dimming |
+| Alt+Enter | Fullscreen |
+| Ctrl+Up / Ctrl+Down | Window bigger / smaller |
+| Shift+= / Shift+- | Volume up / down |
+| F1-F10 | Load snapshot |
+| Shift+F1-F10 | Save snapshot |
+| Ctrl+F1-F10 | Replay snapshot |
+| T | Toggle replay turbo |
+| L | Stop replaying a snapshot |
+| K | Clear the joypad input log |
+| W | Fill health and magic |
+| Shift+W | Fill rupees, bombs and arrows |
+| O | Set the dungeon key count to 1 |
+| Ctrl+E | Walk through walls |
+| Ctrl+R | Reset |
+| R | Toggle the fast and slow renderers |
+| F | Show renderer performance |
+
+`LoadRef` and `ReplayRef` put the dungeon playthrough snapshots on 1-9. They
+ship commented out in `zelda3.ini`.
+
+Two arguments worth knowing:
+
+- `zelda3 <rom>` runs the original machine code alongside the port and compares
+  the whole RAM state every frame. This is how the port gets verified, and it's
+  how most of the bugs in it were found.
 - `zelda3 --config <path>` reads a different ini. Without it the game moves to
   its own directory first.
 
-The game supports snapshots. The joypad input history is saved in the snapshot
-as well, so a playthrough can be replayed in turbo mode to check that the game
-still behaves the same.
+Snapshots save the joypad input history too, so you can replay a whole
+playthrough in turbo mode and check the game still does exactly what it did.
 
-## Compiling on Windows
+## MSU audio
 
-1. Install [Zig 0.16.0](https://ziglang.org/download/) and SDL3
-2. Download the project by clicking "Code > Download ZIP" on the github page
-3. Extract the ZIP to your hard drive
-4. Place the USA rom named `zelda3.sfc` in the root directory
-5. Build with `zig build`
-6. Run `zig build launcher` to build the assets and configure the game
+If you have an MSU music pack, point `MSUPath` at it and set `EnableMSU`. The
+value looks like five options but it's really two choices stuck together, which
+track set and which file format:
 
-`extract_assets.bat` still calls the Python tool and still works if you have
-Python with Pillow and PyYAML installed; `zig build assets` replaces it and
-needs neither.
+| Value | Files | Track set |
+| --- | --- | --- |
+| `false` | none, you get the SPC music | - |
+| `true` | `<MSUPath><n>.pcm` | plain |
+| `deluxe` | `<MSUPath><n>.pcm` | deluxe |
+| `opuz` | `<MSUPath><n>.opuz` | plain |
+| `deluxe-opuz` | `<MSUPath><n>.opuz` | deluxe |
 
-The TCC and Visual Studio routes (`run_with_tcc.bat`, `Zelda3.sln`,
-`zelda3.vcxproj`) compiled `src/*.c` and were removed once the last C sources
-were ported; MSBuild cannot build a Zig project. Both remain available in
-upstream: https://github.com/snesrev/zelda3
+Plain packs give you one track per song. Deluxe packs give you one track per
+*place*: the game's music id gets remapped by which overworld area or which
+entrance you're standing in, so Death Mountain, Kakariko and the lost woods
+each get their own music instead of sharing the overworld theme. That's 73
+extra tracks, numbered 37 to 114. OPUZ is the same music Opus-compressed, about
+a tenth of the size.
 
-## Compiling on Linux/MacOS
+Deluxe is a property of the pack you downloaded, not a quality setting. Set it
+with a plain pack installed and the game will go looking for tracks that aren't
+there and quietly fall back to chip music in most rooms.
 
-1. Install SDL3
-* Ubuntu/Debian `sudo apt install libsdl3-dev` (Ubuntu 25.10 or newer; older
-  releases have no SDL3 package and need a source build)
-* Fedora Linux `sudo dnf install SDL3-devel`
-* Arch Linux `sudo pacman -S sdl3`
-* macOS: `brew install sdl3` (you can get homebrew [here](https://brew.sh/))
+Two gotchas worth putting in writing, because both cost me time. MSU only mixes
+in stereo, so `AudioChannels = 1` silently gives you no MSU audio at all. And
+`AudioFreq` gets overridden while MSU is on, to 44100 for PCM and 48000 for
+OPUZ, because the mixer has to run at whatever rate the decoder produces.
 
-2. Install [Zig 0.16.0](https://ziglang.org/download/)
+## Assets
 
-3. Clone the repo and `cd` into it
+`zelda3_assets.dat` holds everything the game needs that came out of the ROM:
+levels, graphics, music, text. Building it is a one-off.
+
 ```sh
-git clone https://github.com/YeOldPress/alttp-zig
-cd alttp-zig
+zig build assets    # no window
 ```
 
-4. Place your US ROM file named `zelda3.sfc` in the root directory
+or let the launcher do it. The importer is Zig, it takes about a tenth of a
+second, and the file it writes is byte-for-byte the one `assets/restool.py`
+used to produce. There's a test pinning that digest, because "close enough" on
+an asset file means bugs that look like game bugs.
 
-5. Build and play
+ROMs are recognised by SHA-1. The US, German and French releases are known, but
+only the US ROM can build the asset file; the other two are for pulling
+dialogue out in their language. A headered `.smc` is fine, the copier header
+gets stripped on the way in. The US ROM's SHA256 is
+`66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb`.
+
+The Python tool is still in `assets/` and still works, and it's still the route
+to the extra languages:
+
 ```sh
-zig build
-zig build launcher
+python3 -m pip install -r requirements.txt
+python3 assets/restool.py --extract-dialogue -r german.sfc
+python3 assets/restool.py --languages=de
 ```
 
-Python is needed only for the optional differential checks below and for
-building the extra languages. The game and its assets need neither.
+If you move the game somewhere else, take `zelda3_assets.dat` with it.
 
-The `Makefile` was removed along with the last C sources — `zig build` replaces
-it. A Nintendo Switch target still exists under `src/platform/switch/`, but its
-Makefile builds the old C sources and no longer works here; upstream
-(https://github.com/snesrev/zelda3) still has a working one.
+## Checking the port against the original C
 
-## Checking the port against the C
-
-Optional differential checks compare the port's results and complete RAM state
-with the original C from commit `fbbb3f967a51fafe642e6140d0753979e73b4090`:
+The port is meant to behave identically to the C it came from, and that gets
+checked rather than assumed:
 
 ```sh
 python3 other/check_ancilla_parity.py
 python3 other/check_ancilla_parity.py -Doptimize=ReleaseSafe
 ```
 
-These checks require Git history containing that commit. The script creates a
-temporary, symbol-renamed C reference — together with the headers it needs, also
-taken from that commit — so it stays self-contained now that the tree carries no
-headers of its own. It does not generate Zig implementations or add the
-reference to the game build.
+This compiles the original C from commit `fbbb3f9`, runs it against the port
+and diffs the complete RAM state. It needs git history containing that commit.
+The script builds a temporary, symbol-renamed reference and pulls the headers
+it needs from that commit too, so it stays self-contained now that the tree
+carries no headers of its own.
 
-## About
+Between this and replaying recorded input frame by frame, several bugs turned
+up that had been sitting in the port unnoticed, including one that dragged Link
+most of a screen the wrong way whenever a Debirando pit pulled at him.
 
-This is a reverse engineered clone of Zelda 3 - A Link to the Past.
+## What's different from the original
 
-It's around 70-80kLOC reimplementing all parts of the original game — C
-upstream, Zig here — and the game is playable from start to end.
+All of this is inherited from upstream. The presentation options live in
+`[General]`, `[Graphics]` and `[Sound]` in `zelda3.ini`; the gameplay toggles
+are in `[Features]`, which is the launcher's Features screen.
 
-You need a copy of the ROM to extract game resources (levels, images). Then once that's done, the ROM is no longer needed.
+- Widescreen, 16:9, 16:10 or 18:9, and a higher resolution world map
+- Pixel shaders
+- MSU audio
+- Switching items with L and R, which also puts a second item slot on X (hold
+  X, L or R in the item screen to assign)
+- Turning while dashing, using the mirror to reach the Dark World, collecting
+  items and breaking pots with the sword, carrying 9999 rupees, four active
+  bombs instead of two, skipping the intro, cancelling bird travel, showing
+  maxed-out counts in yellow
+- An assortment of bug fixes, both the cosmetic kind and the kind that changes
+  how the game plays
 
-It uses the PPU and DSP implementation from [LakeSnes](https://github.com/elzo-d/LakeSnes), but with lots of speed optimizations.
-Additionally, it can be configured to also run the original machine code side by side. Then the RAM state is compared after each frame, to verify that the implementation is correct.
+Most of those ship off. The low health beep is the exception: `zelda3.ini`
+turns it off out of the box, and you can have it back if you miss it.
 
-I got much assistance from spannerism's Zelda 3 JP disassembly and the other ones that documented loads of function names and variables.
+Added here: a quit option on the player select screen, so you don't have to
+close the window with a controller in your hands.
 
-## Additional features
+## Credits
 
-A bunch of features have been added that are not supported by the original
-game. They live under `[Features]` in `zelda3.ini` and in the launcher's
-Features screen. Some of them are:
+snesrev and the zelda3 contributors did the reverse engineering and wrote the
+reimplementation this is a port of. snesrev credits spannerism's Zelda 3 JP
+disassembly and the other disassemblies that documented function names and
+variables.
 
-Support for pixel shaders.
+The SNES PPU and DSP come from [LakeSnes](https://github.com/elzo-d/LakeSnes)
+by elzo_d, by way of upstream, which optimised them heavily.
 
-Support for enhanced aspect ratios of 16:9 or 16:10.
+## Licence
 
-Higher quality world map.
+MIT, see `LICENSE.txt`.
 
-Support for MSU audio tracks.
+This is a fork and it inherits that licence. `LICENSE.txt` is unchanged and
+keeps the original copyright notices, Copyright (c) 2022 snesrev and Copyright
+(c) 2021 elzo_d, as the MIT licence requires.
 
-Secondary item slot on button X (Hold X in inventory to select).
-
-Switching current item with L/R keys.
-
-## Usage and controls
-
-| Button | Key         |
-| ------ | ----------- |
-| Up     | Up arrow    |
-| Down   | Down arrow  |
-| Left   | Left arrow  |
-| Right  | Right arrow |
-| Start  | Enter       |
-| Select | Right shift |
-| A      | X           |
-| B      | Z           |
-| X      | S           |
-| Y      | A           |
-| L      | C           |
-| R      | V           |
-
-The keys can be reconfigured in `zelda3.ini`, along with the gamepad's.
-
-Additionally, the following commands are available:
-
-| Key | Action                |
-| --- | --------------------- |
-| Tab | Turbo mode |
-| W   | Fill health/magic     |
-| Shift+W   | Fill rupees/bombs/arrows     |
-| O   | Set dungeon key to 1  |
-| Ctrl+E | Walk through walls |
-| Ctrl+R | Reset            |
-| P   | Pause (with dim)                |
-| Shift+P   | Pause (without dim)                |
-| Ctrl+Up   | Increase window size                |
-| Ctrl+Down   | Decrease window size                |
-| Shift+= | Volume up |
-| Shift+- | Volume down |
-| T   | Toggle replay turbo mode  |
-| K   | Clear all input history from the joypad log  |
-| L   | Stop replaying a snapshot  |
-| R   | Toggle between fast and slow renderer |
-| F   | Display renderer performance |
-| F1-F10 | Load snapshot      |
-| Alt+Enter | Toggle Fullscreen     |
-| Shift+F1-F10 | Save snapshot |
-| Ctrl+F1-F10 | Replay the snapshot |
-
-`LoadRef` and `ReplayRef` bind the dungeon playthrough snapshots to 1-9. Both
-are commented out in `zelda3.ini`; uncomment them to use those.
-
-## More Compilation Help
-
-Look at the wiki at https://github.com/snesrev/zelda3/wiki for more help.
-
-## License
-
-This project is licensed under the MIT license. See `LICENSE.txt` for details.
-
-It is a fork of [snesrev/zelda3](https://github.com/snesrev/zelda3) and inherits
-that licence. `LICENSE.txt` retains the original copyright notices — Copyright
-(c) 2022 snesrev and Copyright (c) 2021 elzo_d — as the MIT licence requires.
-The SNES PPU and DSP implementation originates in
-[LakeSnes](https://github.com/elzo-d/LakeSnes) by elzo_d.
-
-No game assets are distributed. Running the game requires a ROM you already
-own, from which the assets are extracted locally.
-
-### Third-party components
+No game assets are distributed here. Playing requires a ROM you already own,
+which the assets get extracted from locally.
 
 Vendored under `third_party/`, each under its own licence:
 
 | Component | Licence | Full text |
 | --- | --- | --- |
-| Opus 1.3.1 (stripped) | 3-clause BSD, © Xiph.Org Foundation and others | `third_party/opus-1.3.1-stripped/COPYING`, also appended to `LICENSE.txt` |
-| stb_image v2.27 | Dual: MIT or public domain (Unlicense), © Sean Barrett | end of `third_party/stb/stb_image.h` |
-| gl_core 3.1 | Generated OpenGL loader (glLoadGen); no licence text is present in the file | — |
+| Opus 1.3.1 (stripped) | 3-clause BSD, (c) Xiph.Org Foundation and others | `third_party/opus-1.3.1-stripped/COPYING`, also appended to `LICENSE.txt` |
+| stb_image v2.27 | MIT or public domain (Unlicense), (c) Sean Barrett | end of `third_party/stb/stb_image.h` |
+| gl_core 3.1 | Generated OpenGL loader (glLoadGen), carries no licence text | none |
 
-SDL3, libc and OpenGL are linked as external system dependencies and are not
-included in this repository.
+SDL3, libc and OpenGL are linked as system dependencies and aren't included
+here.
+
+## Things that no longer exist
+
+The `Makefile`, `Zelda3.sln`, `zelda3.vcxproj` and `run_with_tcc.bat` all built
+the C sources and were removed once there weren't any. `zig build` replaces
+them, and MSBuild can't build a Zig project anyway. Upstream still has working
+versions of all of it.
+
+There's a Nintendo Switch target under `src/platform/switch/`, but its Makefile
+builds the C that's gone, so it doesn't work here. Upstream's does.
+
+`extract_assets.bat` still calls the Python tool and still works if you have
+Python with Pillow and PyYAML. `zig build assets` replaces it and needs
+neither.
