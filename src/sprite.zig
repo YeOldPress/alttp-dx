@@ -2256,7 +2256,19 @@ pub export fn Sprite_CalculateSwordDamage(k: c_int) callconv(.c) void {
     var a = vars.link_sword_type.* -% 1;
     if (vars.link_is_running.* == 0)
         a |= if (sign8(vars.button_b_frames.*)) @as(u8, 4) else if (sign8(vars.button_b_frames.* -% 9)) @as(u8, 0) else 8;
-    vars.damage_type_determiner.* = tables.kSprite_Func14_Damage[a];
+    // With no sword this index runs off the end of the table. Sword type 0 and
+    // the 0xff the blacksmiths leave behind while they temper it both decrement
+    // into the high end, and a dash reaches here without a swing, so bumping
+    // something while the smiths have your sword lands on entry 254 of 12.
+    //
+    // The C reads past the table and feeds the result to the two lookups in
+    // Sprite_ApplyCalculatedDamage, which are indexed by this value and would
+    // run off their own ends in turn, so there is no faithful value to copy.
+    // Take the weakest entry, which is what a dash with no sword amounts to.
+    // Entry 0 is also the only safe floor: a determiner of 0 selects the
+    // kEnemyDamages row holding 255, 252 and 251, which are not damage amounts.
+    const idx: usize = if (a < tables.kSprite_Func14_Damage.len) a else 0;
+    vars.damage_type_determiner.* = tables.kSprite_Func14_Damage[idx];
     if (vars.link_item_in_hand.* & 10 != 0)
         vars.damage_type_determiner.* = 3;
     vars.link_sword_delay_timer.* = 4;
@@ -4796,6 +4808,32 @@ test "dispatch tables match the C layout, including the NULL garnish slot" {
     try std.testing.expectEqual(@as(usize, 12), kSprite_ExecuteSingle.len);
     try std.testing.expectEqual(@as(*const HandlerFuncK, &Sprite_inactiveSprite), kSprite_ExecuteSingle[0]);
     try std.testing.expectEqual(@as(*const HandlerFuncK, &SpriteModule_Stunned), kSprite_ExecuteSingle[11]);
+}
+
+test "sword damage survives having no sword" {
+    // The blacksmiths leave link_sword_type at 0xff while they temper it, and a
+    // dash reaches the damage calculation without a swing, so running into
+    // something in that state used to index entry 254 of a 12-entry table.
+    @memset(g_ram[0..0x20000], 0);
+    const k: c_int = 0;
+    vars.sprite_type[0] = 0x0b; // a cucco, which is what turned this up
+    vars.link_is_running.* = 1; // dashing, so the timing bits are not folded in
+
+    for ([_]u8{ 0xff, 0 }) |no_sword| {
+        vars.link_sword_type.* = no_sword;
+        Sprite_CalculateSwordDamage(k);
+        // The weakest entry, and in range for the two lookups downstream.
+        try std.testing.expectEqual(tables.kSprite_Func14_Damage[0], vars.damage_type_determiner.*);
+    }
+
+    // A real sword still reads the entry it always did.
+    for ([_]u8{ 1, 2, 3, 4 }) |sword| {
+        vars.link_sword_type.* = sword;
+        Sprite_CalculateSwordDamage(k);
+        try std.testing.expectEqual(tables.kSprite_Func14_Damage[sword - 1], vars.damage_type_determiner.*);
+    }
+
+    @memset(g_ram[0..0x20000], 0);
 }
 
 test "Sprite_ScheduleForBreakage sets the breakage state the C does" {
