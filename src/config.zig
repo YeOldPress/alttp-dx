@@ -129,6 +129,7 @@ pub const Config = extern struct {
     display_perf_title: bool,
     enable_msu: u8,
     resume_msu: bool,
+    msu_finish_cues: bool,
     disable_frame_delay: bool,
     msuvolume: u8,
     features0: u32,
@@ -634,6 +635,8 @@ fn handleSound(key: [*:0]const u8, value: [*:0]u8) bool {
         return true;
     } else if (util.StringEqualsNoCase(key, "ResumeMSU")) {
         return ParseBool(value, &g_config.resume_msu);
+    } else if (util.StringEqualsNoCase(key, "MSUFinishCues")) {
+        return ParseBool(value, &g_config.msu_finish_cues);
     }
     return false;
 }
@@ -743,6 +746,7 @@ fn parseOneConfigFile(filename: [*:0]const u8, depth: c_int) bool {
 
 export fn ParseConfigFile(filename_in: ?[*:0]const u8) callconv(.c) void {
     g_config.msuvolume = 100; // default msu volume, 100%
+    g_config.msu_finish_cues = true;
 
     var filename = filename_in;
     if (filename != null or !parseOneConfigFile("zelda3.user.ini", 0)) {

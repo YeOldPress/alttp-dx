@@ -325,6 +325,34 @@ pub export fn ZeldaIsPlayingMusicTrackWithBug(track: u8) callconv(.c) bool {
     }
 }
 
+/// Tracks worth waiting for, by the number the game asks for rather than the
+/// one deluxe remaps it to.
+///
+/// Only the mirror warp needs this. The game replaces that cue on a fixed
+/// animation timer, about a second and a half in, which suits the short SPC
+/// version and cuts a longer MSU one off mid-phrase every time.
+///
+/// The pack marks other tracks as one-shots as well - the intro among them -
+/// and waiting for those would hold back the music that is meant to follow,
+/// which is how it is supposed to work rather than a fault. So this is a list
+/// of cues, not every non-looping track.
+const kMsuCueTracks = [_]u8{8};
+
+/// True while one of those cues is still playing. The caller leaves its
+/// pending music request alone and comes back to it next frame.
+pub export fn ZeldaMsuCueStillPlaying() callconv(.c) bool {
+    const mp = &g_msu_player;
+    if (!config.g_config.msu_finish_cues or mp.f == null)
+        return false;
+    if (mp.state != kMsuState_Playing and mp.state != kMsuState_Resuming)
+        return false;
+    const playing = mp.resume_info.orig_track;
+    for (kMsuCueTracks) |cue| {
+        if (playing == cue) return true;
+    }
+    return false;
+}
+
 pub export fn ZeldaGetEntranceMusicTrack(i: c_int) callconv(.c) u8 {
     const mp = &g_msu_player;
     const kEntranceData_musicTrack = g_asset_ptrs[27].?;

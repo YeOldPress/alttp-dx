@@ -31,6 +31,7 @@ extern fn zelda_ppu_write(adr: u32, val: u8) void;
 extern fn zelda_apu_write(adr: u32, val: u8) void;
 extern fn zelda_apu_read(adr: u32) u8;
 extern fn ZeldaIsPlayingMusicTrackWithBug(track: u8) bool;
+extern fn ZeldaMsuCueStillPlaying() bool;
 extern fn ZeldaPlayMsuAudioTrack(track: u8) void;
 extern fn GetLightOverworldTilemap() [*]const u8;
 
@@ -291,6 +292,11 @@ fn Interrupt_NMI_AudioParts_Locked() void {
     if (music_control.* == 0) {
         // Zelda causes unwanted music change when going in a portal.
         // last_music_control doesn't hold the song but the last applied effect.
+    } else if (music_control.* < 0xf0 and ZeldaMsuCueStillPlaying()) {
+        // A one-shot MSU cue is mid-phrase. Leave the request pending rather
+        // than cutting the cue off; not clearing music_control is what brings
+        // us back here next frame. Volume and pause commands, which are 0xf0
+        // and up, still go through immediately.
     } else if (!ZeldaIsPlayingMusicTrackWithBug(music_control.*)) {
         last_music_control.* = music_control.*;
         ZeldaPlayMsuAudioTrack(music_control.*);

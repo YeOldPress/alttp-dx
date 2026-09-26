@@ -139,6 +139,7 @@ const kSettings = [_]Setting{
     } } },
     .{ .section = "Sound", .key = "MSUVolume", .label = "MSU Volume", .kind = .{ .number = .{ .min = 0, .max = 100, .step = 5, .suffix = "%" } } },
     .{ .section = "Sound", .key = "ResumeMSU", .label = "Resume MSU", .kind = .toggle },
+    .{ .section = "Sound", .key = "MSUFinishCues", .label = "Finish MSU Cues", .kind = .toggle },
     .{ .section = "Sound", .key = "MSUPath", .label = "MSU Path", .kind = .text },
 
     .{ .section = kSectionMark, .key = "", .label = "FEATURES", .kind = .text },
