@@ -155,6 +155,14 @@ pub fn build(b: *std.Build) void {
     tests.root_module.linkSystemLibrary("m", .{});
 
     if (target.result.os.tag == .macos) {
+        // Zig only looks in the macOS SDK for a native target. Naming a
+        // minimum version, as the release build does, stops it being native,
+        // so the frameworks have to be pointed at by hand.
+        if (!target.query.isNativeOs() and b.graph.host.result.os.tag == .macos) {
+            if (std.zig.system.darwin.getSdk(b.allocator, b.graph.io, &target.result)) |sdk| {
+                exe.root_module.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
+            }
+        }
         exe.root_module.linkFramework("OpenGL", .{});
     }
 

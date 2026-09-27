@@ -26,13 +26,21 @@ jobs:
     steps:
     - uses: actions/checkout@v7
     - uses: ./.github/actions/setup-zig
-    - name: Install dependencies
+    # Homebrew's SDL3, like a native zig build, only runs on the macOS the
+    # runner has. Both are built for macOS 11 instead, to match Info.plist.
+    - name: Build SDL3
       run: |
-        brew install sdl3
-        command -v pkg-config >/dev/null || brew install pkgconf
-    # Without -Dcpu the binaries are tuned to the runner's own CPU.
+        ver=3.4.16
+        curl -fsSL -o sdl3.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-$ver/SDL3-$ver.tar.gz
+        tar -xzf sdl3.tar.gz
+        cmake -S SDL3-$ver -B sdl3-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/sdl3" \
+          -DCMAKE_INSTALL_LIBDIR=lib -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_OSX_ARCHITECTURES=arm64
+        cmake --build sdl3-build --parallel
+        cmake --install sdl3-build
+    # An explicit target also means a baseline CPU rather than the runner's.
     - name: Build
-      run: zig build -Doptimize=ReleaseSafe -Dcpu=baseline --prefix out
+      run: zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-macos.11.0 --prefix out -Dsdl-include="$PWD/sdl3/include" -Dsdl-lib="$PWD/sdl3/lib"
     - name: Make the app bundle
       run: |
         app=alttp-zig.app/Contents
@@ -40,9 +48,8 @@ jobs:
         cp out/bin/zelda3 out/bin/zelda3-launcher $app/MacOS/
         cp zelda3.ini LICENSE.txt src/platform/macos/AppIcon.icns $app/Resources/
         sed "s/@VERSION@/${GITHUB_REF_NAME#v}/" src/platform/macos/Info.plist > $app/Info.plist
-        # Homebrew is not something to ask of everyone who downloads this,
-        # so SDL3 goes inside and both binaries get pointed at it.
-        cp "$(brew --prefix sdl3)/lib/libSDL3.0.dylib" $app/MacOS/
+        # SDL3 goes inside, and both binaries get pointed at it.
+        cp sdl3/lib/libSDL3.0.dylib $app/MacOS/
         chmod u+w $app/MacOS/libSDL3.0.dylib
         install_name_tool -id @executable_path/libSDL3.0.dylib $app/MacOS/libSDL3.0.dylib
         for bin in zelda3 zelda3-launcher; do
@@ -54,6 +61,12 @@ jobs:
         codesign --force -s - $app/MacOS/libSDL3.0.dylib $app/MacOS/zelda3
         codesign --force -s - alttp-zig.app
         codesign --verify --deep --strict alttp-zig.app
+        # Anything still asking for a newer macOS, or for Homebrew, would
+        # only work on machines like the runner.
+        for f in $app/MacOS/*; do
+          otool -l $f | grep -q "minos 11.0" || { echo "$f needs a newer macOS"; exit 1; }
+          if otool -L $f | grep -q /opt/homebrew; then echo "$f links Homebrew"; exit 1; fi
+        done
     - name: Check the bundle starts
       run: |
         alttp-zig.app/Contents/MacOS/zelda3-launcher --no-such-option || true
@@ -138,7 +151,7 @@ jobs:
         "SDL3_ROOT=$PWD\sdl3\SDL3-$ver\x86_64-w64-mingw32" | Out-File -FilePath $env:GITHUB_ENV -Append
     - name: Build
       shell: pwsh
-      run: zig build -Doptimize=ReleaseSafe -Dcpu=baseline --prefix out -Dsdl-include="$env:SDL3_ROOT\include" -Dsdl-lib="$env:SDL3_ROOT\bin"
+      run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu --prefix out -Dsdl-include="$env:SDL3_ROOT\include" -Dsdl-lib="$env:SDL3_ROOT\bin"
     - name: Package
       shell: pwsh
       run: |
