@@ -708,6 +708,12 @@ pub export fn zelda_apu_write(adr: u32, val: u8) callconv(.c) void {
     g_apu_write.ports[adr & 0x3] = val;
 }
 
+/// What the last frame sent to the first sound effect port. The NMI writes it
+/// every frame, zero when nothing played.
+pub fn lastSoundEffect1() u8 {
+    return g_apu_write.ports[2];
+}
+
 pub export fn ZeldaPushApuState() callconv(.c) void {
     ZeldaApuLock();
     g_apu_write_ents[g_apu_write_ent_pos & 0xf] = g_apu_write;

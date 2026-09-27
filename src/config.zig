@@ -135,6 +135,8 @@ pub const Config = extern struct {
     msu_finish_cues: bool,
     disable_frame_delay: bool,
     msuvolume: u8,
+    /// Controller rumble strength as a percentage; 0 turns it off.
+    rumble: u8,
     features0: u32,
 
     link_graphics: ?[*:0]const u8,
@@ -681,6 +683,9 @@ fn handleGeneral(key: [*:0]const u8, value: [*:0]u8) bool {
         return ParseBool(value, &g_config.display_perf_title);
     } else if (util.StringEqualsNoCase(key, "DisableFrameDelay")) {
         return ParseBool(value, &g_config.disable_frame_delay);
+    } else if (util.StringEqualsNoCase(key, "Rumble")) {
+        g_config.rumble = @intCast(std.math.clamp(atoi(value), 0, 100));
+        return true;
     } else if (util.StringEqualsNoCase(key, "Language")) {
         g_config.language = value;
         return true;
@@ -749,6 +754,7 @@ fn parseOneConfigFile(filename: [*:0]const u8, depth: c_int) bool {
 
 export fn ParseConfigFile(filename_in: ?[*:0]const u8) callconv(.c) void {
     g_config.msuvolume = 100; // default msu volume, 100%
+    g_config.rumble = 100;
     g_config.msu_finish_cues = true;
 
     var filename = filename_in;

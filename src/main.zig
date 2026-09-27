@@ -7,6 +7,7 @@ const config = @import("config.zig");
 const util = @import("util.zig");
 const opengl = @import("opengl.zig");
 const audio = @import("audio.zig");
+const rumble = @import("rumble.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const emu = @import("zelda_cpu_infra.zig");
 const snes_pkg = @import("snes");
@@ -689,6 +690,9 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         const is_replay = ZeldaRunFrame(inputs);
         c.SDL_UnlockMutex(g_audio_mutex);
 
+        // A replay is someone else's playthrough, so it doesn't shake the pad.
+        if (is_replay) rumble.reset() else rumble.afterFrame(audio.lastSoundEffect1());
+
         frameCtr +%= 1;
 
         if ((g_turbo != (is_replay and g_replay_turbo)) and
@@ -855,6 +859,10 @@ pub export fn ZeldaApuUnlock() callconv(.c) void {
 fn HandleCommand_Locked(j: u32, pressed: bool) void {
     if (!pressed)
         return;
+    // Loading, replaying or resetting changes health in one step, which the
+    // rumble would otherwise take for a hit.
+    if (j <= kKeys_ReplayRef_Last or j == kKeys_Reset)
+        rumble.reset();
     if (j <= kKeys_Load_Last) {
         SaveLoadSlot(kSaveLoad_Load, @intCast(j - kKeys_Load));
     } else if (j <= kKeys_Save_Last) {
@@ -917,13 +925,17 @@ fn OpenOneGamepad(id: c.SDL_JoystickID) void {
     // one. A pad whose printed faces disagree with this line is the usual cause
     // of "my buttons are swapped", and it says whether the fault is SDL's
     // mapping for the device or the [GamepadMap] section.
-    std.debug.print("Gamepad {d}: {s} [south={s} east={s} west={s} north={s}]\n", .{
+    // Whether it can rumble goes on the end, since plenty of pads, the
+    // SNES-style ones included, have no motor to drive.
+    const can_rumble = c.SDL_GetBooleanProperty(c.SDL_GetGamepadProperties(gamepad), c.SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
+    std.debug.print("Gamepad {d}: {s} [south={s} east={s} west={s} north={s}] rumble={s}\n", .{
         id,
         gamepadName(gamepad),
         buttonLabelName(gamepad, c.SDL_GAMEPAD_BUTTON_SOUTH),
         buttonLabelName(gamepad, c.SDL_GAMEPAD_BUTTON_EAST),
         buttonLabelName(gamepad, c.SDL_GAMEPAD_BUTTON_WEST),
         buttonLabelName(gamepad, c.SDL_GAMEPAD_BUTTON_NORTH),
+        if (can_rumble) "yes" else "no",
     });
 }
 
