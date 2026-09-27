@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=alttp-zig
+Comment=A Link to the Past, reimplemented and ported to Zig
+Exec=zelda3-launcher
+Icon=alttp-zig
+Categories=Game;AdventureGame;
+Terminal=false

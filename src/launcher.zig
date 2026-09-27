@@ -26,6 +26,10 @@ const c = @cImport({
 /// purpose: the launcher has already moved into its own directory, and a
 /// bare name would let PATH answer instead.
 const kGameExe = if (builtin.os.tag == .windows) ".\\zelda3.exe" else "./zelda3";
+/// kGameExe, unless the launcher is running from an app bundle or AppImage,
+/// in which case it is an absolute path into it. See usePackagedDataDir.
+var g_game_exe: [:0]const u8 = kGameExe;
+var g_game_exe_buf: [4096]u8 = undefined;
 const kRomPath = "zelda3.sfc";
 const kAssetsPath = "zelda3_assets.dat";
 
@@ -1103,6 +1107,49 @@ fn reportPads() void {
     }
 }
 
+/// A macOS .app bundle and a mounted AppImage are read-only, so the ini, the
+/// assets and the saves cannot sit beside the binaries the way they do in a
+/// plain install. Running from either, this moves into the per-user data
+/// directory instead (~/Library/Application Support/alttp-zig on macOS,
+/// ~/.local/share/alttp-zig on Linux), copies the bundled zelda3.ini there on
+/// the first run, and points g_game_exe at the bundled game. Returns false
+/// when not packaged, leaving the caller to use the binaries' directory.
+fn usePackagedDataDir(alloc: std.mem.Allocator, base: []const u8) bool {
+    // Where the packaging puts the game and the default ini, relative to
+    // SDL's base path. Inside a bundle SDL reports Contents/Resources.
+    const Layout = struct { game: []const u8, ini: []const u8 };
+    const layout: Layout = if (builtin.os.tag == .macos and std.mem.endsWith(u8, base, ".app/Contents/Resources/"))
+        .{ .game = "../MacOS/zelda3", .ini = "zelda3.ini" }
+    else if (builtin.os.tag == .linux and c.SDL_getenv("APPIMAGE") != null)
+        .{ .game = "zelda3", .ini = "../share/alttp-zig/zelda3.ini" }
+    else
+        return false;
+
+    g_game_exe = std.fmt.bufPrintZ(&g_game_exe_buf, "{s}{s}", .{ base, layout.game }) catch return false;
+    var ini_buf: [4096]u8 = undefined;
+    const default_ini = std.fmt.bufPrintZ(&ini_buf, "{s}{s}", .{ base, layout.ini }) catch return false;
+
+    // SDL creates the directory if it is not there yet.
+    const pref = c.SDL_GetPrefPath("", "alttp-zig") orelse {
+        std.debug.print("No data directory: {s}\n", .{c.SDL_GetError()});
+        return false;
+    };
+    defer c.SDL_free(pref);
+    fileio.setWorkingDirectory(pref) catch return false;
+
+    if (!fileio.exists("zelda3.ini")) {
+        const data = fileio.readWholeFile(alloc, default_ini) catch |err| {
+            std.debug.print("Could not read {s}: {s}\n", .{ default_ini, @errorName(err) });
+            return true;
+        };
+        defer alloc.free(data);
+        fileio.writeWholeFile("zelda3.ini", data) catch |err| {
+            std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
+        };
+    }
+    return true;
+}
+
 pub fn main(init: std.process.Init.Minimal) !void {
     const alloc = std.heap.c_allocator;
 
@@ -1114,7 +1161,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const start_dir = fileio.workingDirectory(&start_dir_buf) catch ".";
 
     if (c.SDL_GetBasePath()) |base| {
-        fileio.setWorkingDirectory(base) catch {};
+        if (!usePackagedDataDir(alloc, std.mem.span(base)))
+            fileio.setWorkingDirectory(base) catch {};
     }
 
     g_rom_path = findRom(start_dir, &g_rom_buf);
@@ -1520,9 +1568,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
 
     if (launch) {
-        const argv = [_:null]?[*:0]const u8{ kGameExe, null };
+        // --config keeps the game in our working directory rather than
+        // moving into its own, which inside a bundle is read-only.
+        const argv = [_:null]?[*:0]const u8{ g_game_exe, "--config", "zelda3.ini", null };
         const proc = c.SDL_CreateProcess(@ptrCast(&argv), false) orelse {
-            std.debug.print("Could not start {s}: {s}\n", .{ kGameExe, c.SDL_GetError() });
+            std.debug.print("Could not start {s}: {s}\n", .{ g_game_exe, c.SDL_GetError() });
             return error.LaunchFailed;
         };
         // Wait so the launcher's window is gone but the shell still blocks on

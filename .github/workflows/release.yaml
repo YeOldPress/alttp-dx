@@ -4,61 +4,123 @@ on:
   push:
     tags:
     - 'v*'
+    # Packaging changes on main get built too, without publishing anything,
+    # so a broken bundle turns up before the tag does. Tag pushes ignore the
+    # path filter.
+    branches:
+    - main
+    paths:
+    - .github/workflows/release.yaml
+    - .github/actions/**
+    - src/platform/**
+    - src/launcher.zig
+  workflow_dispatch:
 
 jobs:
-  package-unix:
-    name: package for ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-        - name: Linux
-          os: ubuntu-26.04
-          archive: alttp-zig-${{ github.ref_name }}-linux-x86_64.tar.gz
-        - name: Mac
-          os: macos-latest
-          archive: alttp-zig-${{ github.ref_name }}-macos-arm64.tar.gz
+  # An app bundle is read-only as far as the game is concerned, so the ini,
+  # assets and saves go in ~/Library/Application Support/alttp-zig; the
+  # launcher sees it is inside a bundle and moves there itself.
+  package-mac:
+    name: package for Mac
+    runs-on: macos-latest
     steps:
     - uses: actions/checkout@v7
     - uses: ./.github/actions/setup-zig
-    - name: Install dependencies for Linux
-      if: ${{ matrix.name == 'Linux' }}
-      run: |
-        sudo apt update
-        sudo apt install -y libsdl3-dev
-    - name: Install dependencies for Mac
-      if: ${{ matrix.name == 'Mac' }}
+    - name: Install dependencies
       run: |
         brew install sdl3
         command -v pkg-config >/dev/null || brew install pkgconf
+    # Without -Dcpu the binaries are tuned to the runner's own CPU.
     - name: Build
-      run: zig build -Doptimize=ReleaseSafe --prefix out
-    - name: Package
+      run: zig build -Doptimize=ReleaseSafe -Dcpu=baseline --prefix out
+    - name: Make the app bundle
       run: |
-        mkdir -p pkg/alttp-zig
-        cp out/bin/zelda3 out/bin/zelda3-launcher zelda3.ini README.md LICENSE.txt pkg/alttp-zig/
-    # Homebrew is not something to ask of everyone who downloads this, so the
-    # SDL3 dylib ships alongside the binaries and they are pointed at it.
-    # Rewriting the load paths breaks the signatures, so both get re-signed.
-    - name: Bundle SDL3 for Mac
-      if: ${{ matrix.name == 'Mac' }}
-      run: |
-        sdl=$(brew --prefix sdl3)/lib/libSDL3.0.dylib
-        cp "$sdl" pkg/alttp-zig/
-        chmod u+w pkg/alttp-zig/libSDL3.0.dylib
-        install_name_tool -id @executable_path/libSDL3.0.dylib pkg/alttp-zig/libSDL3.0.dylib
+        app=alttp-zig.app/Contents
+        mkdir -p $app/MacOS $app/Resources
+        cp out/bin/zelda3 out/bin/zelda3-launcher $app/MacOS/
+        cp zelda3.ini LICENSE.txt src/platform/macos/AppIcon.icns $app/Resources/
+        sed "s/@VERSION@/${GITHUB_REF_NAME#v}/" src/platform/macos/Info.plist > $app/Info.plist
+        # Homebrew is not something to ask of everyone who downloads this,
+        # so SDL3 goes inside and both binaries get pointed at it.
+        cp "$(brew --prefix sdl3)/lib/libSDL3.0.dylib" $app/MacOS/
+        chmod u+w $app/MacOS/libSDL3.0.dylib
+        install_name_tool -id @executable_path/libSDL3.0.dylib $app/MacOS/libSDL3.0.dylib
         for bin in zelda3 zelda3-launcher; do
-          old=$(otool -L pkg/alttp-zig/$bin | awk '/libSDL3/ {print $1}')
-          install_name_tool -change "$old" @executable_path/libSDL3.0.dylib pkg/alttp-zig/$bin
+          old=$(otool -L $app/MacOS/$bin | awk '/libSDL3/ {print $1}')
+          install_name_tool -change "$old" @executable_path/libSDL3.0.dylib $app/MacOS/$bin
         done
-        codesign --force -s - pkg/alttp-zig/libSDL3.0.dylib pkg/alttp-zig/zelda3 pkg/alttp-zig/zelda3-launcher
-        pkg/alttp-zig/zelda3-launcher --no-such-option || true
+        # Rewriting load paths breaks signatures. The bundle is signed last,
+        # which signs the launcher as its main executable.
+        codesign --force -s - $app/MacOS/libSDL3.0.dylib $app/MacOS/zelda3
+        codesign --force -s - alttp-zig.app
+        codesign --verify --deep --strict alttp-zig.app
+    - name: Check the bundle starts
+      run: |
+        alttp-zig.app/Contents/MacOS/zelda3-launcher --no-such-option || true
+        test -f "$HOME/Library/Application Support/alttp-zig/zelda3.ini"
     - name: Archive
-      run: tar -C pkg -czf ${{ matrix.archive }} alttp-zig
+      run: ditto -c -k --keepParent alttp-zig.app alttp-zig-${{ github.ref_name }}-macos-arm64.zip
     - uses: actions/upload-artifact@v7
       with:
-        name: ${{ matrix.name }}
-        path: ${{ matrix.archive }}
+        name: Mac
+        path: alttp-zig-${{ github.ref_name }}-macos-arm64.zip
+
+  # Built in an Ubuntu 22.04 container so the AppImage asks for no newer glibc
+  # than 2.35. Distro SDL3 packages link against a newer one, so SDL3 is built
+  # here from source; it loads X11, Wayland and the audio libraries at run
+  # time, so the one .so covers whatever the desktop turns out to have.
+  package-linux:
+    name: package for Linux
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    steps:
+    - name: Install build dependencies
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        apt-get update
+        apt-get install -y --no-install-recommends ca-certificates curl xz-utils git file \
+          build-essential cmake ninja-build pkg-config \
+          libasound2-dev libpulse-dev libpipewire-0.3-dev \
+          libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
+          libxkbcommon-dev libwayland-dev libdecor-0-dev libdrm-dev libgbm-dev \
+          libgl1-mesa-dev libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev libudev-dev
+    - uses: actions/checkout@v7
+    - uses: ./.github/actions/setup-zig
+    - name: Build SDL3
+      run: |
+        ver=3.4.16
+        curl -fsSL -o sdl3.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-$ver/SDL3-$ver.tar.gz
+        tar -xzf sdl3.tar.gz
+        cmake -S SDL3-$ver -B sdl3-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX="$PWD/sdl3" -DCMAKE_INSTALL_LIBDIR=lib -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
+        cmake --build sdl3-build
+        cmake --install sdl3-build
+    # An explicit target also means a baseline CPU rather than the runner's.
+    - name: Build
+      run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux-gnu.2.35 --prefix out -Dsdl-include="$PWD/sdl3/include" -Dsdl-lib="$PWD/sdl3/lib"
+    - name: Make the AppImage
+      run: |
+        dir=alttp-zig.AppDir
+        mkdir -p $dir/usr/bin $dir/usr/lib $dir/usr/share/alttp-zig
+        cp out/bin/zelda3 out/bin/zelda3-launcher $dir/usr/bin/
+        cp -L sdl3/lib/libSDL3.so.0 $dir/usr/lib/
+        cp zelda3.ini LICENSE.txt $dir/usr/share/alttp-zig/
+        cp src/platform/linux/AppRun src/platform/linux/alttp-zig.desktop src/platform/linux/alttp-zig.png $dir/
+        chmod +x $dir/AppRun
+        curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+        echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool" | sha256sum -c -
+        chmod +x appimagetool
+        # No FUSE in a container, so the tool unpacks itself instead of mounting.
+        APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool $dir alttp-zig-${{ github.ref_name }}-x86_64.AppImage
+    - name: Check the AppImage starts
+      run: |
+        APPIMAGE_EXTRACT_AND_RUN=1 ./alttp-zig-${{ github.ref_name }}-x86_64.AppImage --no-such-option || true
+        test -f "$HOME/.local/share/alttp-zig/zelda3.ini"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: Linux
+        path: alttp-zig-${{ github.ref_name }}-x86_64.AppImage
 
   package-windows:
     name: package for Windows
@@ -76,7 +138,7 @@ jobs:
         "SDL3_ROOT=$PWD\sdl3\SDL3-$ver\x86_64-w64-mingw32" | Out-File -FilePath $env:GITHUB_ENV -Append
     - name: Build
       shell: pwsh
-      run: zig build -Doptimize=ReleaseSafe --prefix out -Dsdl-include="$env:SDL3_ROOT\include" -Dsdl-lib="$env:SDL3_ROOT\bin"
+      run: zig build -Doptimize=ReleaseSafe -Dcpu=baseline --prefix out -Dsdl-include="$env:SDL3_ROOT\include" -Dsdl-lib="$env:SDL3_ROOT\bin"
     - name: Package
       shell: pwsh
       run: |
@@ -90,7 +152,8 @@ jobs:
 
   release:
     name: publish
-    needs: [package-unix, package-windows]
+    needs: [package-mac, package-linux, package-windows]
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
