@@ -4579,11 +4579,23 @@ pub export fn Sprite_ConvertVelocityToAngle(x_in: u8, y_in: u8) callconv(.c) u8 
     const s: usize = (@as(usize, y >> 7) + @as(usize, x >> 7) * 2) * 8;
     if (sign8(x)) x = 0 -% x;
     if (sign8(y)) y = 0 -% y;
-    if (x >= y) {
-        return tables.kConvertVelocityToAngle_Tab0[@as(usize, y >> 2) + s];
-    } else {
-        return tables.kConvertVelocityToAngle_Tab1[@as(usize, x >> 2) + s];
-    }
+    // s picks one of four eight-entry quadrant rows and the smaller component
+    // over four picks within it, so anything past 31 in the minor component
+    // walks into the following row. The C does that on purpose often enough
+    // that it is pinned by a test below, so it has to stay.
+    //
+    // What cannot stay is walking off the end entirely. A chain chomp at
+    // (112, -112) asks for entry 36 of 32, and 0x80 negates to itself so it
+    // arrives here still looking negative and reaches further still. The C
+    // reads past the table and masks whatever it finds into a direction, so
+    // there is no right answer to copy; saturating at the last entry is simply
+    // a bounded one, and it leaves every index the table does hold untouched.
+    const raw = @as(usize, if (x >= y) y >> 2 else x >> 2) + s;
+    const i = @min(raw, tables.kConvertVelocityToAngle_Tab0.len - 1);
+    return if (x >= y)
+        tables.kConvertVelocityToAngle_Tab0[i]
+    else
+        tables.kConvertVelocityToAngle_Tab1[i];
 }
 
 pub export fn Sprite_SpawnDynamically(k: c_int, what: u8, info: *SpriteSpawnInfo) callconv(.c) c_int {
@@ -4708,10 +4720,11 @@ test "Sprite_ConvertVelocityToAngle matches the C quadrant tables" {
     // high bit set selects the negative quadrants
     try std.testing.expectEqual(@as(u8, 7), Sprite_ConvertVelocityToAngle(200, 16));
     try std.testing.expectEqual(@as(u8, 13), Sprite_ConvertVelocityToAngle(16, 200));
-    // (200, 200) is deliberately not tested: with both high bits set the C
-    // indexes kConvertVelocityToAngle_Tab0[38] on a 32-entry table, reading out
-    // of bounds. There is no correct expected value, and the port reproduces the
-    // index faithfully rather than masking it.
+    // (200, 200) indexes kConvertVelocityToAngle_Tab0[38] on a 32-entry table
+    // in the C, reading out of bounds. There is no correct expected value, so
+    // the index now saturates at the last entry instead of crashing; see the
+    // note in Sprite_ConvertVelocityToAngle.
+    try std.testing.expectEqual(@as(u8, 10), Sprite_ConvertVelocityToAngle(200, 200));
     try std.testing.expectEqual(@as(u8, 0), Sprite_ConvertVelocityToAngle(0x40, 0x20));
     try std.testing.expectEqual(@as(u8, 12), Sprite_ConvertVelocityToAngle(0x20, 0x40));
 }
@@ -4808,6 +4821,43 @@ test "dispatch tables match the C layout, including the NULL garnish slot" {
     try std.testing.expectEqual(@as(usize, 12), kSprite_ExecuteSingle.len);
     try std.testing.expectEqual(@as(*const HandlerFuncK, &Sprite_inactiveSprite), kSprite_ExecuteSingle[0]);
     try std.testing.expectEqual(@as(*const HandlerFuncK, &SpriteModule_Stunned), kSprite_ExecuteSingle[11]);
+}
+
+test "velocity to angle survives a component the table cannot reach" {
+    // A minor component past 31 walks out of its quadrant row, and far enough
+    // out it leaves the table. A chain chomp at (112, -112) asked for entry 36
+    // of 32. These all saturate on the last entry now.
+    const off_the_end = [_]struct { x: u8, y: u8 }{
+        .{ .x = 112, .y = 0x90 }, // (112, -112), the reported crash, Tab0
+        .{ .x = 0xB0, .y = 0xC0 }, // (-80, -64), Tab0
+        .{ .x = 0xC0, .y = 0xB0 }, // (-64, -80), the same in Tab1
+        .{ .x = 0x80, .y = 0x80 }, // 0x80 negates to itself, so it reads as negative
+    };
+    for (off_the_end) |c| {
+        try std.testing.expectEqual(@as(u8, 10), Sprite_ConvertVelocityToAngle(c.x, c.y));
+    }
+
+    // Everything the table does hold is untouched, the deliberate walk into the
+    // next quadrant row included: the value still comes from the raw index.
+    const in_range = [_]struct { x: u8, y: u8 }{
+        .{ .x = 0, .y = 0 },       .{ .x = 16, .y = 0 },
+        .{ .x = 0x40, .y = 0x20 }, // minor 32, so index 8: into the next row
+        .{ .x = 0x7c, .y = 0x1c }, .{ .x = 200, .y = 16 },
+    };
+    for (in_range) |c| {
+        var x = c.x;
+        var y = c.y;
+        const s_base: usize = (@as(usize, y >> 7) + @as(usize, x >> 7) * 2) * 8;
+        if (x & 0x80 != 0) x = 0 -% x;
+        if (y & 0x80 != 0) y = 0 -% y;
+        const raw = @as(usize, if (x >= y) y >> 2 else x >> 2) + s_base;
+        try std.testing.expect(raw < 32);
+        const want = if (x >= y)
+            tables.kConvertVelocityToAngle_Tab0[raw]
+        else
+            tables.kConvertVelocityToAngle_Tab1[raw];
+        try std.testing.expectEqual(want, Sprite_ConvertVelocityToAngle(c.x, c.y));
+    }
 }
 
 test "sword damage survives having no sword" {
