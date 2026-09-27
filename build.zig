@@ -164,6 +164,9 @@ pub fn build(b: *std.Build) void {
             }
         }
         exe.root_module.linkFramework("OpenGL", .{});
+        // Room for the release packaging to repoint SDL3 at the copy inside
+        // the app bundle, which is a longer path than the one linked against.
+        exe.headerpad_max_install_names = true;
     }
 
     // The triforce icon, so the Windows binary is not a blank default one.
@@ -184,6 +187,7 @@ pub fn build(b: *std.Build) void {
     });
     addSdlIncludes(b, launcher.root_module);
     linkSdlLibs(b, launcher.root_module);
+    launcher.headerpad_max_install_names = target.result.os.tag == .macos;
     b.installArtifact(launcher);
 
     const launcher_run = b.addRunArtifact(launcher);
