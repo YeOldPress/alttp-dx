@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags:
+    - 'v*'
+
+jobs:
+  package-unix:
+    name: package for ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+        - name: Linux
+          os: ubuntu-26.04
+          archive: alttp-zig-${{ github.ref_name }}-linux-x86_64.tar.gz
+        - name: Mac
+          os: macos-latest
+          archive: alttp-zig-${{ github.ref_name }}-macos-arm64.tar.gz
+    steps:
+    - uses: actions/checkout@v7
+    - uses: mlugg/setup-zig@v2
+      with:
+        version: 0.16.0
+    - name: Install dependencies for Linux
+      if: ${{ matrix.name == 'Linux' }}
+      run: |
+        sudo apt update
+        sudo apt install -y libsdl3-dev
+    - name: Install dependencies for Mac
+      if: ${{ matrix.name == 'Mac' }}
+      run: |
+        brew install sdl3
+        command -v pkg-config >/dev/null || brew install pkgconf
+    - name: Build
+      run: zig build -Doptimize=ReleaseSafe --prefix out
+    - name: Package
+      run: |
+        mkdir -p pkg/alttp-zig
+        cp out/bin/zelda3 out/bin/zelda3-launcher zelda3.ini README.md LICENSE.txt pkg/alttp-zig/
+    # Homebrew is not something to ask of everyone who downloads this, so the
+    # SDL3 dylib ships alongside the binaries and they are pointed at it.
+    # Rewriting the load paths breaks the signatures, so both get re-signed.
+    - name: Bundle SDL3 for Mac
+      if: ${{ matrix.name == 'Mac' }}
+      run: |
+        sdl=$(brew --prefix sdl3)/lib/libSDL3.0.dylib
+        cp "$sdl" pkg/alttp-zig/
+        chmod u+w pkg/alttp-zig/libSDL3.0.dylib
+        install_name_tool -id @executable_path/libSDL3.0.dylib pkg/alttp-zig/libSDL3.0.dylib
+        for bin in zelda3 zelda3-launcher; do
+          old=$(otool -L pkg/alttp-zig/$bin | awk '/libSDL3/ {print $1}')
+          install_name_tool -change "$old" @executable_path/libSDL3.0.dylib pkg/alttp-zig/$bin
+        done
+        codesign --force -s - pkg/alttp-zig/libSDL3.0.dylib pkg/alttp-zig/zelda3 pkg/alttp-zig/zelda3-launcher
+        pkg/alttp-zig/zelda3-launcher --no-such-option || true
+    - name: Archive
+      run: tar -C pkg -czf ${{ matrix.archive }} alttp-zig
+    - uses: actions/upload-artifact@v7
+      with:
+        name: ${{ matrix.name }}
+        path: ${{ matrix.archive }}
+
+  package-windows:
+    name: package for Windows
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v7
+    - uses: mlugg/setup-zig@v2
+      with:
+        version: 0.16.0
+    - name: Install SDL3
+      shell: pwsh
+      run: |
+        $ver = "3.4.16"
+        $url = "https://github.com/libsdl-org/SDL/releases/download/release-$ver/SDL3-devel-$ver-mingw.zip"
+        Invoke-WebRequest -Uri $url -OutFile sdl3.zip
+        Expand-Archive sdl3.zip -DestinationPath sdl3
+        "SDL3_ROOT=$PWD\sdl3\SDL3-$ver\x86_64-w64-mingw32" | Out-File -FilePath $env:GITHUB_ENV -Append
+    - name: Build
+      shell: pwsh
+      run: zig build -Doptimize=ReleaseSafe --prefix out -Dsdl-include="$env:SDL3_ROOT\include" -Dsdl-lib="$env:SDL3_ROOT\bin"
+    - name: Package
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory pkg\alttp-zig | Out-Null
+        Copy-Item out\bin\zelda3.exe, out\bin\zelda3-launcher.exe, "$env:SDL3_ROOT\bin\SDL3.dll", zelda3.ini, README.md, LICENSE.txt pkg\alttp-zig\
+        Compress-Archive pkg\alttp-zig "alttp-zig-${{ github.ref_name }}-windows-x86_64.zip"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: Windows
+        path: alttp-zig-${{ github.ref_name }}-windows-x86_64.zip
+
+  release:
+    name: publish
+    needs: [package-unix, package-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/download-artifact@v8
+      with:
+        path: dist
+        merge-multiple: true
+    - name: Create release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        notes=.github/release-notes/${{ github.ref_name }}.md
+        if [ -f "$notes" ]; then set -- --notes-file "$notes"; else set -- --generate-notes; fi
+        gh release create ${{ github.ref_name }} dist/* --title "${{ github.ref_name }}" --verify-tag "$@"
