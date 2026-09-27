@@ -23,9 +23,7 @@ jobs:
           os: macos-latest
     steps:
     - uses: actions/checkout@v7
-    - uses: mlugg/setup-zig@v2
-      with:
-        version: 0.16.0
+    - uses: ./.github/actions/setup-zig
     - name: Install dependencies for Linux
       if: ${{ matrix.name == 'Linux' }}
       run: |
@@ -47,9 +45,7 @@ jobs:
     runs-on: windows-latest
     steps:
     - uses: actions/checkout@v7
-    - uses: mlugg/setup-zig@v2
-      with:
-        version: 0.16.0
+    - uses: ./.github/actions/setup-zig
     # No pkg-config on Windows, so SDL3 comes from the upstream release and
     # gets pointed at directly. The mingw package matches zig's default ABI
     # for this target. Its import library is libSDL3.dll.a, which zig does not
