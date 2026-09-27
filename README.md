@@ -15,6 +15,19 @@ built the ROM isn't needed again.
 Upstream's Discord, which is where the interesting conversations happen:
 https://discord.gg/AJJbJAzNNJ
 
+## Downloads
+
+[Releases](https://github.com/YeOldPress/alttp-zig/releases) have a macOS app
+(Apple Silicon, macOS 11 or newer), a Linux AppImage (x86_64, glibc 2.35 or
+newer, so Ubuntu 22.04 and anything after it) and a Windows zip. SDL3 is inside
+all three. Start it, give it your ROM, press Launch.
+
+The app and the AppImage can't write inside themselves, so they keep
+`zelda3.ini`, `zelda3_assets.dat` and your saves in a data directory instead:
+`~/Library/Application Support/alttp-zig` on macOS, `~/.local/share/alttp-zig`
+on Linux. That's also where to put an MSU pack or edit the ini by hand. The
+Windows zip keeps everything in its own folder, same as a build from source.
+
 ## Getting it running
 
 You need [Zig 0.16.0](https://ziglang.org/download/) and SDL3.
@@ -132,7 +145,7 @@ gets rewritten a line at a time, so its comments and layout survive the trip.
 
 Run `zelda3` from the directory holding `zelda3.ini` and `zelda3_assets.dat`.
 The launcher moves there for you; if you're starting the game yourself, that's
-`zig-out/bin`.
+`zig-out/bin`, or the data directory above for the app and the AppImage.
 
 | Button | Key |
 | ------ | ----------- |
