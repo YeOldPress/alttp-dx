@@ -16,6 +16,9 @@ const asset_all = @import("asset_all.zig");
 const c = @cImport({
     // translate-c cannot parse arm_neon.h, which SDL pulls in on ARM targets.
     @cDefine("SDL_DISABLE_NEON", "1");
+    // Optimized builds define _FORTIFY_SOURCE, which makes mingw's headers
+    // inline checked wrappers that translate-c turns into unused locals.
+    @cUndef("_FORTIFY_SOURCE");
     @cInclude("SDL3/SDL.h");
 });
 
