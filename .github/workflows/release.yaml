@@ -14,6 +14,7 @@ on:
     - .github/actions/**
     - src/platform/**
     - src/launcher.zig
+    - build.zig
   workflow_dispatch:
 
 jobs:
