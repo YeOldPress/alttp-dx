@@ -12,6 +12,7 @@ const overworld = @import("asset_overworld.zig");
 const dungeon = @import("asset_dungeon.zig");
 const dialogue = @import("asset_dialogue.zig");
 const music = @import("asset_music.zig");
+pub const import_mod = @import("asset_import.zig");
 
 const Rom = rom_mod.Rom;
 
@@ -72,7 +73,15 @@ const kEntranceFields = [_][]const u8{
 };
 
 pub fn buildAll(alloc: std.mem.Allocator, rom: Rom) !Assets {
+    var problem = import_mod.Problem{};
+    return buildFrom(alloc, rom, null, &problem);
+}
+
+/// Builds every asset, taking the editable ones from `files` when given and
+/// from the ROM otherwise. The order below is the file format.
+pub fn buildFrom(alloc: std.mem.Allocator, rom: Rom, files: ?*const import_mod.Files, problem: *import_mod.Problem) !Assets {
     var b = Builder{ .alloc = alloc, .rom = rom, .list = .empty };
+    const out = import_mod.Out{ .alloc = alloc, .list = &b.list };
     errdefer {
         for (b.list.items) |a| alloc.free(a.data);
         b.list.deinit(alloc);
@@ -83,6 +92,34 @@ pub fn buildAll(alloc: std.mem.Allocator, rom: Rom) !Assets {
         try b.add(song.assetName(), .uint8, try music.build(alloc, rom, song));
 
     // print_dungeon_rooms
+    if (files) |f| {
+        try import_mod.addDungeonRooms(f, rom, out, problem);
+    } else try addDungeonRoomsFromRom(&b, alloc, rom);
+
+    // print_enemy_damage_data, print_link_graphics, print_dungeon_sprites
+    try b.add("kEnemyDamageData", .uint8, try build_mod.buildEnemyDamageData(alloc, rom));
+    try b.addMisc("kLinkGraphics");
+
+    if (files) |f| {
+        try import_mod.addDungeonSprites(f, out, problem);
+    } else {
+        var sprite_offsets: [dungeon.kRoomCount]u16 = undefined;
+        try b.add("kDungeonSprites", .uint8, try dungeon.buildSprites(alloc, rom, &sprite_offsets));
+        try b.add("kDungeonSpriteOffs", .uint16, try alloc.dupe(u8, std.mem.sliceAsBytes(sprite_offsets[0..])));
+    }
+
+    // print_map32_to_map16, print_images
+    if (files) |f| {
+        try import_mod.addMap32(f, out);
+    } else try b.addMany("kMap32ToMap16_", &.{ "0", "1", "2", "3" });
+    try b.add("kSprGfx", .packed_arrays, try build_mod.buildSprGfx(alloc, rom));
+    try b.add("kBgGfx", .packed_arrays, try build_mod.buildBgGfx(alloc, rom));
+
+    try addMiscAndOverworld(&b, alloc, rom, files, out, problem);
+    return .{ .items = try b.list.toOwnedSlice(alloc), .alloc = alloc };
+}
+
+fn addDungeonRoomsFromRom(b: *Builder, alloc: std.mem.Allocator, rom: Rom) !void {
     var rooms = try dungeon.buildRooms(alloc, rom);
     defer rooms.deinit(alloc);
     try b.add("kDungeonRoom", .uint8, try alloc.dupe(u8, rooms.data));
@@ -123,20 +160,9 @@ pub fn buildAll(alloc: std.mem.Allocator, rom: Rom) !Assets {
 
     try b.add("kDungeonSecrets", .uint8, try dungeon.buildSecrets(alloc, rom));
     try b.addMany("", &.{ "kDungAttrsForTile_Offs", "kDungAttrsForTile", "kMovableBlockDataInit", "kTorchDataInit", "kTorchDataJunk" });
+}
 
-    // print_enemy_damage_data, print_link_graphics, print_dungeon_sprites
-    try b.add("kEnemyDamageData", .uint8, try build_mod.buildEnemyDamageData(alloc, rom));
-    try b.addMisc("kLinkGraphics");
-
-    var sprite_offsets: [dungeon.kRoomCount]u16 = undefined;
-    try b.add("kDungeonSprites", .uint8, try dungeon.buildSprites(alloc, rom, &sprite_offsets));
-    try b.add("kDungeonSpriteOffs", .uint16, try alloc.dupe(u8, std.mem.sliceAsBytes(sprite_offsets[0..])));
-
-    // print_map32_to_map16, print_images
-    try b.addMany("kMap32ToMap16_", &.{ "0", "1", "2", "3" });
-    try b.add("kSprGfx", .packed_arrays, try build_mod.buildSprGfx(alloc, rom));
-    try b.add("kBgGfx", .packed_arrays, try build_mod.buildBgGfx(alloc, rom));
-
+fn addMiscAndOverworld(b: *Builder, alloc: std.mem.Allocator, rom: Rom, files: ?*const import_mod.Files, out: import_mod.Out, problem: *import_mod.Problem) !void {
     // print_misc
     try b.addMany("", &.{
         "kOverworldMapGfx",         "kLightOverworldTilemap",      "kDarkOverworldTilemap",
@@ -152,7 +178,9 @@ pub fn buildAll(alloc: std.mem.Allocator, rom: Rom) !Assets {
     });
 
     // print_dialogue
-    try b.add("kDialogue", .packed_arrays, try dialogue.buildDialogue(alloc, rom));
+    if (files) |f| {
+        try b.add("kDialogue", .packed_arrays, try dialogue.buildDialogueFromTexts(alloc, f.dialogue));
+    } else try b.add("kDialogue", .packed_arrays, try dialogue.buildDialogue(alloc, rom));
     try b.add("kDialogueFont", .packed_arrays, try dialogue.buildDialogueFont(alloc, rom));
     try b.add("kDialogueMap", .packed_arrays, try dialogue.buildDialogueMap(alloc));
 
@@ -175,12 +203,14 @@ pub fn buildAll(alloc: std.mem.Allocator, rom: Rom) !Assets {
     try b.add("kOverworld_Lobytes_Comp", .packed_arrays, try build_mod.buildOverworldLobytes(alloc, rom));
 
     // print_overworld_tables
-    var ow = try overworld.build(alloc, rom);
-    defer ow.deinit();
-    for (ow.assets) |a| try b.add(a.name, a.kind, try alloc.dupe(u8, a.data));
-    try b.addMany("", &.{ "kMap8DataToTileAttr", "kSomeTileAttr" });
-
-    return .{ .items = try b.list.toOwnedSlice(alloc), .alloc = alloc };
+    if (files) |f| {
+        try import_mod.addOverworldTables(f, rom, out, problem);
+    } else {
+        var ow = try overworld.build(alloc, rom);
+        defer ow.deinit();
+        for (ow.assets) |a| try b.add(a.name, a.kind, try alloc.dupe(u8, a.data));
+        try b.addMany("", &.{ "kMap8DataToTileAttr", "kSomeTileAttr" });
+    }
 }
 
 /// Builds every asset and serializes the container.

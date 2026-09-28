@@ -1703,10 +1703,18 @@ pub fn run(alloc: std.mem.Allocator) !Outcome {
 
 const testing = std.testing;
 
+/// A scratch file name of this process's own. The menu's tests run in two test
+/// binaries at once, and a shared name lets one delete the other's file.
+fn scratchName(buf: []u8, base: []const u8, ext: []const u8) ![:0]const u8 {
+    const pid: u64 = if (builtin.os.tag == .windows) std.os.windows.GetCurrentProcessId() else @intCast(std.c.getpid());
+    return std.fmt.bufPrintZ(buf, "zig-cache-{s}-{d}.{s}", .{ base, pid, ext });
+}
+
 test "an untouched ini round trips byte for byte" {
     const src =
         "# a comment\r\n[Graphics]\r\n# another\r\nWindowScale = 3\r\n\r\nLinearFiltering = 0\r\n";
-    const path = "zig-cache-roundtrip.ini";
+    var path_buf: [64]u8 = undefined;
+    const path = try scratchName(&path_buf, "roundtrip", "ini");
     try fileio.writeWholeFile(path, src);
     defer _ = fileio.remove(path);
 
@@ -1722,7 +1730,8 @@ test "an untouched ini round trips byte for byte" {
 test "changing a value leaves every other line alone" {
     const src =
         "# keep me\n[Graphics]\n# and me\nWindowScale = 3\nLinearFiltering = 0\n";
-    const path = "zig-cache-edit.ini";
+    var path_buf: [64]u8 = undefined;
+    const path = try scratchName(&path_buf, "edit", "ini");
     try fileio.writeWholeFile(path, src);
     defer _ = fileio.remove(path);
 
@@ -1802,7 +1811,8 @@ test "the shipped ini survives a save unchanged" {
     var ini = try Ini.load(testing.allocator, "zelda3.ini");
     defer ini.deinit();
 
-    const scratch = "zig-cache-shipped.ini";
+    var scratch_buf: [64]u8 = undefined;
+    const scratch = try scratchName(&scratch_buf, "shipped", "ini");
     defer _ = fileio.remove(scratch);
     try ini.save(scratch);
 
@@ -1940,7 +1950,8 @@ test "the asset check tells the three states apart" {
     // Anything that is not the file the builder produces is reported as
     // present but unrecognized rather than waved through - a stale .dat loads
     // and then misbehaves in ways that look like game bugs.
-    const scratch = "zelda3_assets_checktest.dat";
+    var scratch_buf: [64]u8 = undefined;
+    const scratch = try scratchName(&scratch_buf, "checktest", "dat");
     try fileio.writeWholeFile(scratch, "not an asset file");
     defer _ = fileio.remove(scratch);
     try testing.expectEqual(AssetState.unrecognized, checkAssetsAt(alloc, scratch));
@@ -1968,7 +1979,8 @@ test "a corrupted asset file is not reported as verified" {
     defer alloc.free(copy);
     copy[500_000] ^= 0xff; // one bit, deep inside the payload
 
-    const scratch = "zelda3_assets_corrupttest.dat";
+    var scratch_buf: [64]u8 = undefined;
+    const scratch = try scratchName(&scratch_buf, "corrupttest", "dat");
     try fileio.writeWholeFile(scratch, copy);
     defer _ = fileio.remove(scratch);
     try testing.expectEqual(AssetState.unrecognized, checkAssetsAt(alloc, scratch));

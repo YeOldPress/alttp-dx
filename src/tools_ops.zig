@@ -6,6 +6,8 @@ const std = @import("std");
 const fileio = @import("fileio.zig");
 const rom_mod = @import("rom.zig");
 const asset_all = @import("asset_all.zig");
+const asset_export = @import("asset_export.zig");
+const pack = @import("asset_pack.zig");
 
 pub const Log = struct {
     ctx: *anyopaque,
@@ -100,6 +102,72 @@ pub fn buildAssets(alloc: std.mem.Allocator, log: Log, rom_path: [:0]const u8, o
     };
     log.ok("Wrote {s} ({d} bytes).", .{ out, data.len });
     return verifyData(log, data);
+}
+
+fn loadUsRom(alloc: std.mem.Allocator, log: Log, rom_path: [:0]const u8) ?rom_mod.Rom {
+    var rom = loadRom(alloc, log, rom_path) orelse return null;
+    if (rom.language != .us) {
+        log.err("This needs the US ROM.", .{});
+        rom.deinit();
+        return null;
+    }
+    return rom;
+}
+
+var g_export_count: usize = 0;
+fn countExported(name: []const u8) void {
+    _ = name;
+    g_export_count += 1;
+}
+
+/// Writes the ROM's areas, rooms, map table and dialogue into `dir` as files
+/// to edit, in the formats the old Python tool used.
+pub fn exportFiles(alloc: std.mem.Allocator, log: Log, rom_path: [:0]const u8, dir: [:0]const u8) bool {
+    var rom = loadUsRom(alloc, log, rom_path) orelse return false;
+    defer rom.deinit();
+    fileio.makeDir(dir.ptr) catch {
+        log.err("Could not make the folder {s}", .{dir});
+        return false;
+    };
+    g_export_count = 0;
+    asset_export.exportText(alloc, rom, dir, countExported) catch |e| {
+        log.err("Export failed after {d} files: {s}", .{ g_export_count, @errorName(e) });
+        return false;
+    };
+    log.ok("Exported {d} files to {s}.", .{ g_export_count, dir });
+    log.info("Edit them, then build from the folder to turn them into zelda3_assets.dat.", .{});
+    return true;
+}
+
+/// Builds zelda3_assets.dat from edited files in `dir`, taking everything
+/// the files don't cover from the US ROM.
+pub fn buildFromFiles(alloc: std.mem.Allocator, log: Log, rom_path: [:0]const u8, dir: [:0]const u8, out: [:0]const u8) bool {
+    var rom = loadUsRom(alloc, log, rom_path) orelse return false;
+    defer rom.deinit();
+    var problem = asset_all.import_mod.Problem{};
+    var files = asset_all.import_mod.Files.load(alloc, rom, dir, &problem) catch |e| {
+        log.err("{s}", .{if (e == error.BadInput) problem.text() else @errorName(e)});
+        return false;
+    };
+    defer files.deinit();
+    log.info("Read the files in {s}.", .{dir});
+    var assets = asset_all.buildFrom(alloc, rom, &files, &problem) catch |e| {
+        log.err("{s}", .{if (e == error.BadInput) problem.text() else @errorName(e)});
+        return false;
+    };
+    defer assets.deinit();
+    const data = pack.write(alloc, assets.items) catch |e| {
+        log.err("Packing the assets failed: {s}", .{@errorName(e)});
+        return false;
+    };
+    defer alloc.free(data);
+    fileio.writeWholeFile(out.ptr, data) catch |e| {
+        log.err("Could not write {s}: {s}", .{ out, @errorName(e) });
+        return false;
+    };
+    log.ok("Wrote {s} ({d} bytes).", .{ out, data.len });
+    _ = verifyData(log, data);
+    return true;
 }
 
 /// Checks an asset file against the digest this build of the game expects.

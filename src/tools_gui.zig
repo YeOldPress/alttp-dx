@@ -92,7 +92,7 @@ const g_logger = ops.Log{ .ctx = &g_log_dummy, .writeFn = logWrite };
 
 /// Which field a dialog's answer belongs to. The answer can arrive on another
 /// thread, so it lands here under a lock and the main loop picks it up.
-const Field = enum { rom, out, verify };
+const Field = enum { rom, out, verify, folder };
 
 var g_dialog_lock: ?*c.SDL_Mutex = null;
 var g_dialog_field: Field = .rom;
@@ -121,6 +121,7 @@ fn openDialog(window_opt: ?*c.SDL_Window, field: Field) void {
         .rom => c.SDL_ShowOpenFileDialog(dialogCallback, userdata, window, &kRomFilters, kRomFilters.len, null, false),
         .verify => c.SDL_ShowOpenFileDialog(dialogCallback, userdata, window, &kDatFilters, kDatFilters.len, null, false),
         .out => c.SDL_ShowSaveFileDialog(dialogCallback, userdata, window, &kDatFilters, kDatFilters.len, null),
+        .folder => c.SDL_ShowOpenFolderDialog(dialogCallback, userdata, window, null, false),
     }
 }
 
@@ -128,10 +129,12 @@ fn openDialog(window_opt: ?*c.SDL_Window, field: Field) void {
 
 const Page = enum {
     assets,
+    modding,
 
     fn title(self: Page) []const u8 {
         return switch (self) {
             .assets => "Assets",
+            .modding => "Modding",
         };
     }
 };
@@ -141,12 +144,14 @@ const State = struct {
     rom: std.ArrayList(u8) = .empty,
     out: std.ArrayList(u8) = .empty,
     verify: std.ArrayList(u8) = .empty,
+    folder: std.ArrayList(u8) = .empty,
 
     fn set(self: *State, alloc: std.mem.Allocator, field: Field, path: []const u8) void {
         const list = switch (field) {
             .rom => &self.rom,
             .out => &self.out,
             .verify => &self.verify,
+            .folder => &self.folder,
         };
         list.clearRetainingCapacity();
         list.appendSlice(alloc, path) catch {};
@@ -157,6 +162,7 @@ const State = struct {
             .rom => self.rom.items,
             .out => self.out.items,
             .verify => self.verify.items,
+            .folder => self.folder.items,
         };
     }
 };
@@ -283,18 +289,42 @@ fn drawAssets(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Win
     if (ui.buttonAt(&x, y, "Verify Assets", st.get(.out).len != 0)) runJob(alloc, st, .verify);
 }
 
-const Job = enum { build, rom_info, verify };
+fn drawModding(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window) void {
+    var y: f32 = 32;
+    ui.text(kContentX, y, kAccent, "Edit the game's data");
+    y += kLineH + 8;
+    y += ui.paragraph(kContentX, y, kContentW, kDim, "Export writes the overworld, every dungeon room, the map table and the dialogue out as YAML and text. Change them, then build the asset file from the folder.");
+    y += 16;
+
+    if (ui.pathField(kContentX, y, kContentW, "US ROM", st.get(.rom), "Drop a .sfc or .smc here, or Browse")) openDialog(window, .rom);
+    y += kLineH + 48;
+    if (ui.pathField(kContentX, y, kContentW, "Folder", st.get(.folder), "Where the files go, and come back from")) openDialog(window, .folder);
+    y += kLineH + 48;
+    if (ui.pathField(kContentX, y, kContentW, "Write to", st.get(.out), "zelda3_assets.dat")) openDialog(window, .out);
+    y += kLineH + 56;
+
+    const ready = st.get(.rom).len != 0 and st.get(.folder).len != 0;
+    var x: f32 = kContentX;
+    if (ui.buttonAt(&x, y, "Export Files", ready)) runJob(alloc, st, .export_files);
+    if (ui.buttonAt(&x, y, "Build From Files", ready and st.get(.out).len != 0)) runJob(alloc, st, .build_from_files);
+}
+
+const Job = enum { build, rom_info, verify, export_files, build_from_files };
 
 fn runJob(alloc: std.mem.Allocator, st: *State, job: Job) void {
     const rom = alloc.dupeZ(u8, st.get(.rom)) catch return;
     defer alloc.free(rom);
     const out = alloc.dupeZ(u8, st.get(.out)) catch return;
     defer alloc.free(out);
+    const folder = alloc.dupeZ(u8, st.get(.folder)) catch return;
+    defer alloc.free(folder);
     pushLine(.info, "");
     switch (job) {
         .build => _ = ops.buildAssets(alloc, g_logger, rom, out),
         .rom_info => _ = ops.romInfo(alloc, g_logger, rom),
         .verify => _ = ops.verifyAssets(alloc, g_logger, out),
+        .export_files => _ = ops.exportFiles(alloc, g_logger, rom, folder),
+        .build_from_files => _ = ops.buildFromFiles(alloc, g_logger, rom, folder, out),
     }
 }
 
@@ -343,6 +373,7 @@ fn initialState(alloc: std.mem.Allocator) State {
         if (st.rom.items.len == 0 and exists(alloc, p)) st.set(alloc, .rom, p);
     }
     st.set(alloc, .out, besideExe(alloc, "zelda3_assets.dat"));
+    st.set(alloc, .folder, besideExe(alloc, "zelda3_files"));
     pushLine(.info, "Ready. Pick a section on the left.");
     return st;
 }
@@ -352,6 +383,7 @@ fn drawFrame(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Wind
     drawSidebar(ui, st);
     switch (st.page) {
         .assets => drawAssets(ui, alloc, st, window),
+        .modding => drawModding(ui, alloc, st, window),
     }
     drawLog(ui);
 }

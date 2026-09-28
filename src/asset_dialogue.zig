@@ -31,7 +31,7 @@ const kRomAddrs = [_]u32{ 0x9c8000, 0x8edf40 };
 
 /// print_strings inserts this string when the ROM yields 396 messages, so the
 /// text file - and therefore the compiled asset - has 397.
-const kExtraString = "[Speed 00]0- [Number 00]. 1- [Number 01][2]2- [Number 02]. 3- [Number 03]";
+pub const kExtraString = "[Speed 00]0- [Number 00]. 1- [Number 01][2]2- [Number 02]. 3- [Number 03]";
 
 pub const Strings = struct {
     items: [][]u8,
@@ -204,14 +204,18 @@ pub fn buildDialogue(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
     defer texts.deinit(alloc);
     try texts.appendSlice(alloc, strings.items);
     if (texts.items.len == 396) try texts.insert(alloc, 4, kExtraString);
+    return buildDialogueFromTexts(alloc, texts.items);
+}
 
-    const compressed = try alloc.alloc([]u8, texts.items.len);
+/// kDialogue from messages already written out, as dialogue.txt holds them.
+pub fn buildDialogueFromTexts(alloc: std.mem.Allocator, texts: []const []const u8) ![]u8 {
+    const compressed = try alloc.alloc([]u8, texts.len);
     var done: usize = 0;
     defer {
         for (compressed[0..done]) |x| alloc.free(x);
         alloc.free(compressed);
     }
-    for (texts.items, 0..) |t, i| {
+    for (texts, 0..) |t, i| {
         compressed[i] = try compressString(alloc, t);
         done += 1;
     }

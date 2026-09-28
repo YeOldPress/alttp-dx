@@ -9,12 +9,17 @@ const kUsage =
     \\
     \\Run with no arguments to open the window. Commands:
     \\
-    \\  build [--rom ROM] [--out FILE]   Build zelda3_assets.dat from the US ROM
-    \\                                   (defaults: zelda3.sfc, zelda3_assets.dat)
-    \\  verify [FILE]                    Check an asset file against this version
-    \\  rom-info ROM                     Say which release a ROM is
-    \\  gui                              Open the window
-    \\  help                             This
+    \\  build [--rom ROM] [--out FILE] [--from DIR]
+    \\                    Build zelda3_assets.dat from the US ROM, or with
+    \\                    --from, from files exported and edited in DIR
+    \\                    (defaults: zelda3.sfc, zelda3_assets.dat)
+    \\  export [--rom ROM] --out DIR
+    \\                    Write the overworld, dungeon rooms, map table and
+    \\                    dialogue into DIR as YAML and text to edit
+    \\  verify [FILE]     Check an asset file against this version
+    \\  rom-info ROM      Say which release a ROM is
+    \\  gui               Open the window
+    \\  help              This
     \\
 ;
 
@@ -96,7 +101,13 @@ fn runCommand(alloc: std.mem.Allocator, args: []const [:0]const u8) !bool {
     if (std.mem.eql(u8, cmd, "build")) {
         const rom = try option(rest, "--rom") orelse "zelda3.sfc";
         const out = try option(rest, "--out") orelse "zelda3_assets.dat";
+        if (try option(rest, "--from")) |dir| return ops.buildFromFiles(alloc, log, rom, dir, out);
         return ops.buildAssets(alloc, log, rom, out);
+    }
+    if (std.mem.eql(u8, cmd, "export")) {
+        const rom = try option(rest, "--rom") orelse "zelda3.sfc";
+        const out = try option(rest, "--out") orelse return error.Usage;
+        return ops.exportFiles(alloc, log, rom, out);
     }
     if (std.mem.eql(u8, cmd, "verify")) {
         return ops.verifyAssets(alloc, log, positional(rest, 0) orelse "zelda3_assets.dat");
@@ -130,4 +141,7 @@ test "options and positionals are told apart" {
 
 test {
     _ = ops;
+    _ = @import("yaml.zig");
+    _ = @import("asset_import.zig");
+    _ = @import("asset_export.zig");
 }

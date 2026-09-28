@@ -51,6 +51,40 @@ pub fn workingDirectory(buf: []u8) ![:0]const u8 {
     return std.mem.span(p);
 }
 
+extern fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
+/// The Windows CRT spells it _mkdir, and it takes no mode.
+extern fn _mkdir(path: [*:0]const u8) c_int;
+
+/// Makes a directory. Succeeds if it's already there.
+pub fn makeDir(path: [*:0]const u8) !void {
+    const rc = if (@import("builtin").os.tag == .windows) _mkdir(path) else mkdir(path, 0o755);
+    if (rc != 0 and !isDir(path)) return error.MakeDirFailed;
+}
+
+extern fn rmdir(path: [*:0]const u8) c_int;
+extern fn _rmdir(path: [*:0]const u8) c_int;
+
+/// Removes an empty directory. Best effort.
+pub fn removeDir(path: [*:0]const u8) void {
+    _ = if (@import("builtin").os.tag == .windows) _rmdir(path) else rmdir(path);
+}
+
+extern fn opendir(path: [*:0]const u8) ?*anyopaque;
+extern fn closedir(d: *anyopaque) c_int;
+
+/// Whether a directory exists at `path`.
+pub fn isDir(path: [*:0]const u8) bool {
+    if (@import("builtin").os.tag == .windows) {
+        // Windows' CRT has no opendir; a file inside a directory's "." does.
+        var buf: [4096]u8 = undefined;
+        const probe = std.fmt.bufPrintZ(&buf, "{s}/.", .{std.mem.span(path)}) catch return false;
+        return exists(probe.ptr);
+    }
+    const d = opendir(path) orelse return false;
+    _ = closedir(d);
+    return true;
+}
+
 /// True if the file can be opened for reading. Used by tests that need a file
 /// the repository does not ship.
 pub fn exists(path: [*:0]const u8) bool {
