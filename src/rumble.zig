@@ -3,8 +3,9 @@
 //! The SNES pad had no motor, so nothing in the game asks for this. Instead it
 //! watches what the game already does once each frame has run: Link losing
 //! health, the explosion and moving-object sound effects, the background
-//! offsets the game jiggles for screen shakes, Link's arrows landing, and a
-//! boss going through its death explosion. It only ever reads game state, so
+//! offsets the game jiggles for screen shakes, Link's arrows landing, the
+//! hammer and hookshot connecting, and a boss going through its death
+//! explosion. It only ever reads game state, so
 //! the port still matches the original frame for frame with rumble on.
 const std = @import("std");
 const c = @import("sdl.zig").c;
@@ -32,6 +33,34 @@ const kAncilla_Arrow = 9;
 const kAncilla_ArrowStuck = 10;
 const kAncillaSlots = 10;
 var g_prev_ancilla_type: [kAncillaSlots]u8 = @splat(0);
+
+/// The hookshot's chain is ancilla 0x1f while it's out. When the hook bounces
+/// off something it can't hold, it plays the clink sounds 5 or 6, which the
+/// sword uses too, but Link can't swing a sword while the hookshot is out.
+const kAncilla_Hookshot = 0x1f;
+const kSfx1_Clink = 0x05;
+const kSfx1_ClinkHard = 0x06;
+
+fn hookshotOut() bool {
+    for (0..kAncillaSlots) |k| {
+        if (vars.ancilla_type[k] == kAncilla_Hookshot) return true;
+    }
+    return false;
+}
+
+/// link_item_in_hand is 2 only while the hammer is out, and the swing steps
+/// player_handler_timer from 0 to 1 on the frame the head comes down.
+const kItemInHand_Hammer = 2;
+var g_prev_handler_timer: u8 = 0;
+
+fn hammerLanded() bool {
+    return vars.link_item_in_hand.* & kItemInHand_Hammer != 0 and
+        vars.player_handler_timer.* == 1 and g_prev_handler_timer == 0;
+}
+
+/// Nonzero from the frame the hook catches something until Link arrives.
+var g_prev_hooked: u8 = 0;
+var g_hook_refresh: u8 = 0;
 
 const Landing = enum { none, wall, enemy };
 
@@ -108,6 +137,9 @@ pub fn reset() void {
     g_boss_refresh = 0;
     g_prev_boss = null;
     g_prev_ancilla_type = @splat(0);
+    g_prev_handler_timer = 0;
+    g_prev_hooked = 0;
+    g_hook_refresh = 0;
 }
 
 /// Called after every frame the game runs. `sfx1` and `sfx2` are the values
@@ -122,6 +154,8 @@ pub fn afterFrame(sfx1: u8, sfx2: u8) void {
         g_prev_health = health;
         g_prev_shake = shake;
         g_prev_boss = boss;
+        g_prev_handler_timer = vars.player_handler_timer.*;
+        g_prev_hooked = vars.related_to_hookshot.*;
         @memcpy(&g_prev_ancilla_type, vars.ancilla_type[0..kAncillaSlots]);
     }
     const strength = config.g_config.rumble;
@@ -147,6 +181,28 @@ pub fn afterFrame(sfx1: u8, sfx2: u8) void {
 
     if (sfx2 & 0x3f == kSfx2_DoorOpens and sfx1 & 0x3f != kSfx1_Chest)
         effect = effect.max(.{ .low = 0x5800, .high = 0x1800, .ms = 300 });
+
+    // The hammer is the heaviest thing Link swings, so it lands like it.
+    if (hammerLanded())
+        effect = effect.max(.{ .low = 0xa000, .high = 0x3000, .ms = 150 });
+
+    // The hookshot: a sharp tap on the small motor when it bounces off, a
+    // solid catch when it grabs, then a light pull while it reels Link in.
+    const hooked = vars.related_to_hookshot.*;
+    if (hookshotOut() and (sfx1 & 0x3f == kSfx1_Clink or sfx1 & 0x3f == kSfx1_ClinkHard))
+        effect = effect.max(.{ .low = 0x2000, .high = 0x6000, .ms = 70 });
+    if (hooked != 0 and g_prev_hooked == 0) {
+        effect = effect.max(.{ .low = 0x7000, .high = 0x3000, .ms = 150 });
+        g_hook_refresh = 6;
+    } else if (hooked != 0) {
+        if (g_hook_refresh == 0) {
+            effect = effect.max(.{ .low = 0x3000, .high = 0x0800, .ms = 120 });
+            g_hook_refresh = 6;
+        }
+        g_hook_refresh -= 1;
+    } else {
+        g_hook_refresh = 0;
+    }
 
     // A short thud, a little firmer when the arrow finds an enemy.
     switch (arrowLanding()) {
@@ -290,4 +346,22 @@ test "a shake that stops moving stops rumbling" {
         try std.testing.expect(frames < 8);
     }
     for (0..100) |_| try std.testing.expect(!screenShaking(1));
+}
+
+test "the hammer lands once per swing" {
+    @memset(vars.g_ram[0x300..0x302], 0);
+    reset();
+
+    vars.link_item_in_hand.* = kItemInHand_Hammer;
+    try std.testing.expect(!hammerLanded()); // raised, not down yet
+
+    vars.player_handler_timer.* = 1;
+    try std.testing.expect(hammerLanded());
+    g_prev_handler_timer = 1;
+    try std.testing.expect(!hammerLanded()); // still down, already counted
+
+    // The same timer step with anything else in hand is not a hammer.
+    g_prev_handler_timer = 0;
+    vars.link_item_in_hand.* = 16;
+    try std.testing.expect(!hammerLanded());
 }
