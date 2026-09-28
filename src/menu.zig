@@ -2098,7 +2098,9 @@ test "a setting the file lacks shows its default and is added when changed" {
     // The menu's tests run in two test binaries at once, so the scratch file
     // is named per process.
     var path_buf: [64]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "zig-cache-missing-key-{d}.ini", .{std.c.getpid()});
+    // getpid() is a handle rather than a number on Windows, which has its own.
+    const pid: u64 = if (builtin.os.tag == .windows) std.os.windows.GetCurrentProcessId() else @intCast(std.c.getpid());
+    const path = try std.fmt.bufPrintZ(&path_buf, "zig-cache-missing-key-{d}.ini", .{pid});
     defer _ = fileio.remove(path);
     // An ini from before StartMenu and Rumble existed.
     try fileio.writeWholeFile(path, "[General]\n# Automatically save state\nAutosave = 0\n\n[Graphics]\nWindowScale = 3\n");
