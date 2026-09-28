@@ -829,7 +829,8 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
 
     makeSaveDir();
 
-    ZeldaReadSram();
+    // A seed keeps its own save beside it; this is the port's.
+    if (!rando.g_active) ZeldaReadSram();
 
     // SDL3 enumerates joysticks by instance id instead of by index.
     var joystick_count: c_int = 0;
