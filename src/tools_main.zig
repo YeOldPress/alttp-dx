@@ -21,8 +21,10 @@ const kUsage =
     \\                    zelda3_assets.dat)
     \\  export [--rom ROM] --out DIR
     \\                    Write the overworld, dungeon rooms, map table and
-    \\                    dialogue into DIR as YAML and text, and Link, the
-    \\                    font, the HUD icons and the sprite sheets as PNGs
+    \\                    dialogue into DIR as YAML and text; Link, the
+    \\                    font, the HUD icons and the sprite sheets as PNGs;
+    \\                    and the music, sound effects and samples to look
+    \\                    at (music builds from the ROM, as it always did)
     \\  extract-dialogue --rom ROM --out DIR [--as LANG]
     \\                    Write a translated ROM's dialogue and font into
     \\                    DIR, to build in with --languages. --as reads a

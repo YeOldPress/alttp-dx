@@ -1154,6 +1154,16 @@ fn removeTree(dir: []const u8) void {
         const p = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ dir, f }) catch return;
         _ = fileio.remove(p.ptr);
     }
+    for ([_][]const u8{ "sound_intro.txt", "sound_indoor.txt", "sound_ending.txt", "sfx.txt", "music_info.yaml", "sound/intro.spc", "sound/indoor.spc", "sound/ending.spc" }) |f| {
+        const p = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ dir, f }) catch return;
+        _ = fileio.remove(p.ptr);
+    }
+    for (0..25) |n| {
+        for ([_][]const u8{ "pcm", "pcm.brr" }) |ext| {
+            const p = std.fmt.bufPrintZ(&buf, "{s}/sound/sound{d}.{s}", .{ dir, n, ext }) catch return;
+            _ = fileio.remove(p.ptr);
+        }
+    }
     for (sheets_mod.kGroups) |g| {
         const p = std.fmt.bufPrintZ(&buf, "{s}/sprites/sprites_{c}.png", .{ dir, g }) catch return;
         _ = fileio.remove(p.ptr);
@@ -1162,7 +1172,7 @@ fn removeTree(dir: []const u8) void {
         const p = std.fmt.bufPrintZ(&buf, "{s}/sprites/all_sheets.png", .{dir}) catch return;
         _ = fileio.remove(p.ptr);
     }
-    for ([_][]const u8{ "/dungeon", "/overworld", "/sprites", "" }) |sub| {
+    for ([_][]const u8{ "/dungeon", "/overworld", "/sprites", "/sound", "" }) |sub| {
         const p = std.fmt.bufPrintZ(&buf, "{s}{s}", .{ dir, sub }) catch return;
         fileio.removeDir(p.ptr);
     }

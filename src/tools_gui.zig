@@ -341,7 +341,7 @@ fn drawModding(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Wi
     var y: f32 = 32;
     ui.text(kContentX, y, kAccent, "Edit the game's data");
     y += kLineH + 8;
-    y += ui.paragraph(kContentX, y, kContentW, kDim, "Export writes the world, the dialogue and the graphics out as YAML, text and PNG. Change them, then build the asset file from the folder.");
+    y += ui.paragraph(kContentX, y, kContentW, kDim, "Export writes the world, the dialogue, the graphics and the music out as YAML, text and PNG. Change them, then build the asset file from the folder.");
     y += 16;
 
     if (ui.pathField(kContentX, y, kContentW, "US ROM", st.get(.rom), "Drop a .sfc or .smc here, or Browse")) openDialog(window, .rom);
