@@ -153,7 +153,22 @@ Point `MSUPath` at a pack and set `EnableMSU`:
 Deluxe packs have a track per place rather than per song; only use it with a
 deluxe pack. MSU needs `AudioChannels = 2`, and it sets the audio rate itself.
 
-## zelda3-tools
+## Randomizer
+
+Generate a seed on [alttpr.com](https://alttpr.com) from the Japanese 1.0 ROM
+(MD5 `03a63945398191337e896e5771f77173`), then drop the seed on the start menu
+or run `zelda3 seed.sfc`. A seed changes the game's own code, so it isn't
+played by the port: it runs in the SNES emulator the port is verified
+against, exactly as the randomizer built it. The port's extras don't apply
+there, and snapshots and cheats are off. The save goes next to the seed as a
+`.srm` file.
+
+The item tracker follows along by itself, reading the save data every frame:
+items, all 13 dungeons (checks left, keys, big key, map, compass, boss) and
+both world maps with every check on them. Its icons and maps come from the
+seed. `Tracker` in `[General]` puts it beside the game, over it, in its own
+window, or turns it off, and T switches between those while playing.
+
 
 Everything to do with the assets besides playing: building them, exporting
 them to edit, building them back, and adding languages. Run it with no
