@@ -2,9 +2,10 @@
 //!
 //! The SNES pad had no motor, so nothing in the game asks for this. Instead it
 //! watches what the game already does once each frame has run: Link losing
-//! health, the explosion sound effect, the background offsets the game
-//! jiggles for screen shakes, and a boss going through its death explosion. It only ever reads game state, so the port still
-//! matches the original frame for frame with rumble on.
+//! health, the explosion and moving-object sound effects, the background
+//! offsets the game jiggles for screen shakes, Link's arrows landing, and a
+//! boss going through its death explosion. It only ever reads game state, so
+//! the port still matches the original frame for frame with rumble on.
 const std = @import("std");
 const c = @import("sdl.zig").c;
 const config = @import("config.zig");
@@ -13,6 +14,33 @@ const vars = @import("variables.zig");
 /// The first sound effect port's id for an explosion: bombs, and each blast
 /// of the Bombos medallion. The top two bits of the port are stereo pan.
 const kSfx1_Explosion = 0x0c;
+/// The grinding of something heavy being shifted: push blocks, pushable
+/// statues, gravestones, Somaria blocks, pull switches, the Swamp Palace
+/// levers and the Sanctuary's sliding mantle all play it.
+const kSfx1_Moving = 0x22;
+
+/// Link's arrows live in the ancilla slots: type 9 while one flies, turning
+/// to 10 on the frame it lands, which is when it thuds. The archers' arrows
+/// are sprites, not ancillae, so they never count.
+const kAncilla_Arrow = 9;
+const kAncilla_ArrowStuck = 10;
+const kAncillaSlots = 10;
+var g_prev_ancilla_type: [kAncillaSlots]u8 = @splat(0);
+
+const Landing = enum { none, wall, enemy };
+
+/// Whether one of Link's arrows landed this frame, and in what. An arrow that
+/// hits an enemy keeps that sprite's index in ancilla_S; a wall leaves 255.
+fn arrowLanding() Landing {
+    var landing: Landing = .none;
+    for (0..kAncillaSlots) |k| {
+        if (g_prev_ancilla_type[k] == kAncilla_Arrow and vars.ancilla_type[k] == kAncilla_ArrowStuck) {
+            if (vars.ancilla_S[k] != 255) return .enemy;
+            landing = .wall;
+        }
+    }
+    return landing;
+}
 
 /// Modules where Link is actually out in the world: dungeons, the overworld,
 /// and the overworld's special areas. Health changes anywhere else are the
@@ -62,6 +90,7 @@ pub fn reset() void {
     g_shake_refresh = 0;
     g_boss_refresh = 0;
     g_boss_was_dying = false;
+    g_prev_ancilla_type = @splat(0);
 }
 
 /// Called after every frame the game runs. `sfx1` is the value the frame
@@ -72,6 +101,7 @@ pub fn afterFrame(sfx1: u8) void {
     defer {
         g_prev_module = module;
         g_prev_health = health;
+        @memcpy(&g_prev_ancilla_type, vars.ancilla_type[0..kAncillaSlots]);
     }
     const strength = config.g_config.rumble;
     if (strength == 0 or !inGameplay(module)) return;
@@ -88,8 +118,18 @@ pub fn afterFrame(sfx1: u8) void {
         });
     }
 
-    if (sfx1 & 0x3f == kSfx1_Explosion)
-        effect = effect.max(.{ .low = 0xc000, .high = 0x8000, .ms = 250 });
+    switch (sfx1 & 0x3f) {
+        kSfx1_Explosion => effect = effect.max(.{ .low = 0xc000, .high = 0x8000, .ms = 250 }),
+        kSfx1_Moving => effect = effect.max(.{ .low = 0x6000, .high = 0x1000, .ms = 220 }),
+        else => {},
+    }
+
+    // A short thud, a little firmer when the arrow finds an enemy.
+    switch (arrowLanding()) {
+        .none => {},
+        .wall => effect = effect.max(.{ .low = 0x5000, .high = 0x2000, .ms = 90 }),
+        .enemy => effect = effect.max(.{ .low = 0x7000, .high = 0x3000, .ms = 110 }),
+    }
 
     if (vars.bg1_x_offset.* != 0 or vars.bg1_y_offset.* != 0) {
         if (g_shake_refresh == 0) {
@@ -166,4 +206,31 @@ test "a dying boss is told apart from the smoke it throws off" {
     vars.sprite_A[7] = 0;
     vars.sprite_delay_main[7] = 150;
     try std.testing.expectEqual(@as(?u8, 150), bossDeathCountdown());
+}
+
+test "an arrow thuds once, on the frame it lands" {
+    @memset(vars.g_ram[0x3A9..0x3B3], 0);
+    @memset(vars.g_ram[0xC4A..0xC54], 0);
+    reset();
+
+    // In flight: nothing yet.
+    vars.ancilla_type[2] = kAncilla_Arrow;
+    try std.testing.expectEqual(Landing.none, arrowLanding());
+    g_prev_ancilla_type[2] = kAncilla_Arrow;
+
+    // Into a wall.
+    vars.ancilla_type[2] = kAncilla_ArrowStuck;
+    vars.ancilla_S[2] = 255;
+    try std.testing.expectEqual(Landing.wall, arrowLanding());
+
+    // Stuck the next frame is no longer news.
+    g_prev_ancilla_type[2] = kAncilla_ArrowStuck;
+    try std.testing.expectEqual(Landing.none, arrowLanding());
+
+    // Into an enemy, which wins over a wall hit in the same frame.
+    g_prev_ancilla_type[2] = kAncilla_Arrow;
+    g_prev_ancilla_type[5] = kAncilla_Arrow;
+    vars.ancilla_type[5] = kAncilla_ArrowStuck;
+    vars.ancilla_S[5] = 4;
+    try std.testing.expectEqual(Landing.enemy, arrowLanding());
 }
