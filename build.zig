@@ -192,6 +192,41 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    // zelda3-tools: the asset tools, with a window and a command line. It
+    // needs the asset builder and SDL, not the game.
+    const tools = b.addExecutable(.{
+        .name = "zelda3-tools",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tools_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    tools.root_module.addIncludePath(b.path("."));
+    addSdlIncludes(b, tools.root_module);
+    linkSdlLibs(b, tools.root_module);
+    tools.headerpad_max_install_names = target.result.os.tag == .macos;
+    b.installArtifact(tools);
+
+    const tools_run = b.addRunArtifact(tools);
+    tools_run.step.dependOn(b.getInstallStep());
+    if (b.args) |args| tools_run.addArgs(args);
+    b.step("tools", "Build and run zelda3-tools").dependOn(&tools_run.step);
+
+    const tools_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tools_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    tools_tests.root_module.addIncludePath(b.path("."));
+    addSdlIncludes(b, tools_tests.root_module);
+    linkSdlLibs(b, tools_tests.root_module);
+    test_step.dependOn(&b.addRunArtifact(tools_tests).step);
+
     // Making zelda3_assets.dat without opening a window, for a first build or
     // for CI. The start menu does this itself when the assets are missing.
     const assets_run = b.addRunArtifact(exe);
