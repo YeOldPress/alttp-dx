@@ -103,6 +103,7 @@ pub const kSettings = [_]Setting{
     .{ .section = "General", .key = "ExtendedAspectRatio", .label = "Aspect Ratio", .kind = .{ .choice = .{ .values = &.{ "4:3", "16:9", "16:10", "18:9" } } } },
     .{ .section = "General", .key = "DisableFrameDelay", .label = "Disable Frame Delay", .kind = .toggle },
     .{ .section = "General", .key = "Rumble", .label = "Rumble", .kind = .{ .number = .{ .min = 0, .max = 100, .step = 10, .suffix = "%" } } },
+    .{ .section = "General", .key = "Tracker", .label = "Randomizer Tracker", .kind = .{ .choice = .{ .values = &.{ "panel", "overlay", "window", "off" } } } },
 
     .{ .section = kSectionMark, .key = "", .label = "GRAPHICS", .kind = .text },
     .{ .section = "Graphics", .key = "Fullscreen", .label = "Fullscreen", .kind = .{ .choice = .{
@@ -945,9 +946,13 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
 
     drawTextCentered(renderer, cx, state_y, v.assets.color(), v.assets.line(), kScale);
 
+    var hint_y = state_y + kRowH;
     if (v.assets == .missing) {
-        drawTextCentered(renderer, cx, state_y + kRowH, kColorTextDim, "DRAG A .SFC ROM ONTO THIS WINDOW", kScale);
+        drawTextCentered(renderer, cx, hint_y, kColorTextDim, "DRAG A .SFC ROM ONTO THIS WINDOW", kScale);
+        hint_y += kRowH;
     }
+    // Seeds need none of the above: they play in the emulator as they are.
+    drawTextCentered(renderer, cx, hint_y, kColorTextDim, "OR DROP A RANDOMIZER SEED TO PLAY IT", kScale);
 }
 
 fn drawList(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
@@ -1308,7 +1313,23 @@ fn settingIndex(section: []const u8, key: []const u8) ?usize {
     return null;
 }
 
-pub const Outcome = enum { play, quit };
+pub const Outcome = enum { play, quit, randomizer };
+
+/// The seed dropped on the menu, when the outcome is .randomizer.
+pub var g_randomizer_rom: [:0]const u8 = "";
+var g_randomizer_buf: [4096]u8 = undefined;
+
+/// Whether a dropped file is a randomizer seed (or the Japanese ROM they
+/// start from), which plays in the emulator instead of building assets.
+pub fn isRandomizerRom(path: []const u8) bool {
+    if (!looksLikeRom(path) or path.len >= g_randomizer_buf.len) return false;
+    var z: [4096:0]u8 = undefined;
+    @memcpy(z[0..path.len], path);
+    z[path.len] = 0;
+    const data = fileio.readWholeFile(std.heap.c_allocator, &z) catch return false;
+    defer std.heap.c_allocator.free(data);
+    return @import("emu.zig").romKind(data) != .other;
+}
 
 /// Runs the start menu until the player picks Play or leaves. SDL is started
 /// and shut down in here, so the game sets it up afresh for its own window.
@@ -1363,6 +1384,7 @@ pub fn run(alloc: std.mem.Allocator) !Outcome {
     var list_top = [_]usize{ 0, kFeaturesStart };
     var dirty = false;
     var launch = false;
+    var randomizer = false;
     var status: []const u8 = "";
     var assets = checkAssets(alloc);
     if (assets != .verified) {
@@ -1397,7 +1419,17 @@ pub fn run(alloc: std.mem.Allocator) !Outcome {
                 // A ROM dropped on the window is the quickest path from a
                 // fresh checkout to a playable game.
                 c.SDL_EVENT_DROP_FILE => {
-                    if (event.drop.data) |path| {
+                    if (event.drop.data) |path| randomizer: {
+                        // A randomizer seed goes straight to playing it.
+                        const span = std.mem.span(path);
+                        if (!isRandomizerRom(span)) break :randomizer;
+                        @memcpy(g_randomizer_buf[0..span.len], span);
+                        g_randomizer_buf[span.len] = 0;
+                        g_randomizer_rom = g_randomizer_buf[0..span.len :0];
+                        randomizer = true;
+                        running = false;
+                    }
+                    if (!randomizer) if (event.drop.data) |path| {
                         status = "CHECKING ROM...";
                         drawScreen(renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice));
                         status = buildAssetsFromDrop(alloc, path);
@@ -1405,7 +1437,7 @@ pub fn run(alloc: std.mem.Allocator) !Outcome {
                         // A drop that worked answers the question; one that
                         // did not leaves it up so another can be tried.
                         if (assets == .verified) modal = .none;
-                    }
+                    };
                 },
 
                 // The mouse drives the same cursor the keys do, so nothing
@@ -1696,6 +1728,7 @@ pub fn run(alloc: std.mem.Allocator) !Outcome {
         c.SDL_Delay(16);
     }
 
+    if (randomizer) return .randomizer;
     return if (launch) .play else .quit;
 }
 
@@ -1904,6 +1937,7 @@ test "the on-screen strings fit the window" {
         "ASSETS VERIFIED",
         "ASSETS PRESENT - CHECKSUM DIFFERS",
         "DRAG A .SFC ROM ONTO THIS WINDOW",
+        "OR DROP A RANDOMIZER SEED TO PLAY IT",
         // Every status line the loop can put up.
         "ASSETS BUILT",
         "BUILDING ASSETS...",

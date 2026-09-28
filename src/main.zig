@@ -10,7 +10,8 @@ const audio = @import("audio.zig");
 const rumble = @import("rumble.zig");
 const menu = @import("menu.zig");
 const settings_menu = @import("settings_menu.zig");
-const console_emu = @import("emu.zig");
+const rando = @import("rando.zig");
+const tracker = @import("tracker.zig");
 const frame_capture = @import("frame_capture.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const emu = @import("zelda_cpu_infra.zig");
@@ -328,13 +329,13 @@ fn verifyAgainstRom(rom: [*:0]const u8, script: [*:0]const u8) c_int {
 /// and write the frame it ends on.
 fn emuRenderToFile(rom: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u8) c_int {
     const alloc = std.heap.c_allocator;
-    var console = console_emu.Console.open(alloc, std.mem.span(rom)) catch |err| {
+    // TRACKER=off|panel|overlay picks what's drawn around the game.
+    const mode = if (std.c.getenv("TRACKER")) |t| tracker.Mode.fromName(std.mem.span(t)) orelse .panel else .panel;
+    rando.start(alloc, std.mem.span(rom), mode) catch |err| {
         std.debug.print("--emu-render: could not load {s}: {s}\n", .{ rom, @errorName(err) });
         return 1;
     };
-    defer console.deinit();
-    const pixels = alloc.alloc(u32, console_emu.kWidth * console_emu.kHeight) catch return 1;
-    defer alloc.free(pixels);
+    defer rando.stop();
     var sound: [800 * 2]i16 = undefined;
     var it = std.mem.tokenizeScalar(u8, std.mem.span(script), ',');
     while (it.next()) |text| {
@@ -343,11 +344,16 @@ fn emuRenderToFile(rom: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u8
             return 1;
         };
         for (0..step.frames) |_| {
-            console.runFrame(@intCast(step.buttons), @ptrCast(pixels.ptr), console_emu.kWidth * 4);
-            console.audio(&sound, 800, 2);
+            rando.runFrame(@intCast(step.buttons));
+            rando.audio(&sound, 800, 2);
         }
     }
-    frame_capture.writeBmp(out, pixels, console_emu.kWidth, console_emu.kHeight) catch |err| {
+    const w: usize = @intCast(rando.canvasWidth());
+    const h: usize = @intCast(rando.canvasHeight());
+    const pixels = alloc.alloc(u32, w * h) catch return 1;
+    defer alloc.free(pixels);
+    rando.renderToMemory(pixels);
+    frame_capture.writeBmp(out, pixels, w, h) catch |err| {
         std.debug.print("--emu-render: could not write {s}: {s}\n", .{ out, @errorName(err) });
         return 1;
     };
@@ -390,6 +396,16 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
         return 1;
     };
     return 0;
+}
+
+/// The randomizer's frame: the game at double size, with the tracker.
+fn DrawRandoFrame() void {
+    var pixel_buffer: [*c]u8 = null;
+    var pitch: c_int = 0;
+    g_renderer_funcs.BeginDraw.?(rando.canvasWidth(), rando.canvasHeight(), &pixel_buffer, &pitch);
+    if (pixel_buffer == null) return;
+    rando.draw(pixel_buffer, @intCast(pitch));
+    g_renderer_funcs.EndDraw.?();
 }
 
 fn DrawPpuFrameWithPerf() void {
@@ -445,7 +461,9 @@ fn AudioCallback(
     c.SDL_LockMutex(g_audio_mutex);
     while (len > 0) {
         if (@intFromPtr(g_audiobuffer_end.?) - @intFromPtr(g_audiobuffer_cur.?) == 0) {
-            audio.ZeldaRenderAudio(@ptrCast(@alignCast(g_audiobuffer.?)), g_frames_per_block, g_audio_channels);
+            if (rando.g_active) {
+                rando.takeAudio(@ptrCast(@alignCast(g_audiobuffer.?)), @intCast(g_frames_per_block), g_audio_channels);
+            } else audio.ZeldaRenderAudio(@ptrCast(@alignCast(g_audiobuffer.?)), g_frames_per_block, g_audio_channels);
             g_audiobuffer_cur = g_audiobuffer;
             g_audiobuffer_end = g_audiobuffer.? +
                 @as(usize, @intCast(g_frames_per_block)) * g_audio_channels * @sizeOf(i16);
@@ -457,7 +475,7 @@ fn AudioCallback(
         len -= n;
     }
 
-    audio.ZeldaDiscardUnusedAudioFrames();
+    if (!rando.g_active) audio.ZeldaDiscardUnusedAudioFrames();
     c.SDL_UnlockMutex(g_audio_mutex);
 }
 
@@ -502,7 +520,10 @@ fn SdlRenderer_Init(window: ?*c.SDL_Window) callconv(.c) bool {
         _ = c.SDL_SetRenderLogicalPresentation(renderer, g_snes_width, g_snes_height, c.SDL_LOGICAL_PRESENTATION_LETTERBOX);
 
     const tex_mult: c_int = if (g_ppu_render_flags & kPpuRenderFlags_4x4Mode7 != 0) 4 else 1;
-    g_texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_ARGB8888, c.SDL_TEXTUREACCESS_STREAMING, g_snes_width * tex_mult, g_snes_height * tex_mult);
+    // A randomizer seed draws at double size, with room for the tracker.
+    const tex_w = if (rando.g_active) rando.kGameW + rando.kPanelW else g_snes_width * tex_mult;
+    const tex_h = if (rando.g_active) rando.kGameH else g_snes_height * tex_mult;
+    g_texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_ARGB8888, c.SDL_TEXTUREACCESS_STREAMING, tex_w, tex_h);
     if (g_texture == null) {
         _ = printf("Failed to create texture: %s\n", c.SDL_GetError());
         return false;
@@ -561,11 +582,55 @@ comptime {
     if (!builtin.is_test) @export(&zeldaMain, .{ .name = "main" });
 }
 
+/// Everything the port itself needs before the window opens: its assets,
+/// its game state, and the settings that only it reads.
+fn portSetup() void {
+    LoadAssets();
+    LoadLinkGraphics();
+
+    ZeldaInitialize();
+    const ppu: *Ppu = @ptrCast(@alignCast(g_zenv.ppu.?));
+    ppu.extraLeftRight = @min(config.g_config.extended_aspect_ratio, kPpuExtraLeftRight);
+    g_snes_width = @as(c_int, config.g_config.extended_aspect_ratio) * 2 + 256;
+    g_snes_height = if (config.g_config.extend_y) 240 else 224;
+
+    // Delay actually setting those features in ram until any snapshots finish playing.
+    g_wanted_zelda_features = config.g_config.features0;
+
+    g_ppu_render_flags = @as(u32, @intFromBool(config.g_config.new_renderer)) * kPpuRenderFlags_NewRenderer |
+        @as(u32, @intFromBool(config.g_config.enhanced_mode7)) * kPpuRenderFlags_4x4Mode7 |
+        @as(u32, @intFromBool(config.g_config.extend_y)) * kPpuRenderFlags_Height240 |
+        @as(u32, @intFromBool(config.g_config.no_sprite_limits)) * kPpuRenderFlags_NoSpriteLimits;
+    // audio_freq: Use common sampling rates (see user config file. values higher than 48000 are not supported.)
+    if (config.g_config.audio_freq < 11025 or config.g_config.audio_freq > 48000)
+        config.g_config.audio_freq = kDefaultFreq;
+
+    // The MSU mixer only plays at the right pitch when the output runs at the
+    // rate its decoder produces, so take that rate rather than asking the user
+    // to match it by hand. Nothing is lost by overriding them: SDL3's stream
+    // resamples the finished mix to whatever the device is actually running at,
+    // so AudioFreq no longer has to name a rate the hardware supports.
+    if (audio.MsuRequiredAudioFreq(config.g_config.enable_msu)) |msu_freq| {
+        if (config.g_config.audio_freq != msu_freq) {
+            _ = printf("MSU: using AudioFreq = %d, the rate its audio decodes at\n", @as(c_int, msu_freq));
+            config.g_config.audio_freq = msu_freq;
+        }
+    }
+
+    // ZeldaEnableMsu scales the volume ramp by audio_freq, so it has to run
+    // after the rate above is settled.
+    audio.ZeldaEnableMsu(config.g_config.enable_msu);
+    ZeldaSetLanguage(config.g_config.language);
+
+}
+
 fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     var argc = argc_in - 1;
     var argv = argv_in + 1;
     var config_file: ?[*:0]const u8 = null;
     const alloc = std.heap.c_allocator;
+    // A randomizer seed to play in the emulator instead of the port.
+    var rando_rom: ?[:0]const u8 = null;
 
     // `--emu-render <rom> <script> <out.bmp>` is the same for a ROM run in
     // the emulator, such as a randomizer seed.
@@ -614,57 +679,43 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         config_file = argv[1];
         argc -= 2;
         argv += 2;
+    }
+    // A randomizer seed on the command line plays in the emulator; any other
+    // ROM there is the original to compare the port against.
+    if (render_request == null and verify_request == null and argc == 1 and menu.isRandomizerRom(std.mem.span(argv[0]))) {
+        rando_rom = std.mem.span(argv[0]);
+        argc = 0;
+    }
+    if (render_request != null or verify_request != null or config_file != null) {
+        // No menu for these either.
     } else {
         menu.enterDataDirectory();
         // The start menu shows when zelda3.ini asks for it, and always when
         // the assets are missing or aren't the ones this build makes, since
         // stale assets misbehave in ways that look like game bugs. Comparing
         // against a ROM (zelda3 <rom>) is a developer tool and goes straight in.
-        if (argc == 0 and (menu.checkAssets(alloc) != .verified or menu.wantsStartMenu(alloc))) {
+        if (rando_rom == null and argc == 0 and (menu.checkAssets(alloc) != .verified or menu.wantsStartMenu(alloc))) {
             const outcome = menu.run(alloc) catch |err| {
                 std.debug.print("The start menu failed: {s}\n", .{@errorName(err)});
                 return 1;
             };
             if (outcome == .quit) return 0;
+            if (outcome == .randomizer) rando_rom = menu.g_randomizer_rom;
         }
     }
     ParseConfigFile(config_file);
-    LoadAssets();
-    LoadLinkGraphics();
-
-    ZeldaInitialize();
-    const ppu: *Ppu = @ptrCast(@alignCast(g_zenv.ppu.?));
-    ppu.extraLeftRight = @min(config.g_config.extended_aspect_ratio, kPpuExtraLeftRight);
-    g_snes_width = @as(c_int, config.g_config.extended_aspect_ratio) * 2 + 256;
-    g_snes_height = if (config.g_config.extend_y) 240 else 224;
-
-    // Delay actually setting those features in ram until any snapshots finish playing.
-    g_wanted_zelda_features = config.g_config.features0;
-
-    g_ppu_render_flags = @as(u32, @intFromBool(config.g_config.new_renderer)) * kPpuRenderFlags_NewRenderer |
-        @as(u32, @intFromBool(config.g_config.enhanced_mode7)) * kPpuRenderFlags_4x4Mode7 |
-        @as(u32, @intFromBool(config.g_config.extend_y)) * kPpuRenderFlags_Height240 |
-        @as(u32, @intFromBool(config.g_config.no_sprite_limits)) * kPpuRenderFlags_NoSpriteLimits;
-    // audio_freq: Use common sampling rates (see user config file. values higher than 48000 are not supported.)
-    if (config.g_config.audio_freq < 11025 or config.g_config.audio_freq > 48000)
-        config.g_config.audio_freq = kDefaultFreq;
-
-    // The MSU mixer only plays at the right pitch when the output runs at the
-    // rate its decoder produces, so take that rate rather than asking the user
-    // to match it by hand. Nothing is lost by overriding them: SDL3's stream
-    // resamples the finished mix to whatever the device is actually running at,
-    // so AudioFreq no longer has to name a rate the hardware supports.
-    if (audio.MsuRequiredAudioFreq(config.g_config.enable_msu)) |msu_freq| {
-        if (config.g_config.audio_freq != msu_freq) {
-            _ = printf("MSU: using AudioFreq = %d, the rate its audio decodes at\n", @as(c_int, msu_freq));
-            config.g_config.audio_freq = msu_freq;
-        }
-    }
-
-    // ZeldaEnableMsu scales the volume ramp by audio_freq, so it has to run
-    // after the rate above is settled.
-    audio.ZeldaEnableMsu(config.g_config.enable_msu);
-    ZeldaSetLanguage(config.g_config.language);
+    if (rando_rom) |path| {
+        // A seed needs none of the port: no asset file, no game state.
+        const mode = tracker.Mode.fromName(config.g_tracker) orelse .panel;
+        rando.start(alloc, path, mode) catch |err| {
+            std.debug.print("Could not start the randomizer seed {s}: {s}\n", .{ path, @errorName(err) });
+            return 1;
+        };
+        g_snes_width = @divExact(rando.canvasWidth(), rando.kScale);
+        g_snes_height = @divExact(rando.canvasHeight(), rando.kScale);
+        if (config.g_config.audio_freq < 11025 or config.g_config.audio_freq > 48000)
+            config.g_config.audio_freq = kDefaultFreq;
+    } else portSetup();
 
     if (render_request) |r| return renderToFile(r[0], r[1], r[2]);
     if (verify_request) |v| return verifyAgainstRom(v[0], v[1]);
@@ -796,11 +847,12 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     var frameCtr: u32 = 0;
     var audiopaused = true;
 
-    if (config.g_config.autosave)
+    if (config.g_config.autosave and !rando.g_active)
         HandleCommand(kKeys_Load + 0, true);
 
     while (running) {
         while (c.SDL_PollEvent(&event)) {
+            if (rando.handleEvent(&event)) continue;
             switch (event.type) {
                 c.SDL_EVENT_GAMEPAD_ADDED => OpenOneGamepad(event.gdevice.which),
                 c.SDL_EVENT_GAMEPAD_AXIS_MOTION => HandleGamepadAxisInput(event.gaxis.which, event.gaxis.axis, event.gaxis.value),
@@ -851,12 +903,17 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
             g_gamepad_buttons = 0;
         inputs |= g_gamepad_buttons;
 
+        var is_replay = false;
         c.SDL_LockMutex(g_audio_mutex);
-        const is_replay = ZeldaRunFrame(inputs);
+        if (rando.g_active) {
+            rando.runFrame(@intCast(inputs & 0xfff));
+            rando.makeAudio(@intCast(g_frames_per_block), g_audio_channels);
+        } else is_replay = ZeldaRunFrame(inputs);
         c.SDL_UnlockMutex(g_audio_mutex);
 
-        // A replay is someone else's playthrough, so it doesn't shake the pad.
-        if (is_replay) rumble.reset() else rumble.afterFrame(audio.lastSoundEffect1(), audio.lastSoundEffect2());
+        // A replay is someone else's playthrough, so it doesn't shake the pad,
+        // and a randomizer seed isn't the port, so the port's rumble can't read it.
+        if (is_replay or rando.g_active) rumble.reset() else rumble.afterFrame(audio.lastSoundEffect1(), audio.lastSoundEffect2());
 
         frameCtr +%= 1;
 
@@ -866,7 +923,10 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
             continue;
         }
 
-        DrawPpuFrameWithPerf();
+        if (rando.g_active) {
+            DrawRandoFrame();
+            rando.presentWindow();
+        } else DrawPpuFrameWithPerf();
 
         if (config.g_config.display_perf_title) {
             var title: [60]u8 = undefined;
@@ -893,8 +953,9 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
             }
         }
     }
-    if (config.g_config.autosave)
+    if (config.g_config.autosave and !rando.g_active)
         HandleCommand(kKeys_Save + 0, true);
+    rando.stop();
 
     // clean sdl
     if (g_audio_stream) |stream| {
@@ -1042,6 +1103,26 @@ pub export fn ZeldaApuUnlock() callconv(.c) void {
 fn HandleCommand_Locked(j: u32, pressed: bool) void {
     if (!pressed)
         return;
+    if (rando.g_active) {
+        // A seed is the real game: no snapshots and no cheats, and the keys
+        // that only make sense for the port do randomizer things instead.
+        switch (j) {
+            kKeys_Fullscreen, kKeys_Pause, kKeys_PauseDimmed, kKeys_WindowBigger, kKeys_WindowSmaller, kKeys_DisplayPerf, kKeys_VolumeUp, kKeys_VolumeDown => {},
+            kKeys_Reset => return rando.reset(),
+            kKeys_ReplayTurbo => {
+                rando.cycleMode();
+                // The panel changes the picture's shape.
+                g_snes_width = @divExact(rando.canvasWidth(), rando.kScale);
+                if (g_renderer) |r| {
+                    if (!config.g_config.ignore_aspect_ratio)
+                        _ = c.SDL_SetRenderLogicalPresentation(r, g_snes_width, g_snes_height, c.SDL_LOGICAL_PRESENTATION_LETTERBOX);
+                }
+                ChangeWindowScale(0);
+                return;
+            },
+            else => return,
+        }
+    }
     // Loading, replaying or resetting changes health in one step, which the
     // rumble would otherwise take for a hit.
     if (j <= kKeys_ReplayRef_Last or j == kKeys_Reset)

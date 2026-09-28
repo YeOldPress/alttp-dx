@@ -42,8 +42,8 @@ pub const Console = struct {
     /// Loads a ROM file and powers the console on, with its save if there
     /// is one.
     pub fn open(alloc: std.mem.Allocator, rom_path: [:0]const u8) !Console {
-        const rom = try fileio.readWholeFile(alloc, rom_path.ptr);
-        defer alloc.free(rom);
+        const file = try fileio.readWholeFile(alloc, rom_path.ptr);
+        defer alloc.free(file);
         const ram = try alloc.create([0x20000]u8);
         errdefer alloc.destroy(ram);
         @memset(ram, 0);
@@ -52,7 +52,7 @@ pub const Console = struct {
         snes_mod.g_accurate_timing = true;
         snes_pkg.cpu.g_real_brk = true;
         snes_pkg.ppu.g_lenient = true;
-        if (!snes_pkg.snes_other.snes_loadRom(s, rom.ptr, @intCast(rom.len))) return error.NotARom;
+        if (!snes_pkg.snes_other.snes_loadRom(s, file.ptr, @intCast(file.len))) return error.NotARom;
 
         const ext = std.fs.path.extension(rom_path);
         const save_path = try std.fmt.allocPrintSentinel(alloc, "{s}.srm", .{rom_path[0 .. rom_path.len - ext.len]}, 0);
@@ -81,6 +81,13 @@ pub const Console = struct {
         const c = self.cart();
         const ram = c.ram orelse return &.{};
         return ram[0..c.ramSize];
+    }
+
+    /// The ROM as the console sees it, header stripped and mirrored out to a
+    /// power of two.
+    pub fn rom(self: *Console) []const u8 {
+        const c = self.cart();
+        return (c.rom orelse return &.{})[0..c.romSize];
     }
 
     /// The console's work ram ($7e0000-$7fffff), for the item tracker.

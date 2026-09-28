@@ -625,6 +625,9 @@ fn parseBoolBit(value: [*:0]const u8, data: *u32, mask: u32) bool {
 /// for the in-game settings menu. Only the plain sections are handled; key
 /// bindings stay with the file. False when the section, key or value isn't
 /// understood.
+/// Where the randomizer item tracker goes: panel, overlay, window or off.
+pub var g_tracker: []const u8 = "panel";
+
 pub fn applySetting(section: []const u8, key: []const u8, value: []const u8) bool {
     const id: c_int = if (std.mem.eql(u8, section, "Graphics"))
         1
@@ -807,6 +810,9 @@ fn handleGeneral(key: [*:0]const u8, value: [*:0]u8) bool {
         return true;
     } else if (util.StringEqualsNoCase(key, "Language")) {
         g_config.language = value;
+        return true;
+    } else if (util.StringEqualsNoCase(key, "Tracker")) {
+        g_tracker = std.mem.span(value);
         return true;
     }
     return false;

@@ -586,7 +586,12 @@ fn spc_doOpcode(spc: *Spc, opcode: u8) void {
             const rel = spc_readOpcode(spc);
             spc_doBranch(spc, rel, result != 0);
         },
-        0x2f => spc.pc = addRel(spc.pc, spc_readOpcode(spc)), // bra rel
+        0x2f => { // bra rel
+            // Fetch the operand first: the branch is relative to the byte
+            // after it (the same slip as the main cpu's BRA had).
+            const rel = spc_readOpcode(spc);
+            spc.pc = addRel(spc.pc, rel);
+        },
         0x30 => { // bmi rel
             const rel = spc_readOpcode(spc);
             spc_doBranch(spc, rel, spc.n);
@@ -1085,6 +1090,17 @@ const TestSpc = struct {
         return spc_runOpcode(self.spc);
     }
 };
+
+test "bra is relative to the byte after its operand" {
+    const t = try TestSpc.init();
+    defer t.deinit();
+    t.load(&.{ 0x2f, 0x10 });
+    _ = t.step();
+    try testing.expectEqual(@as(u16, 0x0212), t.spc.pc);
+    t.load(&.{ 0x2f, 0xfe });
+    _ = t.step();
+    try testing.expectEqual(@as(u16, 0x0200), t.spc.pc);
+}
 
 test "reset reads the vector at $fffe through the boot rom" {
     const t = try TestSpc.init();
