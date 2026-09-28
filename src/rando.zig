@@ -45,26 +45,34 @@ pub fn start(alloc: std.mem.Allocator, path: [:0]const u8, mode: tracker.Mode) !
     tracker.loadGfx(g_gfx, g_console.rom());
     g_mode = mode;
     g_margin = @min(config.g_config.extended_aspect_ratio, kMaxMargin);
-    startMsu();
+    startMsu(path);
     g_active = true;
     toast(mode.label());
 }
 
-/// MSU-1 follows the same settings as the normal game: EnableMSU turns it
-/// on (and says .pcm or .opuz), MSUPath says where the tracks are. The seed
-/// picks its own tracks, so deluxe or not makes no difference here.
-fn startMsu() void {
-    const enable = config.g_config.enable_msu;
-    if (enable == 0) return;
-    const path = config.g_config.msu_path orelse return;
-    const kOpuz = 4;
-    g_msu.configure(std.mem.span(path), if (enable & kOpuz != 0) .opuz else .pcm);
-    if (!g_msu.hasTracks()) {
-        var buf: [1100]u8 = undefined;
-        std.debug.print("MSU-1: no tracks at {s}; the seed will play its own music\n", .{g_msu.trackPath(&buf, 1) orelse "?"});
+/// Finds an MSU-1 pack: seed-1.pcm (or .opuz) and so on beside the seed,
+/// which is how packs for randomizer seeds are usually named, or failing
+/// that, MSUPath from the ini when EnableMSU is on.
+fn startMsu(rom_path: []const u8) void {
+    const ext = std.fs.path.extension(rom_path);
+    var buf: [1024]u8 = undefined;
+    const beside = std.fmt.bufPrint(&buf, "{s}-", .{rom_path[0 .. rom_path.len - ext.len]}) catch return;
+    found: {
+        for ([_]@import("msu1.zig").Format{ .pcm, .opuz }) |format| {
+            g_msu.configure(beside, format);
+            if (g_msu.hasTracks()) break :found;
+        }
+        const enable = config.g_config.enable_msu;
+        if (enable == 0) return;
+        const path = config.g_config.msu_path orelse return;
+        const kOpuz = 4;
+        g_msu.configure(std.mem.span(path), if (enable & kOpuz != 0) .opuz else .pcm);
+        if (!g_msu.hasTracks()) return;
     }
     g_have_msu = true;
     snes_pkg.snes.g_io_hooks = .{ .ctx = &g_msu, .read = msuRead, .write = msuWrite };
+    var track: [1100]u8 = undefined;
+    std.debug.print("MSU-1: playing tracks like {s}\n", .{g_msu.trackPath(&track, 1) orelse "?"});
 }
 
 fn msuRead(ctx: *anyopaque, adr: u16) ?u8 {
