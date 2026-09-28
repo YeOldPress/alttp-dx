@@ -1,8 +1,8 @@
-//! Address tables lifted from assets/tables.py.
+//! Address tables lifted from the old assets/tables.py.
 //!
 //! These are ROM addresses the resource tool needs but cannot derive - they
 //! were found by hand when the game was reverse engineered. Generated from
-//! the Python so the two cannot drift apart by a typo.
+//! the old Python so the two cannot drift apart by a typo.
 
 /// Where each sprite graphics block starts. The first twelve are stored
 /// uncompressed at a fixed 0x600 bytes; the rest are compressed.

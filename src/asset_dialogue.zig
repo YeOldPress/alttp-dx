@@ -1,7 +1,7 @@
 //! The dialogue assets, for the US text and any translations built in beside
 //! it.
 //!
-//! This is the one place where the Python's intermediate file is not a
+//! This is the one place where the old Python's intermediate file is not a
 //! lossless view of the ROM. Extraction expands every dictionary reference
 //! into the text it stands for, and compilation matches the dictionary again
 //! from scratch - greedily, first entry in table order that fits. The result
@@ -162,7 +162,7 @@ pub const Diag = struct {
 };
 
 /// The alphabet entry a token prints as. When a token is in the alphabet
-/// twice the later one wins, as it did in the Python's lookup table.
+/// twice the later one wins, as it did in the old Python's lookup table.
 fn alphabetIndex(info: *const Lang, token: []const u8) ?u8 {
     var i = info.alphabet.len;
     while (i > 0) {
@@ -173,7 +173,7 @@ fn alphabetIndex(info: *const Lang, token: []const u8) ?u8 {
 }
 
 /// The dictionary reference the compressor emits at the start of `rest`, if
-/// any. The Python kept the dictionary in a dict, which gives two quirks
+/// any. The old Python kept the dictionary in a dict, which gives two quirks
 /// worth keeping: entries are tried in table order, first fit winning, and
 /// an entry listed twice is tried where it first appears but encoded as the
 /// later index.
@@ -216,12 +216,12 @@ fn encodeOrg(out: *std.ArrayList(u8), alloc: std.mem.Allocator, diag: *Diag, nam
 fn encodeNew(out: *std.ArrayList(u8), alloc: std.mem.Allocator, diag: *Diag, name: []const u8, param: ?u8) !void {
     const Simple = struct { name: []const u8, bytes: []const u8 };
     const simple = [_]Simple{
-        .{ .name = "Scroll", .bytes = &.{0x80} },         .{ .name = "Waitkey", .bytes = &.{0x81} },
-        .{ .name = "1", .bytes = &.{0x82} },              .{ .name = "2", .bytes = &.{0x83} },
-        .{ .name = "3", .bytes = &.{0x84} },              .{ .name = "Name", .bytes = &.{0x85} },
-        .{ .name = "Choose", .bytes = &.{ 0x87, 0x80 } }, .{ .name = "Choose2", .bytes = &.{ 0x87, 0x81 } },
+        .{ .name = "Scroll", .bytes = &.{0x80} },          .{ .name = "Waitkey", .bytes = &.{0x81} },
+        .{ .name = "1", .bytes = &.{0x82} },               .{ .name = "2", .bytes = &.{0x83} },
+        .{ .name = "3", .bytes = &.{0x84} },               .{ .name = "Name", .bytes = &.{0x85} },
+        .{ .name = "Choose", .bytes = &.{ 0x87, 0x80 } },  .{ .name = "Choose2", .bytes = &.{ 0x87, 0x81 } },
         .{ .name = "Choose3", .bytes = &.{ 0x87, 0x82 } }, .{ .name = "Selchg", .bytes = &.{ 0x87, 0x83 } },
-        .{ .name = "Item", .bytes = &.{ 0x87, 0x84 } },   .{ .name = "NextPic", .bytes = &.{ 0x87, 0x85 } },
+        .{ .name = "Item", .bytes = &.{ 0x87, 0x84 } },    .{ .name = "NextPic", .bytes = &.{ 0x87, 0x85 } },
     };
     for (simple) |s| {
         if (!std.mem.eql(u8, s.name, name)) continue;
@@ -412,7 +412,7 @@ pub fn buildLanguages(alloc: std.mem.Allocator, list: []const Input, diag: *Diag
     return .{ .dialogue = d, .font = f, .map = try build_mod.packArrays(alloc, @ptrCast(maps.items)) };
 }
 
-/// The US font straight out of the ROM. The Python decodes the tiles into a
+/// The US font straight out of the ROM. The old Python decodes the tiles into a
 /// PNG, reads it back and re-encodes them, and measures each glyph's width
 /// from its pixels; both come back as what the ROM already holds.
 pub fn romFont(alloc: std.mem.Allocator, rom: Rom) !struct { tiles: []u8, widths: []u8 } {
@@ -462,7 +462,7 @@ test "the dialogue matches the reference asset file" {
 }
 
 test "a duplicated dictionary entry is tried first but encoded last" {
-    // Swedish lists "en " twice; the Python's dict kept the first slot in
+    // Swedish lists "en " twice; the old Python's dict kept the first slot in
     // the lookup order and the second index.
     const m = dictionaryMatch(langs.get(.sv), "en tur").?;
     const info = langs.get(.sv);

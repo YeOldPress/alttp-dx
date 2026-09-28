@@ -5,7 +5,7 @@
 //! same bytes they were decoded from, so with extraction and compilation
 //! fused the packets can be copied across and the name tables are not needed.
 //!
-//! The room object data is the same story: the Python decodes every object
+//! The room object data is the same story: the old Python decodes every object
 //! into a name, a position and a size and encodes it again, and the bytes
 //! come back identical, so the rooms are copied and walked for their lengths.
 
@@ -185,7 +185,7 @@ pub const Headers = struct {
 /// Every room's fourteen byte header, overlapped so that rooms sharing a
 /// tail share the bytes.
 ///
-/// The header is copied out of the ROM except for two bytes that the Python
+/// The header is copied out of the ROM except for two bytes that the old Python
 /// takes apart into fields and reassembles, narrowing them on the way.
 pub fn buildHeaders(alloc: std.mem.Allocator, rom: Rom) !Headers {
     var data: std.ArrayList(u8) = .empty;
@@ -194,7 +194,7 @@ pub fn buildHeaders(alloc: std.mem.Allocator, rom: Rom) !Headers {
 
     for (0..kRoomCount) |i| {
         var hp: u32 = 0x40000 | @as(u32, rom.getWord(0x04f502 + @as(u32, @intCast(i)) * 2));
-        // One room points at a slot that is not a header; the Python sends it
+        // One room points at a slot that is not a header; the old Python sends it
         // somewhere harmlessly full of zeros instead.
         if (hp == 0x4ffef) hp = 0x82edc5;
 

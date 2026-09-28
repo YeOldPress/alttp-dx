@@ -145,7 +145,7 @@ fn addDungeonRoomsFromRom(b: *Builder, alloc: std.mem.Allocator, rom: Rom) !void
     try b.addMisc("kEntranceData_musicTrack");
 
     try b.addMany("kStartingPoint_", kEntranceFields[0..11]);
-    // Starting points have no doorway orientation table; the Python writes
+    // Starting points have no doorway orientation table; the old Python writes
     // zeros in its place.
     try b.add("kStartingPoint_doorwayOrientation", .uint8, try alloc.dupe(u8, &[_]u8{0} ** 7));
     try b.addMany("kStartingPoint_", kEntranceFields[12..]);
@@ -254,11 +254,11 @@ pub fn buildFile(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
 const testing = std.testing;
 const fileio = @import("fileio.zig");
 
-/// SHA-256 of zelda3_assets.dat as assets/restool.py builds it from the US
+/// SHA-256 of zelda3_assets.dat as the old assets/restool.py built it from the US
 /// ROM. Pinned here because the test below otherwise compares against a file
 /// on disk that this very program can overwrite - once the launcher has built
 /// the assets once, comparing to that file proves nothing. This digest came
-/// from the Python tool's output and does not change.
+/// from the old Python tool's output and does not change.
 pub const kReferenceDigest = "0fe2e4bd75d70f06fb9a74cd3a9cb336c838149b831b56e8792114a89292c793";
 
 test "the whole asset file matches the digest of the Python tool's output" {

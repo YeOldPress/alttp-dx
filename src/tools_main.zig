@@ -3,6 +3,8 @@
 const std = @import("std");
 const ops = @import("tools_ops.zig");
 const gui = @import("tools_gui.zig");
+const dev = @import("tools_dev.zig");
+const fileio = @import("fileio.zig");
 
 const kUsage =
     \\zelda3-tools: build and check the assets for zelda3.
@@ -34,11 +36,20 @@ const kUsage =
     \\  gui               Open the window
     \\  help              This
     \\
+    \\For working on the game itself:
+    \\
+    \\  input-log FILE    Print the input log in a snapshot (.sav)
+    \\  text-dict [FILE]  Search a dialogue.txt for the dictionary that
+    \\                    would compress it best (slow; prints as it goes)
+    \\
+    \\The ancilla parity check is zig run other/check_ancilla_parity.zig.
+    \\
 ;
 
-pub fn main(init: std.process.Init.Minimal) !void {
+pub fn main(init: std.process.Init) !void {
     const alloc = std.heap.c_allocator;
-    var it = try init.args.iterateAllocator(alloc);
+    g_io = init.io;
+    var it = try init.minimal.args.iterateAllocator(alloc);
     defer it.deinit();
     _ = it.next();
 
@@ -47,6 +58,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
     while (it.next()) |a| try args.append(alloc, try alloc.dupeZ(u8, a));
 
     if (args.items.len == 0) return gui.run(alloc);
+    // Asking for help isn't a mistake, so it isn't an error either.
+    if (std.mem.eql(u8, args.items[0], "help") or std.mem.eql(u8, args.items[0], "--help") or std.mem.eql(u8, args.items[0], "-h")) {
+        std.debug.print("{s}", .{kUsage});
+        return;
+    }
     const ok = runCommand(alloc, args.items) catch |e| switch (e) {
         error.Usage => {
             std.debug.print("{s}", .{kUsage});
@@ -55,6 +71,16 @@ pub fn main(init: std.process.Init.Minimal) !void {
         else => return e,
     };
     if (!ok) std.process.exit(1);
+}
+
+var g_io: std.Io = undefined;
+
+/// Runs `f` with a writer to stdout, flushed after.
+fn toStdout(f: anytype, args: anytype) !void {
+    var buf: [4096]u8 = undefined;
+    var w = std.Io.File.stdout().writerStreaming(g_io, &buf);
+    try @call(.auto, f, args ++ .{&w.interface});
+    try w.interface.flush();
 }
 
 /// Prints a Log to the terminal, marking errors so they stand out.
@@ -159,6 +185,32 @@ fn runCommand(alloc: std.mem.Allocator, args: []const [:0]const u8) !bool {
     if (std.mem.eql(u8, cmd, "rom-info")) {
         return ops.romInfo(alloc, log, positional(rest, 0) orelse return error.Usage);
     }
+    if (std.mem.eql(u8, cmd, "input-log")) {
+        const path = positional(rest, 0) orelse return error.Usage;
+        const data = fileio.readWholeFile(alloc, path.ptr) catch |e| {
+            log.err("Could not read {s}: {s}", .{ path, @errorName(e) });
+            return false;
+        };
+        defer alloc.free(data);
+        toStdout(dev.inputLog, .{data}) catch |e| {
+            log.err("{s}: {s}", .{ path, if (e == error.NotASnapshot) "too short to be a snapshot" else @errorName(e) });
+            return false;
+        };
+        return true;
+    }
+    if (std.mem.eql(u8, cmd, "text-dict")) {
+        const path = positional(rest, 0) orelse "dialogue.txt";
+        const data = fileio.readWholeFile(alloc, path.ptr) catch |e| {
+            log.err("Could not read {s}: {s}", .{ path, @errorName(e) });
+            return false;
+        };
+        defer alloc.free(data);
+        toStdout(dev.textDict, .{ alloc, data }) catch |e| {
+            log.err("{s}: {s}", .{ path, @errorName(e) });
+            return false;
+        };
+        return true;
+    }
     // Undocumented: a frame of the window as a picture, for working on it.
     if (std.mem.eql(u8, cmd, "gui-screenshot")) {
         const path = positional(rest, 0) orelse return error.Usage;
@@ -190,4 +242,5 @@ test {
     _ = @import("asset_export.zig");
     _ = @import("png.zig");
     _ = @import("asset_dialogue.zig");
+    _ = dev;
 }

@@ -1,8 +1,8 @@
 //! The game's graphics as PNGs to edit: Link's sprites, the dialogue font and
 //! the HUD's icons. The sprite sheets have their own file, asset_sprite_sheets.
 //!
-//! Each follows sprite_sheets.py: the same layout, the same palettes, so the
-//! PNGs the Python wrote read back here and the other way round. Pixels are
+//! Each follows the old sprite_sheets.py: the same layout, the same palettes, so the
+//! PNGs the old Python wrote read back here and the other way round. Pixels are
 //! palette indices, which is what the game stores; editors keep them as long
 //! as the image stays in indexed color.
 const std = @import("std");
@@ -12,7 +12,7 @@ const asset_tables = @import("asset_tables.zig");
 
 const Rom = rom_mod.Rom;
 
-/// SNES BGR555 to 8-bit RGB, the way the Python widens it.
+/// SNES BGR555 to 8-bit RGB, the way the old Python widens it.
 pub fn snesToRgb(c: u16) [3]u8 {
     const r: u8 = @intCast(c & 0x1f);
     const g: u8 = @intCast((c >> 5) & 0x1f);

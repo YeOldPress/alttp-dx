@@ -67,9 +67,15 @@ fn logWrite(ctx: *anyopaque, level: ops.Log.Level, text: []const u8) void {
     const cols: usize = (kWindowW - kSidebarW - 32) / kCharW;
     var rest = text;
     while (true) {
-        const n = @min(rest.len, cols);
+        var n: usize = @min(rest.len, cols);
+        // Break at a space where there is one, so words stay whole.
+        if (n < rest.len) {
+            if (std.mem.lastIndexOfScalar(u8, rest[0 .. n + 1], ' ')) |sp| {
+                if (sp > 0) n = sp;
+            }
+        }
         pushLine(level, rest[0..n]);
-        rest = rest[n..];
+        rest = std.mem.trimStart(u8, rest[n..], " ");
         if (rest.len == 0) break;
     }
     g_log_scroll = 0;
@@ -198,10 +204,18 @@ const State = struct {
     }
 };
 
-/// Where a file called `name` would sit next to this program.
-fn besideExe(alloc: std.mem.Allocator, name: []const u8) []const u8 {
-    const base = c.SDL_GetBasePath() orelse return name;
-    return std.fmt.allocPrint(alloc, "{s}{s}", .{ std.mem.span(base), name }) catch name;
+/// Where a file called `name` would sit in the game's folder: beside this
+/// program for a plain install, or in the game's data directory when this
+/// runs from an app bundle or AppImage, which are read-only.
+fn inGameDir(alloc: std.mem.Allocator, name: []const u8) []const u8 {
+    const base_z = c.SDL_GetBasePath() orelse return name;
+    const base = std.mem.span(base_z);
+    if (@import("menu.zig").isPackaged(base)) {
+        const pref = c.SDL_GetPrefPath("", "alttp-zig") orelse return name;
+        defer c.SDL_free(pref);
+        return std.fmt.allocPrint(alloc, "{s}{s}", .{ std.mem.span(pref), name }) catch name;
+    }
+    return std.fmt.allocPrint(alloc, "{s}{s}", .{ base, name }) catch name;
 }
 
 fn exists(alloc: std.mem.Allocator, path: []const u8) bool {
@@ -471,13 +485,13 @@ fn drawLog(ui: *Ui) void {
 
 fn initialState(alloc: std.mem.Allocator) State {
     var st = State{};
-    // Sensible starting points: a ROM beside the program or in the current
-    // folder, and the asset file beside the program, where the game looks.
-    for ([_][]const u8{ besideExe(alloc, "zelda3.sfc"), "zelda3.sfc", besideExe(alloc, "zelda3.smc"), "zelda3.smc" }) |p| {
+    // Sensible starting points: a ROM in the game's folder or the current
+    // one, and the asset file in the game's folder, where the game looks.
+    for ([_][]const u8{ inGameDir(alloc, "zelda3.sfc"), "zelda3.sfc", inGameDir(alloc, "zelda3.smc"), "zelda3.smc" }) |p| {
         if (st.rom.items.len == 0 and exists(alloc, p)) st.set(alloc, .rom, p);
     }
-    st.set(alloc, .out, besideExe(alloc, "zelda3_assets.dat"));
-    st.set(alloc, .folder, besideExe(alloc, "zelda3_files"));
+    st.set(alloc, .out, inGameDir(alloc, "zelda3_assets.dat"));
+    st.set(alloc, .folder, inGameDir(alloc, "zelda3_files"));
     pushLine(.info, "Ready. Pick a section on the left.");
     return st;
 }
@@ -495,7 +509,9 @@ fn drawFrame(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Wind
 
 /// Draws one frame of a page into a BMP with no window, for looking at the
 /// layout while working on it: `zelda3-tools gui-screenshot out.bmp [page]`.
-/// `log` lines are fed through the real log first, so it shows populated.
+/// `log` lines are fed through the real log first, so it shows populated;
+/// ones like "@rom=path" set a field instead (rom, out, folder, lang_rom),
+/// "@pick=de,fr" ticks languages and "@sprites" ticks the sprite sheets.
 pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]const u8, log_lines: []const [:0]const u8) !void {
     const surface = c.SDL_CreateSurface(kWindowW, kWindowH, c.SDL_PIXELFORMAT_XRGB8888) orelse return error.SdlSurface;
     defer c.SDL_DestroySurface(surface);
@@ -507,7 +523,29 @@ pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]co
             if (std.ascii.eqlIgnoreCase(f.name, name)) st.page = @enumFromInt(f.value);
         }
     }
-    for (log_lines) |line| logWrite(&g_log_dummy, if (std.mem.startsWith(u8, line, "!")) .err else .info, line);
+    var picks: ?[]const u8 = null;
+    for (log_lines) |line| {
+        if (std.mem.startsWith(u8, line, "@")) {
+            const eq = std.mem.indexOfScalar(u8, line, '=') orelse line.len;
+            const key = line[1..eq];
+            const value = if (eq < line.len) line[eq + 1 ..] else "";
+            if (std.mem.eql(u8, key, "pick")) {
+                picks = value;
+            } else if (std.mem.eql(u8, key, "sprites")) {
+                st.sprites_from_png = true;
+            } else if (std.meta.stringToEnum(Field, key)) |f| st.set(alloc, f, value);
+            continue;
+        }
+        const level: ops.Log.Level = if (std.mem.startsWith(u8, line, "!")) .err else if (std.mem.startsWith(u8, line, "+")) .ok else .info;
+        logWrite(&g_log_dummy, level, if (level == .info) line else line[1..]);
+    }
+    st.refreshAvailable();
+    if (picks) |p| {
+        var it = std.mem.tokenizeScalar(u8, p, ',');
+        while (it.next()) |code| {
+            if (@import("asset_languages.zig").fromCode(code)) |l| st.picked[@intFromEnum(l)] = true;
+        }
+    }
     var ui = Ui{ .r = renderer, .mouse_x = -1, .mouse_y = -1 };
     drawFrame(&ui, alloc, &st, null);
     _ = c.SDL_RenderPresent(renderer);

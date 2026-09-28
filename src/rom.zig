@@ -1,6 +1,6 @@
 //! Reading the SNES ROM, and the decompressor the game's data is stored under.
 //!
-//! This is the Zig side of assets/util.py. Addresses are SNES addresses in
+//! This is the Zig side of the old assets/util.py. Addresses are SNES addresses in
 //! LoROM form: bank in the high byte, offset 0x8000..0xffff in the low word.
 
 const std = @import("std");

@@ -1,9 +1,9 @@
 //! Writing the music out to look at: the three sound banks as SPC memory
 //! images, their songs, phrases and patterns as text, the sound effects as
 //! text, the instrument table as YAML and every sample as BRR and as 16-bit
-//! PCM. A port of extract_music.py, down to the spacing.
+//! PCM. A port of the old extract_music.py, down to the spacing.
 //!
-//! This is the read-only half. The Python's music compiler would only accept
+//! This is the read-only half. The old Python's music compiler would only accept
 //! text that assembled back into exactly the ROM's bytes, so the sound banks
 //! are still built straight from the ROM (asset_music.zig) and nothing here
 //! has a way back in.
@@ -52,11 +52,11 @@ const Memory = struct {
 
 const kEffectByteLength = [_]u8{ 1, 1, 2, 3, 0, 1, 2, 1, 2, 1, 1, 3, 0, 1, 2, 3, 1, 3, 3, 0, 1, 3, 0, 3, 3, 3, 1 };
 const kEffectNames = [_][]const u8{
-    "Instrument",      "Pan",               "PanFade",          "Vibrato",    "VibratoOff",
-    "SongVolume",      "SongVolumeFade",    "Tempo",            "TempoFade",  "Transpose",
-    "ChannelTranpose", "Tremolo",           "TremoloOff",       "Volume",     "VolumeFade",
-    "Call",            "VibratoFade",       "PitchEnvelopeTo",  "PitchEnvelopeFrom", "PitchEnvelopeOff",
-    "FineTune",        "EchoEnable",        "EchoOff",          "EchoSetup",  "EchoVolumeFade",
+    "Instrument",      "Pan",              "PanFade",         "Vibrato",           "VibratoOff",
+    "SongVolume",      "SongVolumeFade",   "Tempo",           "TempoFade",         "Transpose",
+    "ChannelTranpose", "Tremolo",          "TremoloOff",      "Volume",            "VolumeFade",
+    "Call",            "VibratoFade",      "PitchEnvelopeTo", "PitchEnvelopeFrom", "PitchEnvelopeOff",
+    "FineTune",        "EchoEnable",       "EchoOff",         "EchoSetup",         "EchoVolumeFade",
     "PitchSlide",      "PercussionDefine",
 };
 

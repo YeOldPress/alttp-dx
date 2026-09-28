@@ -727,7 +727,7 @@ const Repeat = struct {
 /// What is sitting in zelda3_assets.dat.
 pub const AssetState = enum {
     missing,
-    /// Present and matching the file the Python tool builds from a US ROM.
+    /// Present and matching the file the old Python tool builds from a US ROM.
     verified,
     /// Present, but not a file this build of the tool produces. Usually an
     /// older .dat; the game may or may not accept it.
@@ -1142,7 +1142,7 @@ fn buildAssetsFromDrop(alloc: std.mem.Allocator, path: [*:0]const u8) []const u8
 /// Backing store for status lines that are built at runtime.
 var g_status_buf: [64]u8 = undefined;
 
-/// Builds zelda3_assets.dat from the ROM, replacing what the Python resource
+/// Builds zelda3_assets.dat from the ROM, replacing what the old Python resource
 /// tool did. Returns a message for the status line either way.
 fn buildAssets(alloc: std.mem.Allocator) []const u8 {
     const path = g_rom_path orelse return "NEED " ++ kRomPath ++ " TO BUILD ASSETS";
@@ -1232,7 +1232,7 @@ pub fn reportPads() void {
 /// assets and the saves cannot sit beside the executable there. True when
 /// running from either. Inside a bundle SDL reports Contents/Resources as the
 /// base path; an AppImage's runtime sets APPIMAGE.
-fn isPackaged(base: []const u8) bool {
+pub fn isPackaged(base: []const u8) bool {
     if (builtin.os.tag == .macos) return std.mem.endsWith(u8, base, ".app/Contents/Resources/");
     if (builtin.os.tag == .linux) return c.SDL_getenv("APPIMAGE") != null;
     return false;
@@ -1283,7 +1283,7 @@ pub fn printDataDirectory() void {
 }
 
 /// Builds the asset file without opening a window, for scripts and for
-/// checking the result against the Python tool's output. False when nothing
+/// checking the result against the old Python tool's output. False when nothing
 /// was built, even if an older asset file is sitting there.
 pub fn buildAssetsFromCommandLine(alloc: std.mem.Allocator) bool {
     const msg = buildAssets(alloc);

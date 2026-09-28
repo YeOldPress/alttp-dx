@@ -7,9 +7,9 @@
 //! rebuilds the game's 3bpp sheets. Plus all_sheets.png, every sheet in one
 //! image, which is for looking at and is never read back.
 //!
-//! This is sprite_sheets.py's decode_sprite_sheets and load_sprite_sheets,
+//! This is the old sprite_sheets.py's decode_sprite_sheets and load_sprite_sheets,
 //! and draws the same pixels. Colors are held the way Pillow packs them,
-//! red in the low byte, since that's how the Python compares them.
+//! red in the low byte, since that's how the old Python compares them.
 const std = @import("std");
 const rom_mod = @import("rom.zig");
 const png = @import("png.zig");
@@ -511,7 +511,7 @@ pub fn importSheets(alloc: std.mem.Allocator, images: []const ?png.Image, why: *
     return out;
 }
 
-/// The Python builds this as a dict, so a color shared by two swatches means
+/// The old Python builds this as a dict, so a color shared by two swatches means
 /// the later one, and the transparent teal always means 0.
 fn lookup(lut: anytype, pixel: u32) ?u8 {
     if (pixel == 0x808000) return 0;

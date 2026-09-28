@@ -42,30 +42,36 @@ jobs:
     # An explicit target also means a baseline CPU rather than the runner's.
     - name: Build
       run: zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-macos.11.0 --prefix out -Dsdl-include="$PWD/sdl3/include" -Dsdl-lib="$PWD/sdl3/lib"
-    - name: Make the app bundle
+    # The game and the asset tools each get a bundle; both keep their
+    # files in the same data directory.
+    - name: Make the app bundles
       run: |
-        app=alttp-zig.app/Contents
-        mkdir -p $app/MacOS $app/Resources
-        cp out/bin/zelda3 $app/MacOS/
-        cp LICENSE.txt src/platform/macos/AppIcon.icns $app/Resources/
-        sed "s/@VERSION@/${GITHUB_REF_NAME#v}/" src/platform/macos/Info.plist > $app/Info.plist
-        # SDL3 goes inside, and the game gets pointed at it.
-        cp sdl3/lib/libSDL3.0.dylib $app/MacOS/
-        chmod u+w $app/MacOS/libSDL3.0.dylib
-        install_name_tool -id @executable_path/libSDL3.0.dylib $app/MacOS/libSDL3.0.dylib
-        old=$(otool -L $app/MacOS/zelda3 | awk '/libSDL3/ {print $1}')
-        install_name_tool -change "$old" @executable_path/libSDL3.0.dylib $app/MacOS/zelda3
-        # Rewriting load paths breaks signatures. The bundle is signed last,
-        # which signs the game as its main executable.
-        codesign --force -s - $app/MacOS/libSDL3.0.dylib
-        codesign --force -s - alttp-zig.app
-        codesign --verify --deep --strict alttp-zig.app
-        # Anything still asking for a newer macOS, or for Homebrew, would
-        # only work on machines like the runner.
-        for f in $app/MacOS/*; do
-          otool -l $f | grep -q "minos 11.0" || { echo "$f needs a newer macOS"; exit 1; }
-          if otool -L $f | grep -q /opt/homebrew; then echo "$f links Homebrew"; exit 1; fi
-        done
+        bundle() { # bundle NAME EXECUTABLE PLIST
+          app=$1.app/Contents
+          mkdir -p $app/MacOS $app/Resources
+          cp out/bin/$2 $app/MacOS/
+          cp LICENSE.txt src/platform/macos/AppIcon.icns $app/Resources/
+          sed "s/@VERSION@/${GITHUB_REF_NAME#v}/" src/platform/macos/$3 > $app/Info.plist
+          # SDL3 goes inside, and the executable gets pointed at it.
+          cp sdl3/lib/libSDL3.0.dylib $app/MacOS/
+          chmod u+w $app/MacOS/libSDL3.0.dylib
+          install_name_tool -id @executable_path/libSDL3.0.dylib $app/MacOS/libSDL3.0.dylib
+          old=$(otool -L $app/MacOS/$2 | awk '/libSDL3/ {print $1}')
+          install_name_tool -change "$old" @executable_path/libSDL3.0.dylib $app/MacOS/$2
+          # Rewriting load paths breaks signatures. The bundle is signed
+          # last, which signs its main executable.
+          codesign --force -s - $app/MacOS/libSDL3.0.dylib
+          codesign --force -s - $1.app
+          codesign --verify --deep --strict $1.app
+          # Anything still asking for a newer macOS, or for Homebrew, would
+          # only work on machines like the runner.
+          for f in $app/MacOS/*; do
+            otool -l $f | grep -q "minos 11.0" || { echo "$f needs a newer macOS"; exit 1; }
+            if otool -L $f | grep -q /opt/homebrew; then echo "$f links Homebrew"; exit 1; fi
+          done
+        }
+        bundle alttp-zig zelda3 Info.plist
+        bundle zelda3-tools zelda3-tools ToolsInfo.plist
     - name: Check the bundle starts
       run: |
         # It should settle in the data directory and write its ini there.
@@ -73,8 +79,12 @@ jobs:
         echo "data directory: $dir"
         case "$dir" in *"Application Support/alttp-zig") ;; *) exit 1 ;; esac
         test -f "$dir/zelda3.ini"
+        zelda3-tools.app/Contents/MacOS/zelda3-tools help
     - name: Archive
-      run: ditto -c -k --keepParent alttp-zig.app alttp-zig-${{ github.ref_name }}-macos-arm64.zip
+      run: |
+        mkdir pkg
+        mv alttp-zig.app zelda3-tools.app pkg/
+        ditto -c -k pkg alttp-zig-${{ github.ref_name }}-macos-arm64.zip
     - uses: actions/upload-artifact@v7
       with:
         name: Mac
@@ -118,7 +128,7 @@ jobs:
       run: |
         dir=alttp-zig.AppDir
         mkdir -p $dir/usr/bin $dir/usr/lib $dir/usr/share/alttp-zig
-        cp out/bin/zelda3 $dir/usr/bin/
+        cp out/bin/zelda3 out/bin/zelda3-tools $dir/usr/bin/
         cp -L sdl3/lib/libSDL3.so.0 $dir/usr/lib/
         cp LICENSE.txt $dir/usr/share/alttp-zig/
         cp src/platform/linux/AppRun src/platform/linux/alttp-zig.desktop src/platform/linux/alttp-zig.png $dir/
@@ -135,6 +145,7 @@ jobs:
         echo "data directory: $dir"
         case "$dir" in *".local/share/alttp-zig") ;; *) exit 1 ;; esac
         test -f "$dir/zelda3.ini"
+        APPIMAGE_EXTRACT_AND_RUN=1 ./alttp-zig-${{ github.ref_name }}-x86_64.AppImage tools help
     - uses: actions/upload-artifact@v7
       with:
         name: Linux
@@ -161,7 +172,7 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory pkg\alttp-zig | Out-Null
-        Copy-Item out\bin\zelda3.exe, "$env:SDL3_ROOT\bin\SDL3.dll", zelda3.ini, README.md, LICENSE.txt pkg\alttp-zig\
+        Copy-Item out\bin\zelda3.exe, out\bin\zelda3-tools.exe, "$env:SDL3_ROOT\bin\SDL3.dll", zelda3.ini, README.md, LICENSE.txt pkg\alttp-zig\
         Compress-Archive pkg\alttp-zig "alttp-zig-${{ github.ref_name }}-windows-x86_64.zip"
     - uses: actions/upload-artifact@v7
       with:

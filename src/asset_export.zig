@@ -1,9 +1,9 @@
 //! Writing the ROM's data out as files people can edit: the overworld areas
 //! and dungeon rooms as YAML, the map32 table and the dialogue as text.
 //!
-//! Each file is exactly what assets/extract_resources.py wrote, byte for
+//! Each file is exactly what the old assets/extract_resources.py wrote, byte for
 //! byte, so mods made against those files keep working and asset_import can
-//! read either. The functions here follow the Python's one for one, down to
+//! read either. The functions here follow the old Python's one for one, down to
 //! the order keys appear in, because that order is what's in the files.
 const std = @import("std");
 const rom_mod = @import("rom.zig");
@@ -397,7 +397,7 @@ fn dungeonRoom(b: B, rom: Rom, room: usize) Value {
     const r: u32 = @intCast(room);
     const room_addr = rom.get24(0x1f8000 + r * 3);
     var p: u32 = 0x40000 | @as(u32, rom.getWord(0x4f502 + r * 2));
-    if (p == 0x4FFEF) p = 0x82EDC5; // just some place with zeros, as the Python says
+    if (p == 0x4FFEF) p = 0x82EDC5; // just some place with zeros, as the old Python says
     const floor = rom.getByte(room_addr);
     const layout = rom.getByte(room_addr + 1);
     const flags = rom.getByte(p);
@@ -541,7 +541,7 @@ fn map32ToMap16(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
 
 // ----------------------------------------------------------------- export
 
-/// Writes every file the Python's extract step did into `dir`, which must
+/// Writes every file the old Python's extract step did into `dir`, which must
 /// exist; the overworld and dungeon folders are made as needed. Calls
 /// `progress` with each file name as it goes.
 pub fn exportFiles(alloc: std.mem.Allocator, rom: Rom, dir: []const u8, progress: ?*const fn ([]const u8) void) !void {

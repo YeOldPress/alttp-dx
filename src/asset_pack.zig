@@ -1,7 +1,7 @@
 //! The zelda3_assets.dat container.
 //!
 //! This is the file the game memory-maps at startup and indexes by asset
-//! number. The Python resource tool writes it at the end of compile_resources;
+//! number. The old Python resource tool writes it at the end of compile_resources;
 //! this module is the same writer in Zig, plus a reader so a freshly built
 //! file can be checked against one the tool produced.
 //!
@@ -26,7 +26,7 @@ const fileio = @import("fileio.zig");
 pub const kSignature = "Zelda3_v0     \n\x00";
 
 /// How the game casts a payload. Carried so the writer can emit the C header
-/// the Python tool prints with --print-assets-header.
+/// the old Python tool prints with --print-assets-header.
 pub const Kind = enum {
     uint8,
     uint16,

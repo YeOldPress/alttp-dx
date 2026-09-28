@@ -1,6 +1,6 @@
 //! Building assets out of the ROM.
 //!
-//! The Zig side of assets/compile_resources.py. Each builder produces one
+//! The Zig side of the old assets/compile_resources.py. Each builder produces one
 //! entry for zelda3_assets.dat; the tests check them against a .dat the
 //! Python tool produced, which is the only real measure of a faithful port.
 
@@ -155,13 +155,13 @@ pub const kMiscAssets = [_]MiscAsset{
 
     .{ .name = "kOverworldMapPaletteData", .kind = .uint16, .addr = 0x8adb27, .count = 256, .words = true },
 
-    // Link's sprite sheet. The Python decodes the ROM's 4bpp tiles into a
+    // Link's sprite sheet. The old Python decodes the ROM's 4bpp tiles into a
     // paletted PNG and compile_resources reads that back and re-encodes it,
     // which is the identity - see the round-trip test below - so the port
     // copies the bytes and skips the image entirely.
     .{ .name = "kLinkGraphics", .kind = .uint8, .addr = 0x108000, .count = 0x800 * 448 / 32 },
 
-    // The map32 to map16 lookup, one table per quadrant. The Python writes
+    // The map32 to map16 lookup, one table per quadrant. The old Python writes
     // these out as a text file of unpacked values and reads them back, which
     // is another identity - see the round-trip test below.
     .{ .name = "kMap32ToMap16_0", .kind = .uint8, .addr = 0x838000, .count = 2218 * 6 },
@@ -170,7 +170,7 @@ pub const kMiscAssets = [_]MiscAsset{
     .{ .name = "kMap32ToMap16_3", .kind = .uint8, .addr = 0x84b400, .count = 2218 * 6 },
 
     // Entrances and starting points. Every field is its own array indexed by
-    // entrance number, and the Python emits them in that order, so each one
+    // entrance number, and the old Python emits them in that order, so each one
     // is the ROM table as it stands. Door settings and the starting points'
     // two odd fields are built separately below.
     .{ .name = "kEntranceData_rooms", .kind = .uint16, .addr = 0x82c813, .count = 133, .words = true },
@@ -274,7 +274,7 @@ pub const kBgTilemapPtrs = [_]u32{ 0x0cdd6d, 0x0ce7bf, 0x0ce2a8, 0x0ce63c, 0x0ce
 /// of payload however long it expands to; everything else carries `len`.
 ///
 /// The walk steps the address straight through rather than hopping the bank
-/// boundary the way reads do. That matches the Python, and these streams do
+/// boundary the way reads do. That matches the old Python, and these streams do
 /// not reach a boundary.
 fn bgTilemapLength(rom: Rom, start: u32) u32 {
     var p = start;
@@ -524,7 +524,7 @@ fn encodeLinkSheet(alloc: std.mem.Allocator, sheet: []const u8) ![]u8 {
 
 // kLinkGraphics is emitted as a straight copy of the ROM. That is only valid
 // because unpacking the tiles and packing them again gives back what went in,
-// which is what the Python does the long way through a PNG. If that were ever
+// which is what the old Python does the long way through a PNG. If that were ever
 // untrue the copy would be silently wrong, so it is checked rather than
 // assumed.
 test "unpacking and repacking Link's tiles is the identity" {

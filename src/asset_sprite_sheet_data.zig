@@ -1,8 +1,8 @@
 //! The data behind the exported sprite sheets: which tiles each sprite uses,
 //! the tables that pick its palette, and the tiny font the sheets are
-//! labelled in. Generated from assets/sprite_sheet_info.py, assets/tables.py
+//! labelled in. Generated from the old assets/sprite_sheet_info.py, assets/tables.py
 //! and other/3x5_font.png when those were ported; the sheets this draws are
-//! checked against the Python's, pixel for pixel.
+//! checked against the old Python's, pixel for pixel.
 
 pub const Entry = struct {
     /// "XX: Name", with an LW or DW suffix for sprites that differ by world.

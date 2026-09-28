@@ -8,7 +8,9 @@ list of contributors, written in C, covering every part of the game from the
 title screen to the credits. I ported all of it to Zig and then kept going. It
 has a start menu built in now, a settings screen inside the game itself, and
 controller rumble, which the SNES never had. It builds its own asset file
-straight out of a ROM, so Python isn't part of the picture anymore.
+straight out of a ROM, and everything else that used to need the Python
+resource tool now lives in `zelda3-tools`, a separate little app with a window
+and a command line. There's no Python left in the repository at all.
 
 You bring your own US ROM. No game data ships here, and once the assets are
 built the ROM isn't needed again.
@@ -22,6 +24,11 @@ https://discord.gg/AJJbJAzNNJ
 (Apple Silicon, macOS 11 or newer), a Linux AppImage (x86_64, glibc 2.35 or
 newer, so Ubuntu 22.04 and anything after it) and a Windows zip. SDL3 is inside
 all three. Start it, give it your ROM, press Play.
+
+`zelda3-tools` comes along in each: `zelda3-tools.app` sits beside the game in
+the Mac zip, the AppImage runs it when started with `tools` as its first
+argument, and the Windows zip has `zelda3-tools.exe`. You only need it for
+modding and extra languages; the game builds its own assets.
 
 The app and the AppImage can't write inside themselves, so they keep
 `zelda3.ini`, `zelda3_assets.dat` and your saves in a data directory instead:
@@ -58,6 +65,7 @@ they're missing and starts the game.
 
 The game lands in `zig-out/bin` as `zelda3`. That's the whole thing: one
 executable, with the menu, the asset builder and the game all inside it.
+`zelda3-tools` lands beside it, for everything else to do with the assets.
 
 ### On Windows
 
@@ -91,6 +99,7 @@ zig build -Dtarget=x86_64-windows -Dsdl-include=... -Dsdl-lib=...
 ```sh
 zig build test                     # the port's own tests
 zig build run                      # build and start the game
+zig build tools                    # build and open zelda3-tools
 zig build assets                   # build zelda3_assets.dat, no window
 zig build -Doptimize=ReleaseSafe   # if the debug build is too slow for you
 ```
@@ -348,26 +357,76 @@ zig build assets    # no window
 ```
 
 or let the start menu do it. The importer is Zig, it takes about a tenth of a
-second, and the file it writes is byte-for-byte the one `assets/restool.py`
-used to produce. There's a test pinning that digest, because "close enough" on
-an asset file means bugs that look like game bugs.
+second, and the file it writes is byte-for-byte the one the old Python
+`restool.py` used to produce. There's a test pinning that digest, because
+"close enough" on an asset file means bugs that look like game bugs.
 
-ROMs are recognized by SHA-1. The US, German and French releases are known, but
-only the US ROM can build the asset file; the other two are for pulling
-dialogue out in their language. A headered `.smc` is fine, the copier header
-gets stripped on the way in. The US ROM's SHA256 is
+ROMs are recognized by SHA-1: the US, German, French, French Canadian and
+European releases, and the Spanish, Polish, Portuguese, Dutch, Swedish and
+English Redux fan translations. Only the US ROM can build the asset file; the
+rest are for adding their language to it. A headered `.smc` is fine, the
+copier header gets stripped on the way in. The US ROM's SHA256 is
 `66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb`.
 
-The Python tool is still in `assets/` and still works, and it's still the route
-to the extra languages:
+If you move the game somewhere else, take `zelda3_assets.dat` with it.
+
+## zelda3-tools
+
+Everything to do with the assets that isn't playing the game: building them,
+checking them, taking them apart to edit, putting them back together, and
+adding languages. Start it with no arguments for the window, or give it a
+command for the terminal. The window and the commands do the same things,
+because they call the same code.
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/tools-modding.png" alt="The Modding page, with the ROM, the files folder and the output path filled in, and the log showing a build from edited files" width="480"></td>
+    <td><img src="docs/screenshots/tools-languages.png" alt="The Languages page, with German and French ticked and the log showing a build that added them" width="480"></td>
+  </tr>
+</table>
+
+The window has three pages:
+
+- **Assets** builds `zelda3_assets.dat`, says what a ROM is, and checks an
+  asset file against the one this version of the game expects.
+- **Modding** exports the ROM's contents into a folder and builds the asset
+  file back from it. The overworld areas and dungeon rooms come out as YAML,
+  the dialogue and the map table as text, Link, the font, the HUD icons and
+  every sprite sheet as PNG, and the music, sound effects and samples as text,
+  SPC images, BRR and raw PCM. Edit what you like and build.
+- **Languages** pulls the dialogue and font out of a translated ROM and builds
+  the ones you tick into the asset file beside the English. Set
+  `Language = de` (or whichever) in `zelda3.ini` to play in one.
+
+The same from a terminal:
 
 ```sh
-python3 -m pip install -r requirements.txt
-python3 assets/restool.py --extract-dialogue -r german.sfc
-python3 assets/restool.py --languages=de
+zelda3-tools build --rom zelda3.sfc --out zelda3_assets.dat
+zelda3-tools export --rom zelda3.sfc --out my_mod
+zelda3-tools build --from my_mod --out zelda3_assets.dat
+zelda3-tools extract-dialogue --rom german.sfc --out langs
+zelda3-tools build --languages de,fr --lang-dir langs
+zelda3-tools help
 ```
 
-If you move the game somewhere else, take `zelda3_assets.dat` with it.
+A few things worth knowing:
+
+- Untouched files build exactly the standard asset file. That's checked by a
+  test that exports everything and builds it back.
+- Mistakes get reported by file, line and what's wrong with them, not with a
+  stack trace. A dialogue message the font can't spell tells you which
+  message and which character.
+- The sprite sheets are opt-in (`--sprites-from-png`, or the checkbox),
+  because they go into the asset file uncompressed and make it bigger even
+  when you haven't changed a pixel. Link and the font are always picked up.
+- The music export is for looking and listening, not editing. The old Python
+  compiler would only accept music that assembled back into exactly the ROM's
+  bytes, so there was never a way back in, and now there's no pretending.
+- A translation this doesn't recognize, like a newer patch, can be read
+  anyway with `extract-dialogue --as de`.
+
+Inside the Mac app or the AppImage, the tools read and write the game's data
+directory by default, so a build lands where the game will find it.
 
 ## Checking the port against the original C
 
@@ -375,8 +434,8 @@ The port is meant to behave identically to the C it came from, and that gets
 checked rather than assumed:
 
 ```sh
-python3 other/check_ancilla_parity.py
-python3 other/check_ancilla_parity.py -Doptimize=ReleaseSafe
+zig run other/check_ancilla_parity.zig
+zig run other/check_ancilla_parity.zig -- -Doptimize=ReleaseSafe
 ```
 
 This compiles the original C from commit `fbbb3f9`, runs it against the port
@@ -499,6 +558,14 @@ The same goes for the Windows system volume mixer, which upstream drives from
 so that file was doing nothing but sitting there. Volume changes adjust the
 game's own mix instead.
 
-`extract_assets.bat` still calls the Python tool and still works if you have
-Python with Pillow and PyYAML. `zig build assets` replaces it and needs
-neither.
+The Python resource tool in `assets/`, `requirements.txt` and the
+`extract_assets.bat` that called it are gone. `zelda3-tools` does everything
+they did, and every file it writes was checked against the Python's output,
+byte for byte or pixel for pixel, before the Python went. The helper scripts
+in `other/` went the same way: the ancilla parity check is a Zig script now,
+and the snapshot input log reader and the dialogue dictionary search are
+`zelda3-tools input-log` and `zelda3-tools text-dict`.
+
+The one thing that didn't make the trip is the MSU converter,
+`other/msu/encode_opus.py`, which turned WAV packs into OPUZ. Upstream still
+has it, and packs that are already OPUZ or PCM play here just the same.

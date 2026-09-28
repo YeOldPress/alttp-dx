@@ -1,7 +1,7 @@
 //! The overworld tables, built straight from the ROM.
 //!
 //! This is compile_resources.print_overworld_tables together with the parts
-//! of extract_resources that feed it. The Python routes the data through YAML
+//! of extract_resources that feed it. The old Python routes the data through YAML
 //! so areas can be edited by hand; nothing is transformed on the way, so the
 //! two halves are fused here and the intermediate disappears.
 //!
@@ -180,7 +180,7 @@ pub fn build(alloc: std.mem.Allocator, rom: Rom) !Built {
         if (i < 128) sign_text.write(is_small, i, ai, rom.getWord(0x87f51d + i * 2));
 
         // The music byte holds the track in the low nibble and the ambient
-        // sound in the high one; the Python splits it into names and joins
+        // sound in the high one; the old Python splits it into names and joins
         // them again, which puts the byte back exactly as it was.
         if (i < 64) {
             music_sets.write(is_small, i, ai, rom.getByte(0x82c303 + i));

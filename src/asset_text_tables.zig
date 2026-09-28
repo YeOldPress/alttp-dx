@@ -1,4 +1,4 @@
-//! Text tables for the US dialogue, generated from assets/text_compression.py.
+//! Text tables for the US dialogue, generated from the old assets/text_compression.py.
 //!
 //! The alphabet maps a byte to the characters it prints - most entries are a
 //! single character, but a few are bracketed names for glyphs that have no

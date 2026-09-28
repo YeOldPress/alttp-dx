@@ -1,7 +1,7 @@
 //! Building assets from edited files: the YAML areas and rooms, the map32
 //! table and the dialogue that asset_export writes.
 //!
-//! This is the file-reading half of compile_resources.py, ported one for one
+//! This is the file-reading half of the old compile_resources.py, ported one for one
 //! so that files nobody has touched build exactly the assets the ROM does.
 //! What isn't read from files still comes from the ROM, as it did there.
 //!
@@ -57,7 +57,7 @@ pub const Files = struct {
 
     pub const Options = struct {
         /// Build the sprite sheets from sprites/sprites_*.png. Off by default,
-        /// as in the Python: the sheets go in uncompressed, so even unedited
+        /// as in the old Python: the sheets go in uncompressed, so even unedited
         /// they make a different, larger, file.
         sprites_from_png: bool = false,
     };
@@ -895,7 +895,7 @@ pub fn addOverworldTables(files: *const Files, rom: Rom, out: Out, problem: *Pro
             });
         }
     }
-    // The Python sorts the (entrance, pos, area) tuples.
+    // The old Python sorts the (entrance, pos, area) tuples.
     std.mem.sort(Hole, holes.items, {}, struct {
         fn lt(_: void, x: Hole, y: Hole) bool {
             if (x.entrance != y.entrance) return x.entrance < y.entrance;

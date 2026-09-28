@@ -1,5 +1,10 @@
 #!/bin/sh
-# The AppImage entry point. SDL3 ships inside, in usr/lib.
+# The AppImage entry point. SDL3 ships inside, in usr/lib. The asset tools
+# come along too: run the AppImage with "tools" first to get them.
 here="$(dirname "$(readlink -f "$0")")"
 export LD_LIBRARY_PATH="$here/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+if [ "$1" = "tools" ]; then
+  shift
+  exec "$here/usr/bin/zelda3-tools" "$@"
+fi
 exec "$here/usr/bin/zelda3" "$@"

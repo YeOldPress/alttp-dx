@@ -1,5 +1,5 @@
 //! Optional differential checks against the original C implementation.
-//! Run with python3 other/check_ancilla_parity.py.
+//! Run with zig run other/check_ancilla_parity.zig.
 const std = @import("std");
 const ancilla = @import("../src/ancilla.zig");
 const vars = @import("../src/variables.zig");
