@@ -1491,6 +1491,16 @@ fn ppu_evaluateSprites(ppu: *Ppu, line: c_int) bool {
 
 pub export fn ppu_read(ppu: *Ppu, adr: u8) callconv(.c) u8 {
     switch (adr) {
+        0x39, 0x3a => { // VMDATALREAD, VMDATAHREAD
+            if (!g_lenient) return 0xff;
+            const high = adr == 0x3a;
+            const ret: u8 = if (high) @truncate(g_vram_read_buffer >> 8) else @truncate(g_vram_read_buffer);
+            if (high == ppu.vramIncrementOnHigh) {
+                g_vram_read_buffer = ppu.vram[ppu.vramPointer & 0x7fff];
+                ppu.vramPointer +%= ppu.vramIncrement;
+            }
+            return ret;
+        },
         0x34, 0x35, 0x36 => {
             const result: i32 = @as(i32, ppu.m7matrix[0]) * (@as(i32, ppu.m7matrix[1]) >> 8);
             const shift: u5 = @intCast(8 * (adr - 0x34));
@@ -1500,19 +1510,36 @@ pub export fn ppu_read(ppu: *Ppu, adr: u8) callconv(.c) u8 {
     }
 }
 
+/// Takes register values vanilla ALttP never writes instead of asserting on
+/// them, for running a whole ROM: boot code clears every register, and the
+/// port's verification only ever starts after that.
+pub var g_lenient: bool = false;
+
+fn check(ok: bool) void {
+    if (!g_lenient) std.debug.assert(ok);
+}
+
+/// The value a VRAM read ($2139/$213a) returns, fetched ahead as the chip does.
+var g_vram_read_buffer: u16 = 0;
+
 pub export fn ppu_write(ppu: *Ppu, adr: u8, val: u8) callconv(.c) void {
     switch (adr) {
         0x00 => { // INIDISP
             ppu.brightness = val & 0xf;
             ppu.forcedBlank = val & 0x80 != 0;
         },
-        0x01 => std.debug.assert(val == 2),
+        0x01 => { // OBSEL
+            check(val == 2);
+            ppu.objSize = val >> 5;
+            ppu.objTileAdr1 = @as(u16, val & 7) << 13;
+            ppu.objTileAdr2 = ppu.objTileAdr1 +% (@as(u16, ((val >> 3) & 3) + 1) << 12);
+        },
         0x02 => {
             ppu.oamAdr = (ppu.oamAdr & ~@as(u16, 0xff)) | val;
             ppu.oamSecondWrite = false;
         },
         0x03 => {
-            std.debug.assert((val & 0x80) == 0);
+            check((val & 0x80) == 0);
             ppu.oamAdr = (ppu.oamAdr & ~@as(u16, 0xff00)) | (@as(u16, val & 1) << 8);
             ppu.oamSecondWrite = false;
         },
@@ -1529,9 +1556,9 @@ pub export fn ppu_write(ppu: *Ppu, adr: u8, val: u8) callconv(.c) void {
         },
         0x05 => { // BGMODE
             ppu.mode = val & 0x7;
-            std.debug.assert(val == 7 or val == 9);
-            std.debug.assert(ppu.mode == 1 or ppu.mode == 7);
-            std.debug.assert((val & 0xf0) == 0);
+            check(val == 7 or val == 9);
+            check(ppu.mode == 1 or ppu.mode == 7);
+            check((val & 0xf0) == 0);
         },
         0x06 => { // MOSAIC
             ppu.mosaicSize = (val >> 4) + 1;
@@ -1580,11 +1607,17 @@ pub export fn ppu_write(ppu: *Ppu, adr: u8, val: u8) callconv(.c) void {
             } else {
                 ppu.vramIncrement = 128;
             }
-            std.debug.assert(((val & 0xc) >> 2) == 0);
+            check(((val & 0xc) >> 2) == 0);
             ppu.vramIncrementOnHigh = val & 0x80 != 0;
         },
-        0x16 => ppu.vramPointer = (ppu.vramPointer & 0xff00) | val, // VMADDL
-        0x17 => ppu.vramPointer = (ppu.vramPointer & 0x00ff) | (@as(u16, val) << 8), // VMADDH
+        0x16 => { // VMADDL
+            ppu.vramPointer = (ppu.vramPointer & 0xff00) | val;
+            g_vram_read_buffer = ppu.vram[ppu.vramPointer & 0x7fff];
+        },
+        0x17 => { // VMADDH
+            ppu.vramPointer = (ppu.vramPointer & 0x00ff) | (@as(u16, val) << 8);
+            g_vram_read_buffer = ppu.vram[ppu.vramPointer & 0x7fff];
+        },
         0x18 => { // VMDATAL
             const vramAdr = ppu.vramPointer;
             ppu.vram[vramAdr & 0x7fff] = (ppu.vram[vramAdr & 0x7fff] & 0xff00) | val;
@@ -1596,7 +1629,7 @@ pub export fn ppu_write(ppu: *Ppu, adr: u8, val: u8) callconv(.c) void {
             if (ppu.vramIncrementOnHigh) ppu.vramPointer +%= ppu.vramIncrement;
         },
         0x1a => { // M7SEL
-            std.debug.assert(val == 0x80);
+            check(val == 0x80);
             ppu.m7largeField = val & 0x80 != 0;
             ppu.m7charFill = val & 0x40 != 0;
             ppu.m7yFlip = val & 0x2 != 0;
@@ -1630,14 +1663,14 @@ pub export fn ppu_write(ppu: *Ppu, adr: u8, val: u8) callconv(.c) void {
         0x27 => ppu.window1right = val,
         0x28 => ppu.window2left = val,
         0x29 => ppu.window2right = val,
-        0x2a => std.debug.assert(val == 0), // WBGLOG
-        0x2b => std.debug.assert(val == 0), // WOBJLOG
+        0x2a => check(val == 0), // WBGLOG
+        0x2b => check(val == 0), // WOBJLOG
         0x2c => ppu.screenEnabled[0] = val, // TM
         0x2d => ppu.screenEnabled[1] = val, // TS
         0x2e => ppu.screenWindowed[0] = val, // TMW
         0x2f => ppu.screenWindowed[1] = val, // TSW
         0x30 => { // CGWSEL
-            std.debug.assert((val & 1) == 0); // directColor always zero
+            check((val & 1) == 0); // directColor always zero
             ppu.addSubscreen = val & 0x2 != 0;
             ppu.preventMathMode = (val & 0x30) >> 4;
             ppu.clipMode = (val & 0xc0) >> 6;
@@ -1653,7 +1686,7 @@ pub export fn ppu_write(ppu: *Ppu, adr: u8, val: u8) callconv(.c) void {
             if (val & 0x20 != 0) ppu.fixedColorR = val & 0x1f;
         },
         0x33 => {
-            std.debug.assert(val == 0);
+            check(val == 0);
             ppu.m7extBg_always_zero = val & 0x40 != 0;
         },
         else => {},

@@ -10,6 +10,7 @@ const audio = @import("audio.zig");
 const rumble = @import("rumble.zig");
 const menu = @import("menu.zig");
 const settings_menu = @import("settings_menu.zig");
+const console_emu = @import("emu.zig");
 const frame_capture = @import("frame_capture.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const emu = @import("zelda_cpu_infra.zig");
@@ -292,6 +293,67 @@ var perf_history: [64]f32 = @splat(0);
 var perf_average: f32 = 0;
 var perf_history_pos: usize = 0;
 
+/// The --verify path: every frame of the script runs on the original ROM too,
+/// and a mismatch prints what differs (and then retries that frame for ever,
+/// as the comparison always has; run it under a timeout).
+fn verifyAgainstRom(rom: [*:0]const u8, script: [*:0]const u8) c_int {
+    if (!LoadRom(rom)) return 1;
+    settings_menu.enabled = false;
+    var frames: usize = 0;
+    // "replay:N" replays chapter snapshot N's recorded playthrough instead.
+    const s = std.mem.span(script);
+    if (std.mem.startsWith(u8, s, "replay:")) {
+        const n = std.fmt.parseInt(c_int, s[7..], 10) catch return 1;
+        SaveLoadSlot(kSaveLoad_Replay, 256 + n);
+        while (ZeldaRunFrame(0)) frames += 1;
+        std.debug.print("--verify: replayed {d} frames of chapter {d}, all matching the original\n", .{ frames, n });
+        return 0;
+    }
+    var it = std.mem.tokenizeScalar(u8, std.mem.span(script), ',');
+    while (it.next()) |text| {
+        const step = frame_capture.parseStep(text) catch |err| {
+            std.debug.print("--verify: bad step '{s}': {s}\n", .{ text, @errorName(err) });
+            return 1;
+        };
+        for (0..step.frames) |_| {
+            _ = ZeldaRunFrame(step.buttons);
+            frames += 1;
+        }
+    }
+    std.debug.print("--verify: {d} frames matched the original\n", .{frames});
+    return 0;
+}
+
+/// The --emu-render path: power a ROM on in the emulator, play the script,
+/// and write the frame it ends on.
+fn emuRenderToFile(rom: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u8) c_int {
+    const alloc = std.heap.c_allocator;
+    var console = console_emu.Console.open(alloc, std.mem.span(rom)) catch |err| {
+        std.debug.print("--emu-render: could not load {s}: {s}\n", .{ rom, @errorName(err) });
+        return 1;
+    };
+    defer console.deinit();
+    const pixels = alloc.alloc(u32, console_emu.kWidth * console_emu.kHeight) catch return 1;
+    defer alloc.free(pixels);
+    var sound: [800 * 2]i16 = undefined;
+    var it = std.mem.tokenizeScalar(u8, std.mem.span(script), ',');
+    while (it.next()) |text| {
+        const step = frame_capture.parseStep(text) catch |err| {
+            std.debug.print("--emu-render: bad step '{s}': {s}\n", .{ text, @errorName(err) });
+            return 1;
+        };
+        for (0..step.frames) |_| {
+            console.runFrame(@intCast(step.buttons), @ptrCast(pixels.ptr), console_emu.kWidth * 4);
+            console.audio(&sound, 800, 2);
+        }
+    }
+    frame_capture.writeBmp(out, pixels, console_emu.kWidth, console_emu.kHeight) catch |err| {
+        std.debug.print("--emu-render: could not write {s}: {s}\n", .{ out, @errorName(err) });
+        return 1;
+    };
+    return 0;
+}
+
 /// The --render path: load a chapter snapshot, play the script, and write the
 /// frame it ends on. Runs before SDL is started, so no window ever opens.
 fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u8) c_int {
@@ -505,9 +567,23 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     var config_file: ?[*:0]const u8 = null;
     const alloc = std.heap.c_allocator;
 
+    // `--emu-render <rom> <script> <out.bmp>` is the same for a ROM run in
+    // the emulator, such as a randomizer seed.
+    if (argc == 4 and strcmp(argv[0], "--emu-render") == 0) {
+        return emuRenderToFile(argv[1], argv[2], argv[3]);
+    }
+
     // `--render <ref> <script> <out.bmp>` plays a script from a snapshot with
     // no window and saves the last frame. See frame_capture.zig.
     var render_request: ?[*]const [*:0]u8 = null;
+    // `--verify <rom> <script>` plays a script with the original ROM running
+    // alongside the port, comparing RAM and VRAM every frame, and no window.
+    var verify_request: ?[*]const [*:0]u8 = null;
+    if (argc == 3 and strcmp(argv[0], "--verify") == 0) {
+        verify_request = argv + 1;
+        argc = 0;
+        menu.enterDataDirectory();
+    }
     if (argc == 4 and strcmp(argv[0], "--render") == 0) {
         render_request = argv + 1;
         argc = 0;
@@ -532,7 +608,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         }
     }
 
-    if (render_request != null) {
+    if (render_request != null or verify_request != null) {
         // Already in the data directory, and no menu for a picture.
     } else if (argc >= 2 and strcmp(argv[0], "--config") == 0) {
         config_file = argv[1];
@@ -591,6 +667,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     ZeldaSetLanguage(config.g_config.language);
 
     if (render_request) |r| return renderToFile(r[0], r[1], r[2]);
+    if (verify_request) |v| return verifyAgainstRom(v[0], v[1]);
 
     // SDL3 folded SDL_WINDOW_FULLSCREEN_DESKTOP into SDL_WINDOW_FULLSCREEN: a
     // fullscreen window stays at the desktop resolution unless a display mode

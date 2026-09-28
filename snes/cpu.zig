@@ -794,7 +794,23 @@ fn setAL(cpu: *Cpu, value: u8) void {
 /// The brk handler: the ROM is patched with brk at a handful of places where
 /// the original game reads uninitialized memory or relies on a junk carry.
 /// Returns true if the opcode should be re-dispatched (see `retry`).
+/// BRK as the 65816 does it. The port patches BRKs into the ROM as hooks for
+/// the verification (cpu_doBrk), so this is only for running a ROM as it is.
+pub var g_real_brk: bool = false;
+
 fn cpu_doBrk(cpu: *Cpu, retry: *?u8) void {
+    if (g_real_brk) {
+        _ = cpu_readOpcode(cpu); // the signature byte
+        cpu_pushByte(cpu, cpu.k);
+        cpu_pushWord(cpu, cpu.pc);
+        cpu_pushByte(cpu, cpu_getFlags(cpu));
+        cpu.cyclesUsed +%= 1; // native mode: 1 extra cycle
+        cpu.i = true;
+        cpu.d = false;
+        cpu.k = 0;
+        cpu.pc = cpu_readWord(cpu, 0xffe6, 0xffe7);
+        return;
+    }
     const addr = (@as(u32, cpu.k) << 16) | cpu.pc;
     switch (addr -% 1) {
         0x7B269 => { // Link_APress_LiftCarryThrow reads OOB
@@ -1538,7 +1554,12 @@ fn cpu_doOpcode(cpu: *Cpu, opcode_in: u8) void {
                 const high = cpu_adrAlx(cpu, &low);
                 cpu_adc(cpu, low, high);
             },
-            0x80 => cpu.pc = addRel(cpu.pc, cpu_readOpcode(cpu)), // bra rel
+            0x80 => { // bra rel
+                // The operand has to be fetched before pc is read: the branch
+                // is relative to the byte after it.
+                const rel = cpu_readOpcode(cpu);
+                cpu.pc = addRel(cpu.pc, rel);
+            },
             0x81 => { // sta idx
                 var low: u32 = 0;
                 const high = cpu_adrIdx(cpu, &low);
@@ -2249,6 +2270,18 @@ test "reset reads the vector at $fffc and starts in emulation mode" {
     try testing.expectEqual(@as(u16, 0x1234), t.cpu.pc);
     try testing.expectEqual(@as(u16, 0x100), t.cpu.sp);
     try testing.expect(t.cpu.e and t.cpu.mf and t.cpu.xf and t.cpu.i);
+}
+
+test "bra is relative to the byte after its operand" {
+    const t = try TestCpu.init();
+    defer t.deinit();
+    // bra +$30 at $0100 lands on $0102 + $30; bra -2 loops onto itself.
+    t.load(&.{ 0x80, 0x30 });
+    _ = t.step();
+    try testing.expectEqual(@as(u16, 0x0132), t.cpu.pc);
+    t.load(&.{ 0x80, 0xfe });
+    _ = t.step();
+    try testing.expectEqual(@as(u16, 0x0100), t.cpu.pc);
 }
 
 test "flags pack in the documented order" {

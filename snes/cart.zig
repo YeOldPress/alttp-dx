@@ -52,9 +52,13 @@ pub export fn cart_load(cart: *Cart, kind: c_int, rom: [*]const u8, romSize: c_i
     const size: usize = @intCast(romSize);
     cart.rom = @ptrCast(malloc(size));
     cart.romSize = @intCast(romSize);
-    std.debug.assert(ramSize == cart.ramSize);
-    _ = memset(cart.ram.?, 0, @intCast(ramSize));
-    cart.ramSize = @intCast(ramSize);
+    // A cart with more (or less) save ram than the default gets its own.
+    if (ramSize != cart.ramSize) {
+        if (cart.ram) |old| free(old);
+        cart.ram = if (ramSize > 0) @ptrCast(malloc(@intCast(ramSize))) else null;
+        cart.ramSize = @intCast(ramSize);
+    }
+    if (cart.ram) |ram| _ = memset(ram, 0, @intCast(ramSize));
     _ = memcpy(cart.rom.?, rom, size);
 }
 

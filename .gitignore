@@ -5,10 +5,15 @@
 *.dSYM
 /*.vcxproj.user
 *.aps
+*.sfc
 /obj/
 /bin/
 /zelda3.sfc
 /zelda3.smc
+# Any ROM, anywhere: they never belong in the repository.
+*.sfc
+*.smc
+*.srm
 /saves/*.sav
 /saves/sram.dat
 /saves/sram.bak

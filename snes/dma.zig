@@ -275,6 +275,12 @@ pub export fn dma_cycle(dma: *Dma) callconv(.c) bool {
         dma.hdmaTimer -%= 2;
         return true;
     } else if (dma.dmaBusy) {
+        // Each byte takes its time; the verification runs dma_doDma in a
+        // loop instead and never comes through here.
+        if (dma.dmaTimer > 0) {
+            dma.dmaTimer -|= 2;
+            return true;
+        }
         dma_doDma(dma);
         return true;
     }

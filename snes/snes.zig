@@ -37,6 +37,8 @@ extern fn ppu_read(ppu: *Ppu, adr: u8) u8;
 extern fn ppu_write(ppu: *Ppu, adr: u8, val: u8) void;
 extern fn ppu_saveload(ppu: *Ppu, func: *const SaveLoadFunc, ctx: ?*anyopaque) void;
 extern fn getProcessorStateCpu(snes: *Snes, line: [*]u8) void;
+extern fn cpu_runOpcode(cpu: *Cpu) c_int;
+extern fn ppu_runLine(ppu: *Ppu, line: c_int) void;
 
 // The Snes struct holds its components as bare pointers so that the C headers
 // and these modules can be ported independently; these put the types back on.
@@ -189,11 +191,59 @@ pub export fn snes_doAutoJoypad(snes: *Snes) callconv(.c) void {
     }
 }
 
+/// The PPU's h/v counters, latched by reading $2137 (or by $4201), then read
+/// a byte at a time from $213c/$213d. Vanilla ALttP's random numbers come
+/// from these, so a whole-ROM run needs them to be the real thing.
+var g_latched_h: u16 = 0;
+var g_latched_v: u16 = 0;
+var g_counters_latched: bool = false;
+var g_h_high: bool = false;
+var g_v_high: bool = false;
+
+fn latchCounters(snes: *Snes) void {
+    g_latched_h = snes.hPos / 4;
+    g_latched_v = snes.vPos;
+    g_counters_latched = true;
+}
+
+fn counterRead(snes: *Snes, adr: u8) ?u8 {
+    switch (adr) {
+        0x37 => {
+            latchCounters(snes);
+            return snes.openBus;
+        },
+        0x3c => {
+            defer g_h_high = !g_h_high;
+            return if (g_h_high) @truncate(g_latched_h >> 8) else @truncate(g_latched_h);
+        },
+        0x3d => {
+            defer g_v_high = !g_v_high;
+            return if (g_v_high) @truncate(g_latched_v >> 8) else @truncate(g_latched_v);
+        },
+        0x3e => return 0x01, // STAT77: ppu1 version 1
+        0x3f => { // STAT78: resets the byte flip-flops
+            const v: u8 = 0x03 | (@as(u8, @intFromBool(g_counters_latched)) << 6);
+            g_counters_latched = false;
+            g_h_high = false;
+            g_v_high = false;
+            return v;
+        },
+        else => return null,
+    }
+}
+
 pub export fn snes_readBBus(snes: *Snes, adr: u8) callconv(.c) u8 {
     if (adr < 0x40) {
+        if (g_accurate_timing) {
+            if (counterRead(snes, adr)) |v| return v;
+        }
         return ppu_read(ppuOf(snes), adr);
     }
     if (adr < 0x80) {
+        // A running game polls these waiting for the sound cpu, so it has to
+        // have caught up. (The verification never runs it, so there's no
+        // time owed and this does nothing.)
+        snes_catchupApu(snes);
         return apuOf(snes).outPorts[adr & 0x3];
     }
     if (adr == 0x80) {
@@ -279,7 +329,7 @@ fn snes_writeReg(snes: *Snes, adr: u16, val: u8) void {
         0x4201 => {
             if ((val & 0x80) == 0 and snes.ppuLatch) {
                 // latch the ppu
-                _ = ppu_read(ppuOf(snes), 0x37);
+                if (g_accurate_timing) latchCounters(snes) else _ = ppu_read(ppuOf(snes), 0x37);
             }
             snes.ppuLatch = val & 0x80 != 0;
         },
@@ -386,10 +436,105 @@ pub export fn snes_write(snes: *Snes, full_adr: u32, val: u8) callconv(.c) void 
     cart_mod.cart_write(cartOf(snes), bank, adr, val);
 }
 
-fn snes_getAccessTime(snes: *Snes, adr: u32) c_int {
-    _ = .{ snes, adr };
-    // optimization
-    return 6;
+/// Real memory speeds, for running a whole ROM on its own (snes_runFrame).
+/// The port's verification counts no time, so it leaves this off and every
+/// access costs the same.
+pub var g_accurate_timing: bool = false;
+
+fn snes_getAccessTime(snes: *Snes, adr_in: u32) c_int {
+    if (!g_accurate_timing) return 6;
+    const bank: u8 = @truncate(adr_in >> 16);
+    const adr: u16 = @truncate(adr_in);
+    if ((bank < 0x40 or (bank >= 0x80 and bank < 0xc0)) and adr < 0x8000) {
+        // 00-3f,80-bf:0000-7fff
+        if (adr < 0x2000 or adr >= 0x6000) return 8; // ram, and cart space
+        if (adr < 0x4000 or adr >= 0x4200) return 6; // the b-bus, and cpu registers
+        return 12; // the old style joypad ports
+    }
+    // Everything else is cart space: fast in banks 80+ when FastROM is on.
+    return if (snes.fastMem and bank >= 0x80) 6 else 8;
+}
+
+// ------------------------------------------------------ running a frame
+
+/// The APU runs off its own crystal; this is its share of each master cycle.
+const kApuCyclesPerMaster: f64 = (32040.0 * 32.0) / (1364.0 * 262.0 * 60.0);
+
+/// Runs the whole machine for one frame, from the top of this one to the top
+/// of the next, the way LakeSnes did before the port trimmed it to what
+/// verification needed. The ppu renders into whatever PpuBeginDrawing set up.
+pub export fn snes_runFrame(snes: *Snes) callconv(.c) void {
+    const frame = snes.frames;
+    while (snes.frames == frame) snes_runCycle(snes);
+}
+
+/// Two master cycles: the cpu or dma, interrupts, and whatever happens at
+/// this point of the scanline.
+fn snes_runCycle(snes: *Snes) void {
+    snes.apuCatchupCycles += kApuCyclesPerMaster * 2.0;
+    // Nothing gets the bus during dram refresh.
+    if (snes.hPos < 536 or snes.hPos >= 576) {
+        if (!dma_mod.dma_cycle(dmaOf(snes))) snes_runCpu(snes);
+    }
+    // h/v timer irqs
+    const at_h = snes.hPos == 4 * snes.hTimer;
+    const at_v = snes.vPos == snes.vTimer;
+    const irq = if (snes.hIrqEnabled and snes.vIrqEnabled)
+        at_v and at_h
+    else if (snes.hIrqEnabled)
+        at_h
+    else if (snes.vIrqEnabled)
+        at_v and snes.hPos == 0
+    else
+        false;
+    if (irq) {
+        snes.inIrq = true;
+        cpuOf(snes).irqWanted = true;
+    }
+    switch (snes.hPos) {
+        0 => {
+            if (snes.vPos == 0) {
+                snes.inVblank = false;
+                snes.inNmi = false;
+                dma_mod.dma_initHdma(dmaOf(snes));
+            } else if (snes.vPos == 225) {
+                snes.inVblank = true;
+                snes.inNmi = true;
+                if (snes.autoJoyRead) {
+                    snes.autoJoyTimer = 4224;
+                    snes_doAutoJoypad(snes);
+                }
+                if (snes.nmiEnabled) cpuOf(snes).nmiWanted = true;
+            }
+        },
+        // Render the line halfway along, which suits most games.
+        512 => if (!snes.inVblank and snes.vPos > 0) ppu_runLine(ppuOf(snes), snes.vPos),
+        1104 => if (!snes.inVblank) dma_mod.dma_doHdma(dmaOf(snes)),
+        else => {},
+    }
+    if (snes.autoJoyTimer > 0) snes.autoJoyTimer -= 2;
+    snes.hPos += 2;
+    if (snes.hPos == 1364) {
+        snes.hPos = 0;
+        snes.vPos += 1;
+        if (snes.vPos == 262) {
+            snes.vPos = 0;
+            snes.frames +%= 1;
+            snes_catchupApu(snes);
+        }
+    }
+}
+
+fn snes_runCpu(snes: *Snes) void {
+    if (snes.cpuCyclesLeft == 0) {
+        snes.cpuMemOps = 0;
+        const cycles: c_int = cpu_runOpcode(cpuOf(snes));
+        // Memory accesses already charged their own time; the rest are
+        // internal operations at 6 master cycles each.
+        const internal = cycles - @as(c_int, snes.cpuMemOps);
+        snes.cpuCyclesLeft +%= @intCast(@max(internal, 0) * 6);
+    }
+    snes.cpuCyclesLeft -|= 2;
 }
 
 pub export fn snes_read(snes: *Snes, adr: u32) callconv(.c) u8 {
