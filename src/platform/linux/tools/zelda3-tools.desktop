@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=zelda3-tools
+Comment=Build, export, mod and translate the alttp-zig assets
+Exec=zelda3-tools
+Icon=zelda3-tools
+Categories=Development;
+Terminal=false

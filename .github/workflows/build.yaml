@@ -39,6 +39,8 @@ jobs:
       run: zig build
     - name: Test
       run: zig build test
+    - name: Check the tools start
+      run: ./zig-out/bin/zelda3-tools help
 
   build-windows:
     name: on Windows
@@ -67,3 +69,8 @@ jobs:
     - name: Test
       shell: pwsh
       run: zig build test -Dsdl-include="$env:SDL3_ROOT\include" -Dsdl-lib="$env:SDL3_ROOT\bin"
+    - name: Check the tools start
+      shell: pwsh
+      run: |
+        zig-out\bin\zelda3-tools.exe help
+        if ($LASTEXITCODE -ne 0) { exit 1 }

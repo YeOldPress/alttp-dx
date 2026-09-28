@@ -14,6 +14,7 @@ on:
     - .github/actions/**
     - src/platform/**
     - src/menu.zig
+    - src/tools_*.zig
     - build.zig
   workflow_dispatch:
 
@@ -79,16 +80,19 @@ jobs:
         echo "data directory: $dir"
         case "$dir" in *"Application Support/alttp-zig") ;; *) exit 1 ;; esac
         test -f "$dir/zelda3.ini"
-        zelda3-tools.app/Contents/MacOS/zelda3-tools help
+    - name: Check the tools start
+      run: zelda3-tools.app/Contents/MacOS/zelda3-tools help
+    # Two downloads: the game, and the tools for modding and languages.
     - name: Archive
       run: |
-        mkdir pkg
-        mv alttp-zig.app zelda3-tools.app pkg/
-        ditto -c -k pkg alttp-zig-${{ github.ref_name }}-macos-arm64.zip
+        ditto -c -k --keepParent alttp-zig.app alttp-zig-${{ github.ref_name }}-macos-arm64.zip
+        ditto -c -k --keepParent zelda3-tools.app zelda3-tools-${{ github.ref_name }}-macos-arm64.zip
     - uses: actions/upload-artifact@v7
       with:
         name: Mac
-        path: alttp-zig-${{ github.ref_name }}-macos-arm64.zip
+        path: |
+          alttp-zig-${{ github.ref_name }}-macos-arm64.zip
+          zelda3-tools-${{ github.ref_name }}-macos-arm64.zip
 
   # Built in an Ubuntu 22.04 container so the AppImage asks for no newer glibc
   # than 2.35. Distro SDL3 packages link against a newer one, so SDL3 is built
@@ -124,32 +128,40 @@ jobs:
     # An explicit target also means a baseline CPU rather than the runner's.
     - name: Build
       run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux-gnu.2.35 --prefix out -Dsdl-include="$PWD/sdl3/include" -Dsdl-lib="$PWD/sdl3/lib"
-    - name: Make the AppImage
+    # Two AppImages from the one build: the game, and the tools.
+    - name: Make the AppImages
       run: |
-        dir=alttp-zig.AppDir
-        mkdir -p $dir/usr/bin $dir/usr/lib $dir/usr/share/alttp-zig
-        cp out/bin/zelda3 out/bin/zelda3-tools $dir/usr/bin/
-        cp -L sdl3/lib/libSDL3.so.0 $dir/usr/lib/
-        cp LICENSE.txt $dir/usr/share/alttp-zig/
-        cp src/platform/linux/AppRun src/platform/linux/alttp-zig.desktop src/platform/linux/alttp-zig.png $dir/
-        chmod +x $dir/AppRun
         curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
         echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool" | sha256sum -c -
         chmod +x appimagetool
-        # No FUSE in a container, so the tool unpacks itself instead of mounting.
-        APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool $dir alttp-zig-${{ github.ref_name }}-x86_64.AppImage
-    - name: Check the AppImage starts
+        appimage() { # appimage NAME EXECUTABLE PLATFORM_DIR
+          dir=$1.AppDir
+          mkdir -p $dir/usr/bin $dir/usr/lib $dir/usr/share/$1
+          cp out/bin/$2 $dir/usr/bin/
+          cp -L sdl3/lib/libSDL3.so.0 $dir/usr/lib/
+          cp LICENSE.txt $dir/usr/share/$1/
+          cp $3/AppRun $3/$1.desktop $dir/
+          cp src/platform/linux/alttp-zig.png $dir/$1.png
+          chmod +x $dir/AppRun
+          # No FUSE in a container, so the tool unpacks itself instead of mounting.
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool $dir $1-${{ github.ref_name }}-x86_64.AppImage
+        }
+        appimage alttp-zig zelda3 src/platform/linux
+        appimage zelda3-tools zelda3-tools src/platform/linux/tools
+    - name: Check the AppImages start
       run: |
-        # It should settle in the data directory and write its ini there.
+        # The game should settle in the data directory and write its ini there.
         dir=$(APPIMAGE_EXTRACT_AND_RUN=1 ./alttp-zig-${{ github.ref_name }}-x86_64.AppImage --data-dir)
         echo "data directory: $dir"
         case "$dir" in *".local/share/alttp-zig") ;; *) exit 1 ;; esac
         test -f "$dir/zelda3.ini"
-        APPIMAGE_EXTRACT_AND_RUN=1 ./alttp-zig-${{ github.ref_name }}-x86_64.AppImage tools help
+        APPIMAGE_EXTRACT_AND_RUN=1 ./zelda3-tools-${{ github.ref_name }}-x86_64.AppImage help
     - uses: actions/upload-artifact@v7
       with:
         name: Linux
-        path: alttp-zig-${{ github.ref_name }}-x86_64.AppImage
+        path: |
+          alttp-zig-${{ github.ref_name }}-x86_64.AppImage
+          zelda3-tools-${{ github.ref_name }}-x86_64.AppImage
 
   package-windows:
     name: package for Windows
@@ -171,13 +183,22 @@ jobs:
     - name: Package
       shell: pwsh
       run: |
-        New-Item -ItemType Directory pkg\alttp-zig | Out-Null
-        Copy-Item out\bin\zelda3.exe, out\bin\zelda3-tools.exe, "$env:SDL3_ROOT\bin\SDL3.dll", zelda3.ini, README.md, LICENSE.txt pkg\alttp-zig\
+        New-Item -ItemType Directory pkg\alttp-zig, pkg\zelda3-tools | Out-Null
+        Copy-Item out\bin\zelda3.exe, "$env:SDL3_ROOT\bin\SDL3.dll", zelda3.ini, README.md, LICENSE.txt pkg\alttp-zig\
+        Copy-Item out\bin\zelda3-tools.exe, "$env:SDL3_ROOT\bin\SDL3.dll", LICENSE.txt pkg\zelda3-tools\
         Compress-Archive pkg\alttp-zig "alttp-zig-${{ github.ref_name }}-windows-x86_64.zip"
+        Compress-Archive pkg\zelda3-tools "zelda3-tools-${{ github.ref_name }}-windows-x86_64.zip"
+    - name: Check the tools start
+      shell: pwsh
+      run: |
+        pkg\zelda3-tools\zelda3-tools.exe help
+        if ($LASTEXITCODE -ne 0) { exit 1 }
     - uses: actions/upload-artifact@v7
       with:
         name: Windows
-        path: alttp-zig-${{ github.ref_name }}-windows-x86_64.zip
+        path: |
+          alttp-zig-${{ github.ref_name }}-windows-x86_64.zip
+          zelda3-tools-${{ github.ref_name }}-windows-x86_64.zip
 
   release:
     name: publish
