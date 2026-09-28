@@ -98,7 +98,9 @@ pub fn buildFrom(alloc: std.mem.Allocator, rom: Rom, files: ?*const import_mod.F
 
     // print_enemy_damage_data, print_link_graphics, print_dungeon_sprites
     try b.add("kEnemyDamageData", .uint8, try build_mod.buildEnemyDamageData(alloc, rom));
-    try b.addMisc("kLinkGraphics");
+    if (files != null and files.?.link_graphics != null) {
+        try b.add("kLinkGraphics", .uint8, try alloc.dupe(u8, files.?.link_graphics.?));
+    } else try b.addMisc("kLinkGraphics");
 
     if (files) |f| {
         try import_mod.addDungeonSprites(f, out, problem);
@@ -112,7 +114,9 @@ pub fn buildFrom(alloc: std.mem.Allocator, rom: Rom, files: ?*const import_mod.F
     if (files) |f| {
         try import_mod.addMap32(f, out);
     } else try b.addMany("kMap32ToMap16_", &.{ "0", "1", "2", "3" });
-    try b.add("kSprGfx", .packed_arrays, try build_mod.buildSprGfx(alloc, rom));
+    if (files != null and files.?.sprite_sheets != null) {
+        try b.add("kSprGfx", .packed_arrays, try build_mod.buildSprGfxWith(alloc, rom, files.?.sprite_sheets.?));
+    } else try b.add("kSprGfx", .packed_arrays, try build_mod.buildSprGfx(alloc, rom));
     try b.add("kBgGfx", .packed_arrays, try build_mod.buildBgGfx(alloc, rom));
 
     try addMiscAndOverworld(&b, alloc, rom, files, out, problem);
@@ -181,7 +185,12 @@ fn addMiscAndOverworld(b: *Builder, alloc: std.mem.Allocator, rom: Rom, files: ?
     if (files) |f| {
         try b.add("kDialogue", .packed_arrays, try dialogue.buildDialogueFromTexts(alloc, f.dialogue));
     } else try b.add("kDialogue", .packed_arrays, try dialogue.buildDialogue(alloc, rom));
-    try b.add("kDialogueFont", .packed_arrays, try dialogue.buildDialogueFont(alloc, rom));
+    if (files != null and files.?.font != null) {
+        const f = files.?.font.?;
+        const entry = try build_mod.packArrays(alloc, &.{ f.tiles, f.widths });
+        defer alloc.free(entry);
+        try b.add("kDialogueFont", .packed_arrays, try build_mod.packArrays(alloc, &.{entry}));
+    } else try b.add("kDialogueFont", .packed_arrays, try dialogue.buildDialogueFont(alloc, rom));
     try b.add("kDialogueMap", .packed_arrays, try dialogue.buildDialogueMap(alloc));
 
     // print_dungeon_map

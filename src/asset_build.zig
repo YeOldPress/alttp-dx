@@ -83,6 +83,20 @@ pub fn buildSprGfx(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
     return packArrays(alloc, blocks);
 }
 
+/// kSprGfx with some sheets replaced by ones rebuilt from edited PNGs, which
+/// go in uncompressed; the game takes a 0x600 byte sheet as it is.
+pub fn buildSprGfxWith(alloc: std.mem.Allocator, rom: Rom, replacements: []const ?[0x600]u8) ![]u8 {
+    const blocks = try compressedBlocks(alloc, rom, &tables.kCompSpritePtrs, 12);
+    defer freeAll(alloc, blocks);
+    for (replacements, 0..) |r, i| {
+        const sheet = r orelse continue;
+        if (i >= blocks.len) break;
+        alloc.free(blocks[i]);
+        blocks[i] = try alloc.dupe(u8, &sheet);
+    }
+    return packArrays(alloc, blocks);
+}
+
 pub fn buildBgGfx(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
     const blocks = try compressedBlocks(alloc, rom, &tables.kCompBgPtrs, 0);
     defer freeAll(alloc, blocks);

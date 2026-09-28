@@ -130,7 +130,7 @@ pub fn exportFiles(alloc: std.mem.Allocator, log: Log, rom_path: [:0]const u8, d
         return false;
     };
     g_export_count = 0;
-    asset_export.exportText(alloc, rom, dir, countExported) catch |e| {
+    asset_export.exportFiles(alloc, rom, dir, countExported) catch |e| {
         log.err("Export failed after {d} files: {s}", .{ g_export_count, @errorName(e) });
         return false;
     };
@@ -141,16 +141,16 @@ pub fn exportFiles(alloc: std.mem.Allocator, log: Log, rom_path: [:0]const u8, d
 
 /// Builds zelda3_assets.dat from edited files in `dir`, taking everything
 /// the files don't cover from the US ROM.
-pub fn buildFromFiles(alloc: std.mem.Allocator, log: Log, rom_path: [:0]const u8, dir: [:0]const u8, out: [:0]const u8) bool {
+pub fn buildFromFiles(alloc: std.mem.Allocator, log: Log, rom_path: [:0]const u8, dir: [:0]const u8, out: [:0]const u8, options: asset_all.import_mod.Files.Options) bool {
     var rom = loadUsRom(alloc, log, rom_path) orelse return false;
     defer rom.deinit();
     var problem = asset_all.import_mod.Problem{};
-    var files = asset_all.import_mod.Files.load(alloc, rom, dir, &problem) catch |e| {
+    var files = asset_all.import_mod.Files.load(alloc, rom, dir, options, &problem) catch |e| {
         log.err("{s}", .{if (e == error.BadInput) problem.text() else @errorName(e)});
         return false;
     };
     defer files.deinit();
-    log.info("Read the files in {s}.", .{dir});
+    log.info("Read the files in {s}{s}.", .{ dir, if (options.sprites_from_png) ", sprite sheets included" else "" });
     var assets = asset_all.buildFrom(alloc, rom, &files, &problem) catch |e| {
         log.err("{s}", .{if (e == error.BadInput) problem.text() else @errorName(e)});
         return false;

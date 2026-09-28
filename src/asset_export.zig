@@ -11,6 +11,8 @@ const yaml = @import("yaml.zig");
 const names = @import("asset_names.zig");
 const dialogue = @import("asset_dialogue.zig");
 const fileio = @import("fileio.zig");
+const graphics = @import("asset_graphics.zig");
+const sheets = @import("asset_sprite_sheets.zig");
 
 const Rom = rom_mod.Rom;
 const Value = yaml.Value;
@@ -556,10 +558,10 @@ fn dialogueText(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
 
 // ----------------------------------------------------------------- export
 
-/// Writes every text file the Python's extract step did into `dir`, which
-/// must exist; the overworld and dungeon folders are made as needed. Calls
+/// Writes every file the Python's extract step did into `dir`, which must
+/// exist; the overworld and dungeon folders are made as needed. Calls
 /// `progress` with each file name as it goes.
-pub fn exportText(alloc: std.mem.Allocator, rom: Rom, dir: []const u8, progress: ?*const fn ([]const u8) void) !void {
+pub fn exportFiles(alloc: std.mem.Allocator, rom: Rom, dir: []const u8, progress: ?*const fn ([]const u8) void) !void {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -584,6 +586,16 @@ pub fn exportText(alloc: std.mem.Allocator, rom: Rom, dir: []const u8, progress:
     try writeYaml(arena, dir, "dungeon/overlay_rooms.yaml", fixedRooms(b, rom, 0x84ECC0, 19, "Overlay"), progress);
     try writeFile(arena, dir, "dialogue.txt", try dialogueText(arena, rom), progress);
     try writeFile(arena, dir, "map32_to_map16.txt", try map32ToMap16(arena, rom), progress);
+    try writeFile(arena, dir, "linksprite.png", try graphics.exportLink(arena, rom), progress);
+    try writeFile(arena, dir, "font.png", try graphics.exportFont(arena, rom, .us), progress);
+    try writeFile(arena, dir, "hud_icons.png", try graphics.exportHudIcons(arena, rom), progress);
+    try makeDir(arena, dir, "sprites");
+    const Ctx = struct { arena: std.mem.Allocator, dir: []const u8, progress: ?*const fn ([]const u8) void };
+    try sheets.exportSheets(alloc, rom, Ctx{ .arena = arena, .dir = dir, .progress = progress }, struct {
+        fn f(c: Ctx, name: []const u8, bytes: []const u8) anyerror!void {
+            try writeFile(c.arena, c.dir, name, bytes, c.progress);
+        }
+    }.f);
 }
 
 fn makeDir(arena: std.mem.Allocator, dir: []const u8, sub: []const u8) !void {

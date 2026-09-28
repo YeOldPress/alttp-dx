@@ -9,13 +9,16 @@ const kUsage =
     \\
     \\Run with no arguments to open the window. Commands:
     \\
-    \\  build [--rom ROM] [--out FILE] [--from DIR]
+    \\  build [--rom ROM] [--out FILE] [--from DIR [--sprites-from-png]]
     \\                    Build zelda3_assets.dat from the US ROM, or with
-    \\                    --from, from files exported and edited in DIR
-    \\                    (defaults: zelda3.sfc, zelda3_assets.dat)
+    \\                    --from, from files exported and edited in DIR.
+    \\                    --sprites-from-png also takes the sprite sheets
+    \\                    from DIR/sprites (defaults: zelda3.sfc,
+    \\                    zelda3_assets.dat)
     \\  export [--rom ROM] --out DIR
     \\                    Write the overworld, dungeon rooms, map table and
-    \\                    dialogue into DIR as YAML and text to edit
+    \\                    dialogue into DIR as YAML and text, and Link, the
+    \\                    font, the HUD icons and the sprite sheets as PNGs
     \\  verify [FILE]     Check an asset file against this version
     \\  rom-info ROM      Say which release a ROM is
     \\  gui               Open the window
@@ -71,6 +74,12 @@ fn option(args: []const [:0]const u8, name: []const u8) error{Usage}!?[:0]const 
     return null;
 }
 
+/// Whether a bare `--name` flag is present.
+fn flag(args: []const [:0]const u8, name: []const u8) bool {
+    for (args) |a| if (std.mem.eql(u8, a, name)) return true;
+    return false;
+}
+
 /// Arguments that aren't options or their values.
 fn positional(args: []const [:0]const u8, i: usize) ?[:0]const u8 {
     var n: usize = 0;
@@ -81,7 +90,7 @@ fn positional(args: []const [:0]const u8, i: usize) ?[:0]const u8 {
             continue;
         }
         if (std.mem.startsWith(u8, a, "--")) {
-            skip = true;
+            skip = !std.mem.eql(u8, a, "--sprites-from-png");
             continue;
         }
         if (n == i) return a;
@@ -101,7 +110,10 @@ fn runCommand(alloc: std.mem.Allocator, args: []const [:0]const u8) !bool {
     if (std.mem.eql(u8, cmd, "build")) {
         const rom = try option(rest, "--rom") orelse "zelda3.sfc";
         const out = try option(rest, "--out") orelse "zelda3_assets.dat";
-        if (try option(rest, "--from")) |dir| return ops.buildFromFiles(alloc, log, rom, dir, out);
+        if (try option(rest, "--from")) |dir| {
+            const sprites = flag(rest, "--sprites-from-png");
+            return ops.buildFromFiles(alloc, log, rom, dir, out, .{ .sprites_from_png = sprites });
+        }
         return ops.buildAssets(alloc, log, rom, out);
     }
     if (std.mem.eql(u8, cmd, "export")) {
@@ -144,4 +156,5 @@ test {
     _ = @import("yaml.zig");
     _ = @import("asset_import.zig");
     _ = @import("asset_export.zig");
+    _ = @import("png.zig");
 }

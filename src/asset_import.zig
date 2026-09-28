@@ -13,6 +13,9 @@ const yaml = @import("yaml.zig");
 const names = @import("asset_names.zig");
 const pack = @import("asset_pack.zig");
 const fileio = @import("fileio.zig");
+const png = @import("png.zig");
+const graphics = @import("asset_graphics.zig");
+const sheets_mod = @import("asset_sprite_sheets.zig");
 
 const Rom = rom_mod.Rom;
 const Value = yaml.Value;
@@ -44,6 +47,19 @@ pub const Files = struct {
     overworld: [160]?Value = @splat(null),
     map32: []const [4]u16 = &.{},
     dialogue: []const []const u8 = &.{},
+    /// kLinkGraphics from linksprite.png, when the folder has one.
+    link_graphics: ?[]const u8 = null,
+    /// The font's tiles and widths from font.png, when the folder has one.
+    font: ?struct { tiles: []const u8, widths: []const u8 } = null,
+    /// The sprite sheets rebuilt from sprites/*.png, when asked for.
+    sprite_sheets: ?[]const ?[0x600]u8 = null,
+
+    pub const Options = struct {
+        /// Build the sprite sheets from sprites/sprites_*.png. Off by default,
+        /// as in the Python: the sheets go in uncompressed, so even unedited
+        /// they make a different, larger, file.
+        sprites_from_png: bool = false,
+    };
 
     pub fn deinit(self: *Files) void {
         self.arena_state.deinit();
@@ -51,7 +67,7 @@ pub const Files = struct {
 
     /// Reads every file from `dir`. On failure `problem` says which file and
     /// what's wrong with it.
-    pub fn load(alloc: std.mem.Allocator, rom: Rom, dir: []const u8, problem: *Problem) Error!Files {
+    pub fn load(alloc: std.mem.Allocator, rom: Rom, dir: []const u8, options: Options, problem: *Problem) Error!Files {
         var self = Files{ .arena_state = std.heap.ArenaAllocator.init(alloc) };
         errdefer self.deinit();
         const a = self.arena_state.allocator();
@@ -67,6 +83,29 @@ pub const Files = struct {
         }
         self.map32 = try loadMap32(a, dir, problem);
         self.dialogue = try loadDialogue(a, dir, "dialogue.txt", problem);
+        if (try loadPng(a, dir, "linksprite.png", problem)) |img| {
+            self.link_graphics = graphics.importLink(a, img) catch |e| return problem.set("linksprite.png: {s}", .{pngProblem(e)});
+        }
+        if (try loadPng(a, dir, "font.png", problem)) |img| {
+            const f = graphics.importFont(a, img, .us) catch |e| return problem.set("font.png: {s}", .{pngProblem(e)});
+            self.font = .{ .tiles = f.tiles, .widths = f.widths };
+        }
+        if (options.sprites_from_png) {
+            var images: [sheets_mod.kGroups.len]?png.Image = @splat(null);
+            for (sheets_mod.kGroups, 0..) |g, k| {
+                const name = try std.fmt.allocPrint(a, "sprites/sprites_{c}.png", .{g});
+                images[k] = try loadPng(a, dir, name, problem) orelse return problem.set("{s} is missing; export again to get it back", .{name});
+            }
+            var why: [256]u8 = undefined;
+            var why_len: usize = 0;
+            const imported = sheets_mod.importSheets(a, &images, &why, &why_len) catch |e| switch (e) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.BadSheet => return problem.set("{s}", .{why[0..why_len]}),
+            };
+            const list = try a.alloc(?[0x600]u8, 103);
+            for (list, 0..) |*s, t| s.* = imported.sheets[t];
+            self.sprite_sheets = list;
+        }
         return self;
     }
 };
@@ -86,6 +125,30 @@ fn loadYaml(a: std.mem.Allocator, dir: []const u8, name: []const u8, problem: *P
     return yaml.parse(a, text, &diag) catch |e| switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         error.Syntax => problem.set("{s}, line {d}: {s}", .{ name, diag.line, diag.message }),
+    };
+}
+
+/// A PNG if the folder has it; null if it doesn't, which means use the ROM's.
+fn loadPng(a: std.mem.Allocator, dir: []const u8, name: []const u8, problem: *Problem) Error!?png.Image {
+    const path = try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, name }, 0);
+    if (!fileio.exists(path.ptr)) return null;
+    const bytes = try readFile(a, dir, name, problem);
+    return png.decode(a, bytes) catch |e| switch (e) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => problem.set("{s}: {s}", .{ name, pngProblem(e) }),
+    };
+}
+
+/// What a graphics error means for the person editing the image.
+fn pngProblem(e: anyerror) []const u8 {
+    return switch (e) {
+        error.NotPng => "isn't a PNG",
+        error.Corrupt => "is damaged",
+        error.Unsupported => "is interlaced or 16 bits a channel; save it as a plain 8-bit PNG",
+        error.WrongSize => "is a different size from the one exported; keep the size the same",
+        error.FontNotIndexed => "has to stay an indexed-color (palette) image",
+        error.ColorNotInPalette => "uses a color that isn't in the exported palette",
+        else => @errorName(e),
     };
 }
 
@@ -1000,10 +1063,10 @@ test "exporting the ROM and building from the files gives the standard assets" {
     var dir_buf: [64]u8 = undefined;
     const dir = try std.fmt.bufPrintZ(&dir_buf, "zig-cache-export-{d}", .{pid});
     try fileio.makeDir(dir.ptr);
-    try @import("asset_export.zig").exportText(alloc, rom, dir, null);
+    try @import("asset_export.zig").exportFiles(alloc, rom, dir, null);
 
     var problem = Problem{};
-    var files = Files.load(alloc, rom, dir, &problem) catch |e| {
+    var files = Files.load(alloc, rom, dir, .{}, &problem) catch |e| {
         std.debug.print("{s}\n", .{problem.text()});
         return e;
     };
@@ -1016,6 +1079,15 @@ test "exporting the ROM and building from the files gives the standard assets" {
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
     try testing.expectEqualStrings(asset_all.kReferenceDigest, &std.fmt.bytesToHex(digest, .lower));
+
+    // The sprite sheets read back from their PNGs are the ROM's own sheets.
+    var with_sheets = try Files.load(alloc, rom, dir, .{ .sprites_from_png = true }, &problem);
+    defer with_sheets.deinit();
+    for (with_sheets.sprite_sheets.?, 0..) |sheet, t| {
+        const want = try sheets_mod.unpackedSheet(alloc, rom, t);
+        defer alloc.free(want);
+        try testing.expectEqualSlices(u8, want, &(sheet orelse return error.SheetMissing));
+    }
     removeTree(dir);
 }
 
@@ -1030,11 +1102,19 @@ fn removeTree(dir: []const u8) void {
         const p = std.fmt.bufPrintZ(&buf, "{s}/overworld/overworld-{d}.yaml", .{ dir, i }) catch return;
         _ = fileio.remove(p.ptr);
     }
-    for ([_][]const u8{ "dungeon/default_rooms.yaml", "dungeon/overlay_rooms.yaml", "dialogue.txt", "map32_to_map16.txt" }) |f| {
+    for ([_][]const u8{ "dungeon/default_rooms.yaml", "dungeon/overlay_rooms.yaml", "dialogue.txt", "map32_to_map16.txt", "linksprite.png", "font.png", "hud_icons.png" }) |f| {
         const p = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ dir, f }) catch return;
         _ = fileio.remove(p.ptr);
     }
-    for ([_][]const u8{ "/dungeon", "/overworld", "" }) |sub| {
+    for (sheets_mod.kGroups) |g| {
+        const p = std.fmt.bufPrintZ(&buf, "{s}/sprites/sprites_{c}.png", .{ dir, g }) catch return;
+        _ = fileio.remove(p.ptr);
+    }
+    {
+        const p = std.fmt.bufPrintZ(&buf, "{s}/sprites/all_sheets.png", .{dir}) catch return;
+        _ = fileio.remove(p.ptr);
+    }
+    for ([_][]const u8{ "/dungeon", "/overworld", "/sprites", "" }) |sub| {
         const p = std.fmt.bufPrintZ(&buf, "{s}{s}", .{ dir, sub }) catch return;
         fileio.removeDir(p.ptr);
     }

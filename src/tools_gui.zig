@@ -145,6 +145,7 @@ const State = struct {
     out: std.ArrayList(u8) = .empty,
     verify: std.ArrayList(u8) = .empty,
     folder: std.ArrayList(u8) = .empty,
+    sprites_from_png: bool = false,
 
     fn set(self: *State, alloc: std.mem.Allocator, field: Field, path: []const u8) void {
         const list = switch (field) {
@@ -228,6 +229,17 @@ const Ui = struct {
         return self.button(.{ .x = x.*, .y = y, .w = w, .h = 40 }, label, enabled);
     }
 
+    /// A checkbox and its label; true on the frame it's clicked.
+    fn checkbox(self: Ui, x: f32, y: f32, label: []const u8, on: bool) bool {
+        const box = Rect{ .x = x, .y = y, .w = 20, .h = 20 };
+        const hit = Rect{ .x = x, .y = y, .w = 28 + @as(f32, @floatFromInt(label.len * kCharW)), .h = 20 };
+        const hot = self.hovered(hit);
+        self.fill(box, if (hot) kButtonHover else kButton);
+        if (on) self.fill(.{ .x = x + 5, .y = y + 5, .w = 10, .h = 10 }, kAccent);
+        self.text(x + 30, y + 2, kText, label);
+        return hot and self.clicked;
+    }
+
     /// A labelled path with a Browse button. True when Browse is clicked.
     fn pathField(self: Ui, x: f32, y: f32, w: f32, label: []const u8, path: []const u8, placeholder: []const u8) bool {
         self.text(x, y, kDim, label);
@@ -293,7 +305,7 @@ fn drawModding(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Wi
     var y: f32 = 32;
     ui.text(kContentX, y, kAccent, "Edit the game's data");
     y += kLineH + 8;
-    y += ui.paragraph(kContentX, y, kContentW, kDim, "Export writes the overworld, every dungeon room, the map table and the dialogue out as YAML and text. Change them, then build the asset file from the folder.");
+    y += ui.paragraph(kContentX, y, kContentW, kDim, "Export writes the world, the dialogue and the graphics out as YAML, text and PNG. Change them, then build the asset file from the folder.");
     y += 16;
 
     if (ui.pathField(kContentX, y, kContentW, "US ROM", st.get(.rom), "Drop a .sfc or .smc here, or Browse")) openDialog(window, .rom);
@@ -302,6 +314,9 @@ fn drawModding(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Wi
     y += kLineH + 48;
     if (ui.pathField(kContentX, y, kContentW, "Write to", st.get(.out), "zelda3_assets.dat")) openDialog(window, .out);
     y += kLineH + 56;
+
+    if (ui.checkbox(kContentX, y, "Build the sprite sheets from sprites/ too", st.sprites_from_png)) st.sprites_from_png = !st.sprites_from_png;
+    y += kLineH + 12;
 
     const ready = st.get(.rom).len != 0 and st.get(.folder).len != 0;
     var x: f32 = kContentX;
@@ -324,7 +339,7 @@ fn runJob(alloc: std.mem.Allocator, st: *State, job: Job) void {
         .rom_info => _ = ops.romInfo(alloc, g_logger, rom),
         .verify => _ = ops.verifyAssets(alloc, g_logger, out),
         .export_files => _ = ops.exportFiles(alloc, g_logger, rom, folder),
-        .build_from_files => _ = ops.buildFromFiles(alloc, g_logger, rom, folder, out),
+        .build_from_files => _ = ops.buildFromFiles(alloc, g_logger, rom, folder, out, .{ .sprites_from_png = st.sprites_from_png }),
     }
 }
 
