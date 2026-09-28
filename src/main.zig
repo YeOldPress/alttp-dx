@@ -329,8 +329,10 @@ fn verifyAgainstRom(rom: [*:0]const u8, script: [*:0]const u8) c_int {
 /// and write the frame it ends on.
 fn emuRenderToFile(rom: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u8) c_int {
     const alloc = std.heap.c_allocator;
-    // TRACKER=off|panel|overlay picks what's drawn around the game.
+    // TRACKER=off|panel|overlay picks what's drawn around the game, and
+    // WIDE=n adds n widescreen pixels a side.
     const mode = if (std.c.getenv("TRACKER")) |t| tracker.Mode.fromName(std.mem.span(t)) orelse .panel else .panel;
+    if (std.c.getenv("WIDE")) |w| config.g_config.extended_aspect_ratio = std.fmt.parseInt(u8, std.mem.span(w), 10) catch 0;
     rando.start(alloc, std.mem.span(rom), mode) catch |err| {
         std.debug.print("--emu-render: could not load {s}: {s}\n", .{ rom, @errorName(err) });
         return 1;
@@ -521,7 +523,7 @@ fn SdlRenderer_Init(window: ?*c.SDL_Window) callconv(.c) bool {
 
     const tex_mult: c_int = if (g_ppu_render_flags & kPpuRenderFlags_4x4Mode7 != 0) 4 else 1;
     // A randomizer seed draws at double size, with room for the tracker.
-    const tex_w = if (rando.g_active) rando.kGameW + rando.kPanelW else g_snes_width * tex_mult;
+    const tex_w = if (rando.g_active) rando.kMaxGameW + rando.kPanelW else g_snes_width * tex_mult;
     const tex_h = if (rando.g_active) rando.kGameH else g_snes_height * tex_mult;
     g_texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_ARGB8888, c.SDL_TEXTUREACCESS_STREAMING, tex_w, tex_h);
     if (g_texture == null) {
@@ -914,7 +916,13 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
 
         // A replay is someone else's playthrough, so it doesn't shake the pad,
         // and a randomizer seed isn't the port, so the port's rumble can't read it.
-        if (is_replay or rando.g_active) rumble.reset() else rumble.afterFrame(audio.lastSoundEffect1(), audio.lastSoundEffect2());
+        if (is_replay) {
+            rumble.reset();
+        } else if (rando.g_active) {
+            // The seed's ram is mirrored where the rumble looks for the port's.
+            const sfx = rando.soundEffects();
+            rumble.afterFrame(sfx[0], sfx[1]);
+        } else rumble.afterFrame(audio.lastSoundEffect1(), audio.lastSoundEffect2());
 
         frameCtr +%= 1;
 

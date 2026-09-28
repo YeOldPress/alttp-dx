@@ -159,9 +159,18 @@ Generate a seed on [alttpr.com](https://alttpr.com) from the Japanese 1.0 ROM
 (MD5 `03a63945398191337e896e5771f77173`), then drop the seed on the start menu
 or run `zelda3 seed.sfc`. A seed changes the game's own code, so it isn't
 played by the port: it runs in the SNES emulator the port is verified
-against, exactly as the randomizer built it. The port's extras don't apply
-there, and snapshots and cheats are off. The save goes next to the seed as a
-`.srm` file.
+against, exactly as the randomizer built it. Snapshots and cheats are off,
+and the save goes next to the seed as a `.srm` file.
+
+Some of the port's extras still come along, because they only watch the game:
+
+- **Rumble**, the same as in the port.
+- **Widescreen**, from `ExtendedAspectRatio`. Rooms and areas show as far as
+  they go; outdoors the edges can briefly show stale tiles while scrolling,
+  and enemies still vanish at the original screen edge.
+- **MSU-1**: put `seed-1.pcm`, `seed-2.pcm` and so on next to `seed.sfc` (the
+  usual way randomizer packs are named), or point `MSUPath` at a pack. The
+  seed's own code picks the tracks. `.pcm` packs only.
 
 The item tracker follows along by itself, reading the save data every frame:
 items, all 13 dungeons (checks left, keys, big key, map, compass, boss) and

@@ -96,15 +96,17 @@ pub const Console = struct {
     }
 
     /// Runs one frame with `buttons` held (the port's joypad bit order, which
-    /// is the controller's own), drawing it into `pixels`: kWidth x kHeight,
-    /// 0x00RRGGBB, `pitch` bytes a row.
-    pub fn runFrame(self: *Console, buttons: u16, pixels: [*]u8, pitch: usize) void {
+    /// is the controller's own), drawing it into `pixels`: 0x00RRGGBB,
+    /// `pitch` bytes a row, kWidth + 2 * `margin` wide. The margins are
+    /// widescreen: the picture the game has set up past the edges of the
+    /// original screen, as far as `left` and `right` say there's something
+    /// real to show, and black beyond that.
+    pub fn runFrame(self: *Console, buttons: u16, pixels: [*]u8, pitch: usize, margin: u8, left: c_int, right: c_int) void {
         const in1: *Input = @ptrCast(@alignCast(self.snes.input1.?));
         in1.currentState = buttons;
         const p = self.ppu();
-        // No widescreen margins: this draws exactly what the console does.
-        p.extraLeftRight = 0;
-        ppu_mod.PpuSetExtraSideSpace(p, 0, 0, 0);
+        p.extraLeftRight = margin;
+        ppu_mod.PpuSetExtraSideSpace(p, left, right, 0);
         ppu_mod.PpuBeginDrawing(p, pixels, pitch, snes_pkg.ppu_types.kPpuRenderFlags_NewRenderer);
         snes_mod.snes_runFrame(self.snes);
     }

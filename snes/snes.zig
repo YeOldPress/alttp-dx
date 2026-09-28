@@ -358,9 +358,23 @@ fn snes_writeReg(snes: *Snes, adr: u16, val: u8) void {
 }
 
 /// wrapped by snes_read, to set open bus
+/// Hardware on the cartridge beyond ROM and save ram, mapped at $2000-$20ff
+/// in the system banks: MSU-1, for a whole-ROM run. Null otherwise.
+pub const IoHooks = struct {
+    ctx: *anyopaque,
+    read: *const fn (ctx: *anyopaque, adr: u16) ?u8,
+    write: *const fn (ctx: *anyopaque, adr: u16, val: u8) bool,
+};
+pub var g_io_hooks: ?IoHooks = null;
+
 fn snes_rread(snes: *Snes, full_adr: u32) u8 {
     const bank: u8 = @truncate(full_adr >> 16);
     const adr: u16 = @truncate(full_adr);
+    if (g_io_hooks) |h| {
+        if ((bank & 0x7f) < 0x40 and adr >= 0x2000 and adr < 0x2100) {
+            if (h.read(h.ctx, adr)) |v| return v;
+        }
+    }
     if ((bank & 0x7f) < 0x40 and adr < 0x4380) {
         if (adr < 0x2000) {
             return snes.ram.?[adr]; // ram mirror
@@ -418,6 +432,9 @@ pub export fn snes_write(snes: *Snes, full_adr: u32, val: u8) callconv(.c) void 
         traceRamWrite(snes, 1, adr, val);
         snes.ram.?[(@as(u32, bank & 1) << 16) | adr] = val; // ram
     } else if (bank < 0x40 or (bank >= 0x80 and bank < 0xc0)) {
+        if (g_io_hooks) |h| {
+            if (adr >= 0x2000 and adr < 0x2100 and h.write(h.ctx, adr, val)) return;
+        }
         if (adr < 0x2000) {
             traceRamWrite(snes, 2, adr, val);
             snes.ram.?[adr] = val; // ram mirror

@@ -247,7 +247,15 @@ fn intMax(a: c_int, b: c_int) c_int {
 }
 
 fn ConfigurePpuSideSpace() void {
-    // Let PPU impl know about the maximum allowed extra space on the sides and bottom
+    const s = widescreenSideSpace(kPpuExtraLeftRight);
+    ppu_mod.PpuSetExtraSideSpace(zenvPpu(), s.left, s.right, s.bottom);
+}
+
+/// How far past the original screen there's something real to show, from
+/// what the game has in ram: the room or area's bounds, or the full margin
+/// on screens that are drawn edge to edge anyway. Randomizer mode fills
+/// g_ram from the emulated console to use the same rules.
+pub fn widescreenSideSpace(max: c_int) struct { left: c_int, right: c_int, bottom: c_int } {
     var extra_right: c_int = 0;
     var extra_left: c_int = 0;
     var extra_bottom: c_int = 0;
@@ -257,8 +265,8 @@ fn ConfigurePpuSideSpace() void {
     if (mod == 9) {
         if (vars.main_module_index.* == 14 and vars.submodule_index.* == 7 and vars.overworld_map_state.* >= 4) {
             // World map
-            extra_left = kPpuExtraLeftRight;
-            extra_right = kPpuExtraLeftRight;
+            extra_left = max;
+            extra_right = max;
             extra_bottom = 16;
         } else {
             // outdoors
@@ -277,11 +285,11 @@ fn ConfigurePpuSideSpace() void {
         const qy = vars.quadrant_fullsize_y.* >> 1;
         extra_bottom = intMax(@as(c_int, vars.room_bounds_y.v[qy + 2]) - vars.BG2VOFS_copy2.*, 0);
     } else if (mod == 20 or mod == 0 or mod == 1) {
-        extra_left = kPpuExtraLeftRight;
-        extra_right = kPpuExtraLeftRight;
+        extra_left = max;
+        extra_right = max;
         extra_bottom = 16;
     }
-    ppu_mod.PpuSetExtraSideSpace(zenvPpu(), extra_left, extra_right, extra_bottom);
+    return .{ .left = extra_left, .right = extra_right, .bottom = extra_bottom };
 }
 
 pub export fn ZeldaDrawPpuFrame(pixel_buffer: [*]u8, pitch: usize, render_flags: u32) callconv(.c) void {
