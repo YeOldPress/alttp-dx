@@ -1,7 +1,7 @@
 //! Draws with the game's own graphics straight onto a finished frame.
 //!
 //! The PPU has already turned the SNES state into pixels by the time this
-//! runs; this paints on top of them, reading the tiles out of VRAM, the colours
+//! runs; this paints on top of them, reading the HUD's tiles, the colours
 //! out of CGRAM and the dialogue font out of the asset file, so what it draws
 //! looks exactly like the game's menus without touching any of the state the
 //! game will want back afterwards. Coordinates are in SNES pixels on a 256x224
@@ -12,9 +12,27 @@ const util = @import("util.zig");
 const ppu_types = @import("snes").ppu_types;
 const text_tables = @import("asset_text_tables.zig");
 
-/// BG3's characters live at this VRAM word address while the game is running:
-/// the HUD, its boxes and its item icons.
-const kBg3CharBase = 0x7000;
+extern fn Decomp_spr(dst: [*]u8, gfx: c_int) c_int;
+
+/// The HUD's 2bpp characters: its boxes, hearts and item icons. The game keeps
+/// them at VRAM 0x7000 while it's running, but other screens, the file select
+/// among them, put other things there. So a copy is decompressed from the same
+/// three packs the game loads them from (see LoadDefaultGraphics), and drawing
+/// uses that wherever the game happens to be.
+var g_hud_chr: [3 * 1024]u16 = undefined;
+var g_hud_chr_loaded = false;
+
+pub fn loadHudTiles() void {
+    if (g_hud_chr_loaded) return;
+    // Decompression can run past the 2K each pack is cut to, so it gets room.
+    var scratch: [0x4000]u8 align(2) = undefined;
+    for ([3]c_int{ 0x6a, 0x6b, 0x69 }, 0..) |pack, i| {
+        _ = Decomp_spr(&scratch, pack);
+        const words: [*]const u16 = @ptrCast(&scratch);
+        @memcpy(g_hud_chr[i * 1024 ..][0..1024], words[0..1024]);
+    }
+    g_hud_chr_loaded = true;
+}
 
 pub const Canvas = struct {
     pixels: [*]u8,
@@ -49,6 +67,18 @@ pub const Canvas = struct {
         }
     }
 
+    /// Paints a band across the whole frame, widescreen margins included, so
+    /// text laid over it isn't fighting whatever the dimmed screen has there.
+    pub fn band(self: Canvas, y: i32, h: i32, rgb: u32) void {
+        const s = self.scale;
+        const top: usize = @intCast(@max(0, y));
+        const bottom: usize = @min(self.height, @as(usize, @intCast(@max(0, y + h))));
+        for (top * s..bottom * s) |py| {
+            const row: [*]align(1) u32 = @ptrCast(self.pixels + py * self.pitch);
+            for (0..self.width * s) |x| row[x] = rgb;
+        }
+    }
+
     pub fn fill(self: Canvas, x: i32, y: i32, w: i32, h: i32, rgb: u32) void {
         var yy = y;
         while (yy < y + h) : (yy += 1) {
@@ -60,13 +90,14 @@ pub const Canvas = struct {
     /// One 8x8 BG3 tile, given the way a tilemap names it: tile number,
     /// palette and flips all in the one word. Colour 0 is see-through.
     pub fn tile(self: Canvas, x: i32, y: i32, word: u16) void {
-        const vram = rtl.g_zenv.vram orelse return;
+        if (!g_hud_chr_loaded) return;
         const num: usize = word & 0x3ff;
+        if ((num + 1) * 8 > g_hud_chr.len) return;
         const pal: usize = (word >> 10) & 7;
         const hflip = word & 0x4000 != 0;
         const vflip = word & 0x8000 != 0;
         for (0..8) |r| {
-            const row_word = vram[kBg3CharBase + num * 8 + (if (vflip) 7 - r else r)];
+            const row_word = g_hud_chr[num * 8 + (if (vflip) 7 - r else r)];
             for (0..8) |col| {
                 const bit: u4 = @intCast(if (hflip) col else 7 - col);
                 const ci = (row_word >> bit & 1) | (row_word >> (bit + 8) & 1) << 1;

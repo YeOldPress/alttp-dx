@@ -295,11 +295,14 @@ var perf_history_pos: usize = 0;
 /// The --render path: load a chapter snapshot, play the script, and write the
 /// frame it ends on. Runs before SDL is started, so no window ever opens.
 fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u8) c_int {
-    const ref = std.fmt.parseInt(c_int, std.mem.span(ref_arg), 10) catch {
-        std.debug.print("--render: the snapshot is a number from 0 to 12\n", .{});
-        return 1;
-    };
-    SaveLoadSlot(kSaveLoad_Load, 256 + ref);
+    // "-" starts from power-on instead of a snapshot.
+    if (!std.mem.eql(u8, std.mem.span(ref_arg), "-")) {
+        const ref = std.fmt.parseInt(c_int, std.mem.span(ref_arg), 10) catch {
+            std.debug.print("--render: the snapshot is a number from 0 to 12, or -\n", .{});
+            return 1;
+        };
+        SaveLoadSlot(kSaveLoad_Load, 256 + ref);
+    }
 
     var it = std.mem.tokenizeScalar(u8, std.mem.span(script), ',');
     while (it.next()) |text| {

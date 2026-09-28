@@ -2,6 +2,7 @@
 const std = @import("std");
 const vars = @import("variables.zig");
 const rtl = @import("zelda_rtl_types.zig");
+const settings_menu = @import("settings_menu.zig");
 
 const OamEnt = vars.OamEnt;
 const g_ram = &vars.g_ram;
@@ -455,8 +456,9 @@ pub extern var g_quit_requested: bool;
 
 /// The three action rows under the save slots. Each is two tiles tall and they
 /// sit two rows apart. The stock screen draws COPY and ERASE from the tilemap
-/// asset on the lower two; all three are redrawn here so QUIT can take the
-/// bottom row and the other two move up, which is the order the cursor walks.
+/// asset on the lower two; all three are redrawn here so the bottom row can
+/// hold SETTINGS and QUIT GAME side by side, the box having no room for a
+/// fourth row, and the other two move up, which is the order the cursor walks.
 const kMenuRow0: u16 = 20;
 const kMenuCol: u16 = 6;
 /// PLAYER lines up in both stock labels despite COPY and ERASE differing in
@@ -489,8 +491,10 @@ const kGlyphs_Copy = [_]u8{ 2, 14, 15, 24 };
 const kGlyphs_Erase = [_]u8{ 4, 17, 0, 18, 4 };
 const kGlyphs_Player = [_]u8{ 15, 11, 0, 24, 4, 17 };
 const kGlyphs_Quit = [_]u8{ 16, 20, 8, 19 };
-const kGlyphs_To = [_]u8{ 19, 14 };
-const kGlyphs_Desktop = [_]u8{ 3, 4, 18, 10, 19, 14, 15 };
+const kGlyphs_Game = [_]u8{ 6, 0, 12, 4 };
+const kGlyphs_Settings = [_]u8{ 18, 4, 19, 19, 8, 13, 6, 18 };
+/// Where QUIT GAME starts on the bottom row, to the right of SETTINGS.
+const kMenuQuitCol: u16 = 19;
 
 /// Lays out the three action rows. Drawn every frame rather than once: the
 /// screen reloads its tilemap from the asset on entry, and the rows carry no
@@ -513,13 +517,18 @@ fn FileSelect_DrawMenuRows() void {
     fileSelectDrawWord(kMenuRow0, kMenuPlayerCol, &kGlyphs_Player);
     fileSelectDrawWord(kMenuRow0 + 2, kMenuCol, &kGlyphs_Erase);
     fileSelectDrawWord(kMenuRow0 + 2, kMenuPlayerCol, &kGlyphs_Player);
-    fileSelectDrawWord(kMenuRow0 + 4, kMenuCol, &kGlyphs_Quit);
-    fileSelectDrawWord(kMenuRow0 + 4, kMenuCol + 5, &kGlyphs_To);
-    fileSelectDrawWord(kMenuRow0 + 4, kMenuCol + 8, &kGlyphs_Desktop);
+    fileSelectDrawWord(kMenuRow0 + 4, kMenuCol, &kGlyphs_Settings);
+    fileSelectDrawWord(kMenuRow0 + 4, kMenuQuitCol, &kGlyphs_Quit);
+    fileSelectDrawWord(kMenuRow0 + 4, kMenuQuitCol + 5, &kGlyphs_Game);
 }
 
 pub export fn FileSelect_Main() callconv(.c) void { // 8ccebd
-    const kSelectFile_Faerie_Y = [6]u8{ 0x4a, 0x6a, 0x8a, 0x9f, 0xaf, 0xbf };
+    // The three files, COPY, ERASE, then SETTINGS and QUIT GAME sharing the
+    // bottom row. The fairy sits 20 pixels left of whatever it points at.
+    const kSelectFile_Faerie_Y = [7]u8{ 0x4a, 0x6a, 0x8a, 0x9f, 0xaf, 0xbf, 0xbf };
+    const kSelectFile_Faerie_X = [7]u8{ 0x1c, 0x1c, 0x1c, 0x1c, 0x1c, 0x1c, kMenuQuitCol * 8 - 20 };
+    const kCursorSettings = 5;
+    const kCursorQuit = 6;
 
     const cart = sram();
 
@@ -536,8 +545,12 @@ pub export fn FileSelect_Main() callconv(.c) void { // 8ccebd
     }
 
     FileSelect_DrawMenuRows();
-    FileSelect_DrawFairy(0x1c, kSelectFile_Faerie_Y[selectfile_R16.*]);
+    FileSelect_DrawFairy(kSelectFile_Faerie_X[selectfile_R16.*], kSelectFile_Faerie_Y[selectfile_R16.*]);
     nmi_load_bg_from_vram.* = 1;
+
+    // The settings screen draws over this one and takes the pad while it's up.
+    if (settings_menu.isOpen())
+        return settings_menu.update();
 
     const a = ((filtered_joypad_L.* & 0xc0) | filtered_joypad_H.*) & 0xfc;
     if (a & 0x2c != 0) {
@@ -545,11 +558,11 @@ pub export fn FileSelect_Main() callconv(.c) void { // 8ccebd
             sound_effect_2.* = 0x20;
             selectfile_R16.* -%= 1;
             if (sign8(selectfile_R16.*))
-                selectfile_R16.* = 5;
+                selectfile_R16.* = kCursorQuit;
         } else {
             sound_effect_2.* = 0x20;
             selectfile_R16.* +%= 1;
-            if (selectfile_R16.* == 6)
+            if (selectfile_R16.* == kCursorQuit + 1)
                 selectfile_R16.* = 0;
         }
     } else if (a != 0) {
@@ -566,7 +579,9 @@ pub export fn FileSelect_Main() callconv(.c) void { // 8ccebd
                 writeWord(g_ram[0..].ptr, @as(u16, selectfile_R16.*) *% 0x500);
                 CopySaveToWRAM();
             }
-        } else if (selectfile_R16.* == 5) {
+        } else if (selectfile_R16.* == kCursorSettings) {
+            settings_menu.openFromFileSelect();
+        } else if (selectfile_R16.* == kCursorQuit) {
             g_quit_requested = true;
         } else if ((selectfile_arr1[0] | selectfile_arr1[1] | selectfile_arr1[2]) != 0) {
             main_module_index.* = if (selectfile_R16.* == 3) 2 else 3;
@@ -1447,7 +1462,7 @@ test "the stripe tables came over intact" {
     try testing.expectEqual(@as(u8, 0xff), kKILLFile_ChooseTarget_Tab[252]);
 }
 
-test "the file select menu has a quit row below the save slots" {
+test "the file select menu has settings and quit rows below the save slots" {
     const sram_t = try TestSram.init();
     defer sram_t.deinit();
 
@@ -1461,18 +1476,20 @@ test "the file select menu has a quit row below the save slots" {
     g_quit_requested = false;
     main_module_index.* = 1;
 
-    // Down from the last save slot reaches COPY, ERASE and then QUIT, and the
-    // list wraps back round - six rows where the stock screen had five.
+    // Down from the last save slot reaches COPY, ERASE, SETTINGS and then
+    // QUIT beside it, and the list wraps back round - seven stops where the
+    // stock screen had five.
     selectfile_R16.* = 2;
-    for ([_]u8{ 3, 4, 5, 0 }) |want| {
+    for ([_]u8{ 3, 4, 5, 6, 0 }) |want| {
         filtered_joypad_H.* = 4; // Down
         filtered_joypad_L.* = 0;
         FileSelect_Main();
         try testing.expectEqual(want, selectfile_R16.*);
     }
 
-    // All three labels are laid out in the order the cursor walks them, with
-    // QUIT on the bottom row rather than the stock COPY and ERASE positions.
+    // The labels are laid out in the order the cursor walks them, with
+    // SETTINGS and QUIT sharing the bottom row rather than the stock COPY and
+    // ERASE positions.
     const rowAt = struct {
         fn f(v: *[0x8000]u16, row: u16, col: u16) u16 {
             return v[0x6000 + @as(usize, row) * 32 + col];
@@ -1480,7 +1497,8 @@ test "the file select menu has a quit row below the save slots" {
     }.f;
     try testing.expectEqual(fileSelectGlyphTile(2), rowAt(vram, kMenuRow0, kMenuCol)); // C of COPY
     try testing.expectEqual(fileSelectGlyphTile(4), rowAt(vram, kMenuRow0 + 2, kMenuCol)); // E of ERASE
-    try testing.expectEqual(fileSelectGlyphTile(16), rowAt(vram, kMenuRow0 + 4, kMenuCol)); // Q of QUIT
+    try testing.expectEqual(fileSelectGlyphTile(18), rowAt(vram, kMenuRow0 + 4, kMenuCol)); // S of SETTINGS
+    try testing.expectEqual(fileSelectGlyphTile(16), rowAt(vram, kMenuRow0 + 4, kMenuQuitCol)); // Q of QUIT
     // PLAYER lines up on both of the rows that carry it.
     try testing.expectEqual(
         rowAt(vram, kMenuRow0, kMenuPlayerCol),
@@ -1488,13 +1506,13 @@ test "the file select menu has a quit row below the save slots" {
     );
     // Bottom halves follow their tops.
     try testing.expectEqual(
-        fileSelectGlyphTile(16) + 0x10,
+        fileSelectGlyphTile(18) + 0x10,
         rowAt(vram, kMenuRow0 + 5, kMenuCol),
     );
 
     // Confirming on the quit row asks the main loop to stop, and does not
     // wander into the copy or erase screens.
-    selectfile_R16.* = 5;
+    selectfile_R16.* = 6;
     filtered_joypad_H.* = 0;
     filtered_joypad_L.* = 0x80; // A
     FileSelect_Main();

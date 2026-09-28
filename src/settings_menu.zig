@@ -1,7 +1,8 @@
 //! Settings inside the game, behind Select.
 //!
 //! Select normally offers Continue Game or Save and Quit. This adds Settings
-//! as a third choice, which opens a full settings screen in the style of the
+//! as a third choice, and the file select screen gets a SETTINGS option too;
+//! either opens a full settings screen in the style of the
 //! inventory: the same framed boxes, item icons for tabs, hearts for switches,
 //! the dialogue font for the words. L and R change tab, Up and Down pick a
 //! setting, Left, Right and A change it, and B saves zelda3.ini and goes back
@@ -215,6 +216,8 @@ pub fn customMessage(index: u16) ?[]const u8 {
 // ------------------------------------------------------------------ the screen
 
 var g_open = false;
+/// Where the screen was opened from, which decides what closing it means.
+var g_origin: enum { game, file_select } = .game;
 var g_ini: ?menu.Ini = null;
 var g_dirty = false;
 var g_tab: usize = 0;
@@ -240,23 +243,38 @@ pub fn afterBoxClosed() bool {
     g_offered = false;
     if (!picked) return false;
 
-    g_ini = menu.Ini.load(alloc, "zelda3.ini") catch |err| {
-        std.debug.print("Could not read zelda3.ini: {s}\n", .{@errorName(err)});
+    if (!open(.game)) {
         vars.choice_in_multiselect_box.* = vars.choice_in_multiselect_box_bak.*;
         return true;
-    };
-    g_open = true;
-    g_details = false;
-    g_dirty = false;
-    g_row = 0;
-    g_top = 0;
-    g_held = 0;
+    }
     // Back into the save menu's module, which runs update() for as long as
     // the screen is up. The box has already closed and put the game's own
     // display back.
     vars.main_module_index.* = 14;
     vars.submodule_index.* = 11;
     vars.subsubmodule_index.* = 0;
+    return true;
+}
+
+/// Opens the screen over the file select screen, which keeps running under it
+/// and hands update() the pad while it's up.
+pub fn openFromFileSelect() void {
+    _ = open(.file_select);
+}
+
+fn open(origin: @TypeOf(g_origin)) bool {
+    g_ini = menu.Ini.load(alloc, "zelda3.ini") catch |err| {
+        std.debug.print("Could not read zelda3.ini: {s}\n", .{@errorName(err)});
+        return false;
+    };
+    gfx.loadHudTiles();
+    g_origin = origin;
+    g_open = true;
+    g_details = false;
+    g_dirty = false;
+    g_row = 0;
+    g_top = 0;
+    g_held = 0;
     return true;
 }
 
@@ -337,7 +355,8 @@ fn change(dir: i32) void {
     vars.sound_effect_1.* = 43;
 }
 
-/// Saves what changed and hands the game back, as Continue would.
+/// Saves what changed and goes back where the screen was opened from: the
+/// game, as Continue would, or the file select screen, which never left.
 fn close() void {
     if (g_ini) |*ini| {
         if (g_dirty) {
@@ -347,10 +366,12 @@ fn close() void {
     }
     g_ini = null;
     g_open = false;
-    vars.choice_in_multiselect_box.* = vars.choice_in_multiselect_box_bak.*;
-    vars.main_module_index.* = vars.saved_module_for_menu.*;
-    vars.submodule_index.* = 0;
     vars.sound_effect_2.* = 18;
+    if (g_origin == .game) {
+        vars.choice_in_multiselect_box.* = vars.choice_in_multiselect_box_bak.*;
+        vars.main_module_index.* = vars.saved_module_for_menu.*;
+        vars.submodule_index.* = 0;
+    }
 }
 
 // ------------------------------------------------------------------- drawing
@@ -526,6 +547,7 @@ fn drawFooter(cv: gfx.Canvas) void {
         "[B] Back"
     else
         "[Up][Down] Choose  [Left][Right] Change  [Y] Info  [B] Done";
+    cv.band(192, 24, 0x000000);
     _ = cv.text(128 - @divTrunc(gfx.textWidth(hint), 2), 198, hint, kTextDim);
 }
 
