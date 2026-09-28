@@ -8,6 +8,7 @@ const util = @import("util.zig");
 const opengl = @import("opengl.zig");
 const audio = @import("audio.zig");
 const rumble = @import("rumble.zig");
+const menu = @import("menu.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const emu = @import("zelda_cpu_infra.zig");
 const snes_pkg = @import("snes");
@@ -51,8 +52,6 @@ extern fn printf(fmt: [*:0]const u8, ...) c_int;
 extern fn sprintf(buf: [*]u8, fmt: [*:0]const u8, ...) c_int;
 extern fn snprintf(buf: [*]u8, size: usize, fmt: [*:0]const u8, ...) c_int;
 extern fn strcmp(a: [*:0]const u8, b: [*:0]const u8) c_int;
-extern fn getcwd(buf: [*]u8, size: usize) ?[*:0]u8;
-extern fn chdir(path: [*:0]const u8) c_int;
 extern fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
 /// The Windows CRT spells it _mkdir, and it takes no mode.
 extern fn _mkdir(path: [*:0]const u8) c_int;
@@ -463,12 +462,43 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     var argc = argc_in - 1;
     var argv = argv_in + 1;
     var config_file: ?[*:0]const u8 = null;
+    const alloc = std.heap.c_allocator;
+
+    // Flags that do one job and exit rather than starting the game.
+    if (argc == 1) {
+        const arg = std.mem.span(argv[0]);
+        if (std.mem.eql(u8, arg, "--build-assets")) {
+            menu.enterDataDirectory();
+            return if (menu.buildAssetsFromCommandLine(alloc)) 0 else 1;
+        }
+        if (std.mem.eql(u8, arg, "--data-dir")) {
+            menu.enterDataDirectory();
+            menu.printDataDirectory();
+            return 0;
+        }
+        if (std.mem.eql(u8, arg, "--pad-info")) {
+            menu.reportPads();
+            return 0;
+        }
+    }
+
     if (argc >= 2 and strcmp(argv[0], "--config") == 0) {
         config_file = argv[1];
         argc -= 2;
         argv += 2;
     } else {
-        SwitchDirectory();
+        menu.enterDataDirectory();
+        // The start menu shows when zelda3.ini asks for it, and always when
+        // the assets are missing or aren't the ones this build makes, since
+        // stale assets misbehave in ways that look like game bugs. Comparing
+        // against a ROM (zelda3 <rom>) is a developer tool and goes straight in.
+        if (argc == 0 and (menu.checkAssets(alloc) != .verified or menu.wantsStartMenu(alloc))) {
+            const outcome = menu.run(alloc) catch |err| {
+                std.debug.print("The start menu failed: {s}\n", .{@errorName(err)});
+                return 1;
+            };
+            if (outcome == .quit) return 0;
+        }
     }
     ParseConfigFile(config_file);
     LoadAssets();
@@ -1171,33 +1201,6 @@ fn LoadAssets() void {
         pal[0x484] = 0x70;
         pal[0x485] = 0x95;
         pal[0x486] = 0x57;
-    }
-}
-
-/// Go some steps up and find zelda3.ini
-fn SwitchDirectory() void {
-    var buf: [4096]u8 = undefined;
-    if (getcwd(&buf, buf.len - 32) == null)
-        return;
-    var pos = std.mem.len(@as([*:0]const u8, @ptrCast(&buf)));
-
-    var step: c_int = 0;
-    while (pos != 0 and step < 3) : (step += 1) {
-        @memcpy(buf[pos..][0..12], "/zelda3.ini\x00");
-        const f = fopen(@ptrCast(&buf), "rb");
-        if (f) |file| {
-            _ = fclose(file);
-            buf[pos] = 0;
-            if (step != 0) {
-                _ = printf("Found zelda3.ini in %s\n", &buf);
-                const err = chdir(@ptrCast(&buf));
-                _ = err;
-            }
-            return;
-        }
-        pos -= 1;
-        while (pos != 0 and buf[pos] != '/' and buf[pos] != '\\')
-            pos -= 1;
     }
 }
 

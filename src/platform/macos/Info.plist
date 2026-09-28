@@ -9,7 +9,7 @@
 	<key>CFBundleIdentifier</key>
 	<string>io.github.yeoldpress.alttp-zig</string>
 	<key>CFBundleExecutable</key>
-	<string>zelda3-launcher</string>
+	<string>zelda3</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundlePackageType</key>

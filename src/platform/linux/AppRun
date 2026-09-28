@@ -1,6 +1,5 @@
 #!/bin/sh
-# The AppImage entry point. SDL3 ships inside, in usr/lib, and the launcher
-# passes this environment on to the game it starts.
+# The AppImage entry point. SDL3 ships inside, in usr/lib.
 here="$(dirname "$(readlink -f "$0")")"
 export LD_LIBRARY_PATH="$here/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec "$here/usr/bin/zelda3-launcher" "$@"
+exec "$here/usr/bin/zelda3" "$@"

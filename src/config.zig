@@ -683,6 +683,9 @@ fn handleGeneral(key: [*:0]const u8, value: [*:0]u8) bool {
         return ParseBool(value, &g_config.display_perf_title);
     } else if (util.StringEqualsNoCase(key, "DisableFrameDelay")) {
         return ParseBool(value, &g_config.disable_frame_delay);
+    } else if (util.StringEqualsNoCase(key, "StartMenu")) {
+        // Read by the start menu itself, before the game parses anything.
+        return true;
     } else if (util.StringEqualsNoCase(key, "Rumble")) {
         g_config.rumble = @intCast(std.math.clamp(atoi(value), 0, 100));
         return true;

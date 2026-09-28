@@ -66,6 +66,16 @@ pub fn build(b: *std.Build) void {
         .flags = &c_flags,
     });
 
+    // The shipped zelda3.ini, built into the game so a folder or data
+    // directory without one still starts. @embedFile only reaches files
+    // inside a module's own directory, so the ini goes into a generated
+    // module next to a one-line wrapper.
+    const default_ini_files = b.addWriteFiles();
+    _ = default_ini_files.addCopyFile(b.path("zelda3.ini"), "zelda3.ini");
+    const default_ini = b.createModule(.{
+        .root_source_file = default_ini_files.add("default_ini.zig", "pub const text = @embedFile(\"zelda3.ini\");\n"),
+    });
+
     // The ported modules compile to one object that is linked in alongside the
     // remaining C. Each one exports the same symbols its C file used to.
     const zig_obj = b.addObject(.{
@@ -79,6 +89,7 @@ pub fn build(b: *std.Build) void {
     });
     zig_obj.root_module.addIncludePath(b.path("."));
     zig_obj.root_module.addImport("snes", snes_mod);
+    zig_obj.root_module.addImport("default_ini", default_ini);
     exe.root_module.addObject(zig_obj);
 
     const tests = b.addTest(.{
@@ -91,6 +102,7 @@ pub fn build(b: *std.Build) void {
     });
     tests.root_module.addIncludePath(b.path("."));
     tests.root_module.addImport("snes", snes_mod);
+    tests.root_module.addImport("default_ini", default_ini);
     // Exercise the same C/Zig boundaries as the game while the port is in
     // progress. Real implementations replace the former panic-only stubs.
     tests.root_module.addCSourceFiles(.{
@@ -121,17 +133,21 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(snes_tests).step);
 
-    const launcher_tests = b.addTest(.{
+    // The start menu's tests read the real zelda3.ini and need no game, so
+    // they get a run of their own rooted at the menu.
+    const menu_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/launcher.zig"),
+            .root_source_file = b.path("src/menu.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
         }),
     });
-    addSdlIncludes(b, launcher_tests.root_module);
-    linkSdlLibs(b, launcher_tests.root_module);
-    test_step.dependOn(&b.addRunArtifact(launcher_tests).step);
+    menu_tests.root_module.addIncludePath(b.path("."));
+    menu_tests.root_module.addImport("default_ini", default_ini);
+    addSdlIncludes(b, menu_tests.root_module);
+    linkSdlLibs(b, menu_tests.root_module);
+    test_step.dependOn(&b.addRunArtifact(menu_tests).step);
 
     // The asset tooling needs no SDL; it is plain byte wrangling. Rooting the
     // test at asset_all.zig pulls in every asset module with it.
@@ -174,37 +190,15 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addWin32ResourceFile(.{ .file = b.path("src/platform/win32/zelda3.rc") });
     }
 
-    // The launcher is its own binary: it edits zelda3.ini and starts the game,
-    // so it stays clear of the game's own startup path.
-    const launcher = b.addExecutable(.{
-        .name = "zelda3-launcher",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/launcher.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    addSdlIncludes(b, launcher.root_module);
-    linkSdlLibs(b, launcher.root_module);
-    launcher.headerpad_max_install_names = target.result.os.tag == .macos;
-    b.installArtifact(launcher);
-
-    const launcher_run = b.addRunArtifact(launcher);
-    launcher_run.step.dependOn(b.getInstallStep());
-    if (b.args) |args| launcher_run.addArgs(args);
-    const launcher_step = b.step("launcher", "Build and run the launcher");
-    launcher_step.dependOn(&launcher_run.step);
+    b.installArtifact(exe);
 
     // Making zelda3_assets.dat without opening a window, for a first build or
-    // for CI. The launcher does this itself when the assets are missing.
-    const assets_run = b.addRunArtifact(launcher);
+    // for CI. The start menu does this itself when the assets are missing.
+    const assets_run = b.addRunArtifact(exe);
     assets_run.step.dependOn(b.getInstallStep());
     assets_run.addArg("--build-assets");
     const assets_step = b.step("assets", "Build zelda3_assets.dat from zelda3.sfc");
     assets_step.dependOn(&assets_run.step);
-
-    b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

@@ -1,35 +1,24 @@
-//! A settings front end for zelda3.
+//! The start menu: settings, the ROM and the asset file, before the game.
 //!
-//! Reads zelda3.ini, lets the options be changed with a keyboard or a gamepad,
-//! writes the file back and starts the game. The ini is edited a line at a time
-//! rather than reparsed and regenerated, so the comments that document each
-//! option survive a round trip.
+//! Reads zelda3.ini, lets the options be changed with a keyboard, a gamepad or
+//! a mouse, and writes the file back. The ini is edited a line at a time rather
+//! than reparsed and regenerated, so the comments that document each option
+//! survive a round trip. It runs in its own window before the game sets up its
+//! renderer, then gets out of the way, all in the one process.
 //!
-//! Drawing uses SDL3's built in 8x8 font (SDL_RenderDebugText), so the launcher
+//! Drawing uses SDL3's built in 8x8 font (SDL_RenderDebugText), so the menu
 //! needs no font file and no toolkit - just the SDL the game already links.
 const std = @import("std");
 const builtin = @import("builtin");
 const fileio = @import("fileio.zig");
 const rom_mod = @import("rom.zig");
 const asset_all = @import("asset_all.zig");
+const c = @import("sdl.zig").c;
 
-const c = @cImport({
-    // translate-c cannot parse arm_neon.h, which SDL pulls in on ARM targets.
-    @cDefine("SDL_DISABLE_NEON", "1");
-    // Optimized builds define _FORTIFY_SOURCE, which makes mingw's headers
-    // inline checked wrappers that translate-c turns into unused locals.
-    @cUndef("_FORTIFY_SOURCE");
-    @cInclude("SDL3/SDL.h");
-});
+/// The zelda3.ini this build shipped with, written out whenever there is no
+/// ini to be found, so a fresh folder or data directory still starts.
+const kDefaultIni = @import("default_ini").text;
 
-/// The game binary, expected next to the launcher. Spelled relative on
-/// purpose: the launcher has already moved into its own directory, and a
-/// bare name would let PATH answer instead.
-const kGameExe = if (builtin.os.tag == .windows) ".\\zelda3.exe" else "./zelda3";
-/// kGameExe, unless the launcher is running from an app bundle or AppImage,
-/// in which case it is an absolute path into it. See usePackagedDataDir.
-var g_game_exe: [:0]const u8 = kGameExe;
-var g_game_exe_buf: [4096]u8 = undefined;
 const kRomPath = "zelda3.sfc";
 const kAssetsPath = "zelda3_assets.dat";
 
@@ -108,6 +97,7 @@ const kSectionMark = "\x00SECTION";
 
 const kSettings = [_]Setting{
     .{ .section = kSectionMark, .key = "", .label = "GENERAL", .kind = .text },
+    .{ .section = "General", .key = "StartMenu", .label = "Start Menu", .kind = .toggle },
     .{ .section = "General", .key = "Autosave", .label = "Autosave", .kind = .toggle },
     .{ .section = "General", .key = "DisplayPerfInTitle", .label = "Show FPS In Title", .kind = .toggle },
     .{ .section = "General", .key = "ExtendedAspectRatio", .label = "Aspect Ratio", .kind = .{ .choice = .{ .values = &.{ "4:3", "16:9", "16:10", "18:9" } } } },
@@ -418,7 +408,7 @@ fn screenRange(screen: Screen) struct { from: usize, to: usize } {
     };
 }
 
-const kMainItems = [_][]const u8{ "Settings", "Features", "Save Settings", "Build Assets", "Launch" };
+const kMainItems = [_][]const u8{ "Settings", "Features", "Save Settings", "Build Assets", "Play" };
 const kMainSave = 2;
 const kMainBuild = 3;
 const kMainLaunch = 4;
@@ -636,7 +626,7 @@ pub const AssetState = enum {
 /// builder is known to produce. Reading 668K costs about a millisecond, so
 /// this runs at startup and after every build rather than being cached and
 /// going stale.
-fn checkAssets(alloc: std.mem.Allocator) AssetState {
+pub fn checkAssets(alloc: std.mem.Allocator) AssetState {
     return checkAssetsAt(alloc, kAssetsPath);
 }
 
@@ -724,7 +714,7 @@ fn drawHeader(renderer: *c.SDL_Renderer, screen: Screen) void {
         // everything below starts lower than it used to.
         drawTextCentered(renderer, cx, 36, kColorSelect, "THE LEGEND OF ZELDA", kScale);
         drawTextCentered(renderer, cx, 36 + kRowH, kColorSelect, "A LINK TO THE PAST", kScale);
-        drawTextCentered(renderer, cx, 36 + kRowH * 2, kColorTextDim, "LAUNCHER", kScale);
+        drawTextCentered(renderer, cx, 36 + kRowH * 2, kColorTextDim, "START MENU", kScale);
         fillRect(renderer, 60, 36 + kRowH * 3 + 6, kWindowW - 120, 2, kColorFrame);
         return;
     }
@@ -878,7 +868,7 @@ fn drawModal(renderer: *c.SDL_Renderer, v: View) void {
 
     switch (v.modal) {
         .quit => {
-            drawTextCentered(renderer, cx, box.y + 34, kColorSelect, "LEAVE THE LAUNCHER?", kScale);
+            drawTextCentered(renderer, cx, box.y + 34, kColorSelect, "QUIT THE GAME?", kScale);
             if (v.dirty)
                 drawTextCentered(renderer, cx, box.y + 34 + kRowH, kColorWarn, "UNSAVED CHANGES WILL BE LOST", kScale);
 
@@ -1037,13 +1027,15 @@ fn buildAssets(alloc: std.mem.Allocator) []const u8 {
     defer alloc.free(data);
 
     fileio.writeWholeFile(kAssetsPath, data) catch return "COULD NOT WRITE ASSETS";
-    return "ASSETS BUILT";
+    return kAssetsBuilt;
 }
+
+const kAssetsBuilt = "ASSETS BUILT";
 
 /// Prints what SDL makes of every pad plugged in: its name, and which label
 /// is printed on each face button. Face buttons are routed by label, so this
 /// is the thing to look at when a button does the wrong job.
-fn reportPads() void {
+pub fn reportPads() void {
     configureJoysticks();
     if (!c.SDL_Init(c.SDL_INIT_GAMEPAD)) {
         std.debug.print("could not start SDL: {s}\n", .{c.SDL_GetError()});
@@ -1109,89 +1101,92 @@ fn reportPads() void {
 }
 
 /// A macOS .app bundle and a mounted AppImage are read-only, so the ini, the
-/// assets and the saves cannot sit beside the binaries the way they do in a
-/// plain install. Running from either, this moves into the per-user data
-/// directory instead (~/Library/Application Support/alttp-zig on macOS,
-/// ~/.local/share/alttp-zig on Linux), copies the bundled zelda3.ini there on
-/// the first run, and points g_game_exe at the bundled game. Returns false
-/// when not packaged, leaving the caller to use the binaries' directory.
-fn usePackagedDataDir(alloc: std.mem.Allocator, base: []const u8) bool {
-    // Where the packaging puts the game and the default ini, relative to
-    // SDL's base path. Inside a bundle SDL reports Contents/Resources.
-    const Layout = struct { game: []const u8, ini: []const u8 };
-    const layout: Layout = if (builtin.os.tag == .macos and std.mem.endsWith(u8, base, ".app/Contents/Resources/"))
-        .{ .game = "../MacOS/zelda3", .ini = "zelda3.ini" }
-    else if (builtin.os.tag == .linux and c.SDL_getenv("APPIMAGE") != null)
-        .{ .game = "zelda3", .ini = "../share/alttp-zig/zelda3.ini" }
-    else
-        return false;
-
-    g_game_exe = std.fmt.bufPrintZ(&g_game_exe_buf, "{s}{s}", .{ base, layout.game }) catch return false;
-    var ini_buf: [4096]u8 = undefined;
-    const default_ini = std.fmt.bufPrintZ(&ini_buf, "{s}{s}", .{ base, layout.ini }) catch return false;
-
-    // SDL creates the directory if it is not there yet.
-    const pref = c.SDL_GetPrefPath("", "alttp-zig") orelse {
-        std.debug.print("No data directory: {s}\n", .{c.SDL_GetError()});
-        return false;
-    };
-    defer c.SDL_free(pref);
-    fileio.setWorkingDirectory(pref) catch return false;
-
-    if (!fileio.exists("zelda3.ini")) {
-        const data = fileio.readWholeFile(alloc, default_ini) catch |err| {
-            std.debug.print("Could not read {s}: {s}\n", .{ default_ini, @errorName(err) });
-            return true;
-        };
-        defer alloc.free(data);
-        fileio.writeWholeFile("zelda3.ini", data) catch |err| {
-            std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
-        };
-    }
-    return true;
+/// assets and the saves cannot sit beside the executable there. True when
+/// running from either. Inside a bundle SDL reports Contents/Resources as the
+/// base path; an AppImage's runtime sets APPIMAGE.
+fn isPackaged(base: []const u8) bool {
+    if (builtin.os.tag == .macos) return std.mem.endsWith(u8, base, ".app/Contents/Resources/");
+    if (builtin.os.tag == .linux) return c.SDL_getenv("APPIMAGE") != null;
+    return false;
 }
 
-pub fn main(init: std.process.Init.Minimal) !void {
-    const alloc = std.heap.c_allocator;
-
-    // The game reads zelda3.ini and zelda3_assets.dat from the working
-    // directory, and inherits ours when we start it. Moving into the
-    // directory the binaries were installed to makes the launcher edit the
-    // same files the game will read, whatever directory it was started from.
+/// Moves into the directory the game keeps its files in, whatever directory it
+/// was started from, and remembers where to look for a ROM. That is the
+/// executable's own directory for a plain install, or the per-user data
+/// directory (~/Library/Application Support/alttp-zig on macOS,
+/// ~/.local/share/alttp-zig on Linux) for an app bundle or AppImage. A missing
+/// zelda3.ini is written out from the copy built into the game.
+pub fn enterDataDirectory() void {
     var start_dir_buf: [4096]u8 = undefined;
     const start_dir = fileio.workingDirectory(&start_dir_buf) catch ".";
 
-    if (c.SDL_GetBasePath()) |base| {
-        if (!usePackagedDataDir(alloc, std.mem.span(base)))
-            fileio.setWorkingDirectory(base) catch {};
+    if (c.SDL_GetBasePath()) |base_z| {
+        const base = std.mem.span(base_z);
+        if (isPackaged(base)) {
+            // SDL creates the directory if it is not there yet.
+            if (c.SDL_GetPrefPath("", "alttp-zig")) |pref| {
+                defer c.SDL_free(pref);
+                fileio.setWorkingDirectory(pref) catch {};
+            } else {
+                std.debug.print("No data directory: {s}\n", .{c.SDL_GetError()});
+            }
+        } else {
+            fileio.setWorkingDirectory(base_z) catch {};
+        }
+    }
+
+    if (!fileio.exists("zelda3.ini")) {
+        fileio.writeWholeFile("zelda3.ini", kDefaultIni) catch |err| {
+            std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
+        };
     }
 
     g_rom_path = findRom(start_dir, &g_rom_buf);
+}
 
-    // Building the assets without opening a window, for scripts and for
-    // checking the result against the Python tool's output.
-    // iterateAllocator rather than iterate: on Windows the command line
-    // arrives as one string that has to be split and decoded, so the
-    // plain iterator is a compile error there. Elsewhere the allocator
-    // goes unused.
-    var args = try init.args.iterateAllocator(alloc);
-    defer args.deinit();
-    _ = args.next();
-    while (args.next()) |a| {
-        if (std.mem.eql(u8, a, "--build-assets")) {
-            const msg = buildAssets(alloc);
-            std.debug.print("{s}\n", .{msg});
-            if (!fileio.exists(kAssetsPath)) return error.BuildFailed;
-            return;
-        }
-        if (std.mem.eql(u8, a, "--pad-info")) {
-            reportPads();
-            return;
-        }
-        std.debug.print("unknown option: {s}\n", .{a});
-        return error.BadUsage;
+extern fn puts(s: [*:0]const u8) c_int;
+
+/// The directory enterDataDirectory settled on, for --data-dir. On stdout,
+/// so a script can capture it.
+pub fn printDataDirectory() void {
+    var buf: [4096]u8 = undefined;
+    const dir = fileio.workingDirectory(&buf) catch ".";
+    _ = puts(dir.ptr);
+}
+
+/// Builds the asset file without opening a window, for scripts and for
+/// checking the result against the Python tool's output. False when nothing
+/// was built, even if an older asset file is sitting there.
+pub fn buildAssetsFromCommandLine(alloc: std.mem.Allocator) bool {
+    const msg = buildAssets(alloc);
+    std.debug.print("{s}\n", .{msg});
+    return msg.ptr == kAssetsBuilt.ptr;
+}
+
+/// Whether zelda3.ini asks for the start menu. Missing or unreadable counts as
+/// yes, since the menu is the way back to a working setup.
+pub fn wantsStartMenu(alloc: std.mem.Allocator) bool {
+    var ini = Ini.load(alloc, "zelda3.ini") catch return true;
+    defer ini.deinit();
+    const at = settingIndex("General", "StartMenu") orelse return true;
+    const value = ini.values[at] orelse return true;
+    return !std.mem.eql(u8, std.mem.trim(u8, value, " \t"), "0");
+}
+
+fn settingIndex(section: []const u8, key: []const u8) ?usize {
+    for (kSettings, 0..) |st, i| {
+        if (std.mem.eql(u8, st.section, section) and std.mem.eql(u8, st.key, key)) return i;
     }
+    return null;
+}
 
+pub const Outcome = enum { play, quit };
+
+/// Runs the start menu until the player picks Play or leaves. SDL is started
+/// and shut down in here, so the game sets it up afresh for its own window.
+/// With assets that are missing or don't match, it opens on the ROM question,
+/// and Play won't hand over to the game until the asset file checks out.
+pub fn run(alloc: std.mem.Allocator) !Outcome {
     var ini = Ini.load(alloc, "zelda3.ini") catch |err| {
         std.debug.print("Could not read zelda3.ini: {s}\n", .{@errorName(err)});
         return err;
@@ -1205,7 +1200,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
     defer c.SDL_Quit();
 
-    const window = c.SDL_CreateWindow("The Legend of Zelda: A Link to the Past - Launcher", kWindowW, kWindowH, 0) orelse {
+    const window = c.SDL_CreateWindow("The Legend of Zelda: A Link to the Past", kWindowW, kWindowH, 0) orelse {
         std.debug.print("Failed to create window: {s}\n", .{c.SDL_GetError()});
         return error.SdlWindow;
     };
@@ -1242,6 +1237,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var launch = false;
     var status: []const u8 = "";
     var assets = checkAssets(alloc);
+    if (assets != .verified) {
+        modal = .rom;
+        main_cursor = kMainLaunch;
+    }
     var running = true;
     var event: c.SDL_Event = undefined;
 
@@ -1479,9 +1478,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         };
                         dirty = false;
 
-                        // The game cannot start without its assets, so ask
-                        // for a ROM rather than letting it fail.
-                        if (assets == .missing) {
+                        // The game cannot start without its assets, and stale
+                        // ones misbehave in ways that look like game bugs, so
+                        // ask for a ROM rather than letting either through.
+                        if (assets != .verified) {
                             modal = .rom;
                         } else {
                             launch = true;
@@ -1557,8 +1557,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
             status = buildAssets(alloc);
             assets = checkAssets(alloc);
 
-            // Enter on Launch with no assets builds them and then goes.
-            if (main_cursor == kMainLaunch and screen == .main and assets != .missing) {
+            // Enter on Play with no assets builds them and then goes.
+            if (main_cursor == kMainLaunch and screen == .main and assets == .verified) {
                 launch = true;
                 running = false;
             }
@@ -1568,20 +1568,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         c.SDL_Delay(16);
     }
 
-    if (launch) {
-        // --config keeps the game in our working directory rather than
-        // moving into its own, which inside a bundle is read-only.
-        const argv = [_:null]?[*:0]const u8{ g_game_exe, "--config", "zelda3.ini", null };
-        const proc = c.SDL_CreateProcess(@ptrCast(&argv), false) orelse {
-            std.debug.print("Could not start {s}: {s}\n", .{ g_game_exe, c.SDL_GetError() });
-            return error.LaunchFailed;
-        };
-        // Wait so the launcher's window is gone but the shell still blocks on
-        // the game, which is what someone running this from a terminal expects.
-        var exitcode: c_int = 0;
-        _ = c.SDL_WaitProcess(proc, true, &exitcode);
-        c.SDL_DestroyProcess(proc);
-    }
+    return if (launch) .play else .quit;
 }
 
 // ------------------------------------------------------------------- tests
@@ -1760,12 +1747,12 @@ test "the on-screen strings fit the window" {
         // Headers.
         "THE LEGEND OF ZELDA",
         "A LINK TO THE PAST",
-        "LAUNCHER",
+        "START MENU",
         "LEFT/RIGHT CHOOSE",
         "A/ENTER CONFIRM   B/ESC CANCEL",
         "DROP A FILE ON THE WINDOW",
         "B/ESC CANCEL",
-        "LEAVE THE LAUNCHER?",
+        "QUIT THE GAME?",
         "UNSAVED CHANGES WILL BE LOST",
         "DROP A ROM ON THIS WINDOW",
         "ANY .SFC FILE - THE NAME DOES",

@@ -6,8 +6,8 @@ This is a fork of [snesrev/zelda3](https://github.com/snesrev/zelda3). The
 reimplementation is theirs: years of reverse engineering by snesrev and a long
 list of contributors, written in C, covering every part of the game from the
 title screen to the credits. I ported all of it to Zig and then kept going. It
-has its own launcher now, and it builds its own asset file straight out of a
-ROM, so Python isn't part of the picture anymore.
+has a start menu built in now, and it builds its own asset file straight out
+of a ROM, so Python isn't part of the picture anymore.
 
 You bring your own US ROM. No game data ships here, and once the assets are
 built the ROM isn't needed again.
@@ -20,7 +20,7 @@ https://discord.gg/AJJbJAzNNJ
 [Releases](https://github.com/YeOldPress/alttp-zig/releases) have a macOS app
 (Apple Silicon, macOS 11 or newer), a Linux AppImage (x86_64, glibc 2.35 or
 newer, so Ubuntu 22.04 and anything after it) and a Windows zip. SDL3 is inside
-all three. Start it, give it your ROM, press Launch.
+all three. Start it, give it your ROM, press Play.
 
 The app and the AppImage can't write inside themselves, so they keep
 `zelda3.ini`, `zelda3_assets.dat` and your saves in a data directory instead:
@@ -48,15 +48,15 @@ Then:
 ```sh
 git clone https://github.com/YeOldPress/alttp-zig
 cd alttp-zig
-zig build
-zig build launcher
+zig build run
 ```
 
-Drop your ROM at `zelda3.sfc` in the repository root before you start the
-launcher, or just drag it onto the window when it asks. Press Launch: it builds
-the assets if they're missing and starts the game.
+Drop your ROM at `zelda3.sfc` in the repository root before you start it, or
+just drag it onto the window when it asks. Press Play: it builds the assets if
+they're missing and starts the game.
 
-The binaries land in `zig-out/bin` as `zelda3` and `zelda3-launcher`.
+The game lands in `zig-out/bin` as `zelda3`. That's the whole thing: one
+executable, with the menu, the asset builder and the game all inside it.
 
 ### On Windows
 
@@ -89,17 +89,22 @@ zig build -Dtarget=x86_64-windows -Dsdl-include=... -Dsdl-lib=...
 
 ```sh
 zig build test                     # the port's own tests
-zig build run                      # skip the launcher, run the game
+zig build run                      # build and start the game
 zig build assets                   # build zelda3_assets.dat, no window
 zig build -Doptimize=ReleaseSafe   # if the debug build is too slow for you
 ```
 
-## The launcher
+## The start menu
 
-`zig-out/bin/zelda3-launcher`, or `zig build launcher`. It edits `zelda3.ini`,
-builds the asset file and starts the game. It draws with SDL's built-in 8x8
-font, so there's no toolkit and no font file to ship, just the SDL the game
-already links.
+`zelda3` opens on it. It edits `zelda3.ini` and builds the asset file, and when
+you press Play it closes and the game opens in its place, in the same process.
+It draws with SDL's built-in 8x8 font, so there's no toolkit and no font file
+to ship, just the SDL the game already links.
+
+Set `StartMenu = 0` in `[General]` (or turn off Start Menu under Settings) to
+go straight into the game. The menu shows up anyway if the asset file is
+missing or doesn't match, because the game won't start on assets it can't
+vouch for.
 
 | Menu entry | What it does |
 | --- | --- |
@@ -107,7 +112,7 @@ already links.
 | Features | The extras listed under [What's different](#whats-different-from-the-original) |
 | Save Settings | Writes `zelda3.ini` |
 | Build Assets | Asks for a ROM, then builds `zelda3_assets.dat` |
-| Launch | Saves the ini and starts the game |
+| Play | Saves the ini and starts the game |
 
 | | Keyboard | Gamepad | Mouse |
 | --- | --- | --- | --- |
@@ -120,9 +125,9 @@ already links.
 Pad faces are read by the label printed on them rather than by position, so on
 a Nintendo pad the button its case calls A is the one that selects. This sounds
 like a detail and cost me an evening, because getting it wrong meant pressing A
-on the main menu closed the launcher.
+on the main menu closed the whole thing.
 
-Under the Launch button it tells you what state the asset file is in:
+Under the Play button it tells you what state the asset file is in:
 
 - **ASSETS VERIFIED**, it matches the digest the importer produces
 - **ASSETS PRESENT - CHECKSUM DIFFERS**, something else is there, usually an
@@ -143,9 +148,12 @@ gets rewritten a line at a time, so its comments and layout survive the trip.
 
 ## Playing
 
-Run `zelda3` from the directory holding `zelda3.ini` and `zelda3_assets.dat`.
-The launcher moves there for you; if you're starting the game yourself, that's
-`zig-out/bin`, or the data directory above for the app and the AppImage.
+`zelda3` moves into the directory holding `zelda3.ini` and `zelda3_assets.dat`
+before it reads anything, so it doesn't matter where you start it from. That's
+its own directory (`zig-out/bin` for a build from source), or the data
+directory above for the app and the AppImage. `zelda3 --data-dir` prints which.
+If there's no `zelda3.ini` there, it writes out the default one it was built
+with.
 
 | Button | Key |
 | ------ | ----------- |
@@ -188,13 +196,18 @@ Rebindable in `zelda3.ini`, along with the gamepad.
 `LoadRef` and `ReplayRef` put the dungeon playthrough snapshots on 1-9. They
 ship commented out in `zelda3.ini`.
 
-Two arguments worth knowing:
+Arguments worth knowing:
 
 - `zelda3 <rom>` runs the original machine code alongside the port and compares
   the whole RAM state every frame. This is how the port gets verified, and it's
-  how most of the bugs in it were found.
-- `zelda3 --config <path>` reads a different ini. Without it the game moves to
-  its own directory first.
+  how most of the bugs in it were found. It skips the start menu.
+- `zelda3 --config <path>` reads a different ini, from the directory you're in,
+  and skips the start menu. Without it the game moves to its own directory
+  first.
+- `zelda3 --build-assets` builds `zelda3_assets.dat` and exits.
+- `zelda3 --data-dir` prints where the ini, assets and saves live.
+- `zelda3 --pad-info` lists the connected pads and what SDL makes of their
+  buttons.
 
 Snapshots save the joypad input history too, so you can replay a whole
 playthrough in turbo mode and check the game still does exactly what it did.
@@ -238,7 +251,7 @@ levels, graphics, music, text. Building it is a one-off.
 zig build assets    # no window
 ```
 
-or let the launcher do it. The importer is Zig, it takes about a tenth of a
+or let the start menu do it. The importer is Zig, it takes about a tenth of a
 second, and the file it writes is byte-for-byte the one `assets/restool.py`
 used to produce. There's a test pinning that digest, because "close enough" on
 an asset file means bugs that look like game bugs.
@@ -284,7 +297,7 @@ most of a screen the wrong way whenever a Debirando pit pulled at him.
 
 All of this is inherited from upstream. The presentation options live in
 `[General]`, `[Graphics]` and `[Sound]` in `zelda3.ini`; the gameplay toggles
-are in `[Features]`, which is the launcher's Features screen.
+are in `[Features]`, which is the start menu's Features screen.
 
 - Widescreen, 16:9, 16:10 or 18:9, and a higher resolution world map
 - Pixel shaders
