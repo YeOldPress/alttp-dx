@@ -158,9 +158,56 @@ pub const kSettings = [_]Setting{
 
 // ------------------------------------------------------------- ini editing
 
+/// Where one setting sits in the zelda3.ini built into the game: its value,
+/// and the comment block above it, as line numbers into kDefaultIni.
+const DefaultEntry = struct { value: []const u8, comment_from: usize, key_line: usize };
+
+fn defaultEntry(section: []const u8, key: []const u8) ?DefaultEntry {
+    var cur: []const u8 = "";
+    var comment_from: ?usize = null;
+    var idx: usize = 0;
+    var it = std.mem.splitScalar(u8, kDefaultIni, '\n');
+    while (it.next()) |raw| : (idx += 1) {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) {
+            comment_from = null;
+        } else if (line[0] == '#' or line[0] == ';') {
+            if (comment_from == null) comment_from = idx;
+        } else if (line[0] == '[') {
+            cur = std.mem.trim(u8, line[1..], "]");
+            comment_from = null;
+        } else if (std.mem.indexOfScalar(u8, line, '=')) |eq| {
+            const k = std.mem.trim(u8, line[0..eq], " \t");
+            if (std.mem.eql(u8, cur, section) and std.mem.eql(u8, k, key)) {
+                return .{
+                    .value = std.mem.trim(u8, line[eq + 1 ..], " \t"),
+                    .comment_from = comment_from orelse idx,
+                    .key_line = idx,
+                };
+            }
+            comment_from = null;
+        }
+    }
+    return null;
+}
+
+fn defaultIniLine(n: usize) []const u8 {
+    var it = std.mem.splitScalar(u8, kDefaultIni, '\n');
+    var i: usize = 0;
+    while (it.next()) |raw| : (i += 1) {
+        if (i == n) return std.mem.trimEnd(u8, raw, "\r");
+    }
+    return "";
+}
+
 /// The ini kept as its original lines, with each setting bound to the line it
 /// came from. Values are rewritten in place so comments, blank lines, ordering
 /// and line endings all survive.
+///
+/// A file written before a setting existed simply doesn't have it. Such a
+/// setting shows the built-in default, which is what the game uses when the
+/// key is missing, and if it's changed, saving adds it to the end of its
+/// section along with the comment that explains it.
 pub const Ini = struct {
     alloc: std.mem.Allocator,
     text: []u8,
@@ -186,7 +233,8 @@ pub const Ini = struct {
             try self.lines.append(alloc, std.mem.trimEnd(u8, raw, "\r"));
 
         // Walk the file once, tracking the section, and bind each setting to
-        // the line that carries it.
+        // the line that carries it. Anything the file lacks falls back to the
+        // built-in default afterwards.
         var section: []const u8 = "";
         for (self.lines.items, 0..) |line, idx| {
             const trimmed = std.mem.trim(u8, line, " \t");
@@ -207,7 +255,55 @@ pub const Ini = struct {
                 }
             }
         }
+        for (kSettings, 0..) |s, si| {
+            if (self.line_of[si] != null or isSection(s)) continue;
+            if (defaultEntry(s.section, s.key)) |d| self.values[si] = try alloc.dupe(u8, d.value);
+        }
         return self;
+    }
+
+    /// A setting the file doesn't carry, set to something other than the
+    /// built-in default, so saving has to add it.
+    fn needsAdding(self: *const Ini, si: usize) bool {
+        if (self.line_of[si] != null or isSection(kSettings[si])) return false;
+        const v = self.values[si] orelse return false;
+        const d = defaultEntry(kSettings[si].section, kSettings[si].key) orelse return true;
+        return !std.mem.eql(u8, std.mem.trim(u8, v, " \t"), d.value);
+    }
+
+    /// The line the section's additions go in front of: after its last
+    /// setting or comment, ahead of the blank lines that lead to the next
+    /// section. Null when the file has no such section.
+    fn sectionEnd(self: *const Ini, section: []const u8) ?usize {
+        var in_section = false;
+        var last_content: ?usize = null;
+        for (self.lines.items, 0..) |line, idx| {
+            const trimmed = std.mem.trim(u8, line, " \t");
+            if (trimmed.len != 0 and trimmed[0] == '[') {
+                if (in_section) break;
+                in_section = std.mem.eql(u8, std.mem.trim(u8, trimmed[1..], "]"), section);
+                if (in_section) last_content = idx;
+                continue;
+            }
+            if (in_section and trimmed.len != 0) last_content = idx;
+        }
+        return if (last_content) |l| l + 1 else null;
+    }
+
+    fn appendAddition(self: *const Ini, out: *std.ArrayList(u8), si: usize, eol: []const u8) !void {
+        const s = kSettings[si];
+        try out.appendSlice(self.alloc, eol);
+        if (defaultEntry(s.section, s.key)) |d| {
+            var n = d.comment_from;
+            while (n < d.key_line) : (n += 1) {
+                try out.appendSlice(self.alloc, defaultIniLine(n));
+                try out.appendSlice(self.alloc, eol);
+            }
+        }
+        try out.appendSlice(self.alloc, s.key);
+        try out.appendSlice(self.alloc, " = ");
+        try out.appendSlice(self.alloc, self.values[si].?);
+        try out.appendSlice(self.alloc, eol);
     }
 
     pub fn deinit(self: *Ini) void {
@@ -227,7 +323,17 @@ pub const Ini = struct {
         defer out.deinit(self.alloc);
         const eol: []const u8 = if (self.crlf) "\r\n" else "\n";
 
+        // Where each missing setting goes, if its section is in the file.
+        var insert_before: [kSettings.len]?usize = @splat(null);
+        for (0..kSettings.len) |si| {
+            if (self.needsAdding(si)) insert_before[si] = self.sectionEnd(kSettings[si].section);
+        }
+
         for (self.lines.items, 0..) |line, idx| {
+            for (0..kSettings.len) |si| {
+                if (self.needsAdding(si) and insert_before[si] == idx)
+                    try self.appendAddition(&out, si, eol);
+            }
             var written = false;
             for (0..kSettings.len) |si| {
                 if (self.line_of[si] != idx) continue;
@@ -248,7 +354,29 @@ pub const Ini = struct {
             if (!written) try out.appendSlice(self.alloc, line);
             if (idx + 1 < self.lines.items.len) try out.appendSlice(self.alloc, eol);
         }
+
+        // Settings whose section ends the file, or isn't in it at all.
+        var last_section: []const u8 = "";
+        for (0..kSettings.len) |si| {
+            if (!self.needsAdding(si)) continue;
+            if (insert_before[si]) |at| if (at < self.lines.items.len) continue;
+            const section = kSettings[si].section;
+            if (insert_before[si] == null and !std.mem.eql(u8, section, last_section)) {
+                try out.appendSlice(self.alloc, eol);
+                try out.append(self.alloc, '[');
+                try out.appendSlice(self.alloc, section);
+                try out.append(self.alloc, ']');
+                last_section = section;
+            }
+            try self.appendAddition(&out, si, eol);
+        }
         try fileio.writeWholeFile(path, out.items);
+
+        // Read it back, so the added lines are bound to their settings and a
+        // second save changes them in place rather than adding them again.
+        const reread = try Ini.load(self.alloc, path);
+        self.deinit();
+        self.* = reread;
     }
 };
 
@@ -1964,4 +2092,37 @@ test "a click on a list row picks that row" {
     // Above and below the list is nothing at all.
     try testing.expect(listRowAt(v, kListStartY - 20) == null);
     try testing.expect(listRowAt(v, kListStartY + kRowH * kVisibleRows + 40) == null);
+}
+
+test "a setting the file lacks shows its default and is added when changed" {
+    // The menu's tests run in two test binaries at once, so the scratch file
+    // is named per process.
+    var path_buf: [64]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buf, "zig-cache-missing-key-{d}.ini", .{std.c.getpid()});
+    defer _ = fileio.remove(path);
+    // An ini from before StartMenu and Rumble existed.
+    try fileio.writeWholeFile(path, "[General]\n# Automatically save state\nAutosave = 0\n\n[Graphics]\nWindowScale = 3\n");
+
+    var ini = try Ini.load(testing.allocator, path);
+    defer ini.deinit();
+    const start_menu = settingIndex("General", "StartMenu").?;
+    const rumble = settingIndex("General", "Rumble").?;
+    try testing.expectEqualStrings("1", ini.values[start_menu].?);
+    try testing.expectEqualStrings("100%", ini.values[rumble].?);
+
+    // Unchanged defaults stay out of the file; a change goes into its section.
+    try ini.set(start_menu, "0");
+    try ini.save(path);
+    try ini.save(path); // a second save must not add it again
+    const text = try fileio.readWholeFile(testing.allocator, path);
+    defer testing.allocator.free(text);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, text, "StartMenu = 0"));
+    try testing.expect(std.mem.indexOf(u8, text, "Rumble") == null);
+    try testing.expect(std.mem.indexOf(u8, text, "StartMenu = 0").? < std.mem.indexOf(u8, text, "[Graphics]").?);
+
+    // And it reads back as set, bound to its new line.
+    var again = try Ini.load(testing.allocator, path);
+    defer again.deinit();
+    try testing.expectEqualStrings("0", again.values[start_menu].?);
+    try testing.expect(again.line_of[start_menu] != null);
 }
