@@ -714,6 +714,11 @@ pub fn lastSoundEffect1() u8 {
     return g_apu_write.ports[2];
 }
 
+/// The same for the second sound effect port.
+pub fn lastSoundEffect2() u8 {
+    return g_apu_write.ports[3];
+}
+
 pub export fn ZeldaPushApuState() callconv(.c) void {
     ZeldaApuLock();
     g_apu_write_ents[g_apu_write_ent_pos & 0xf] = g_apu_write;

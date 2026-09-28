@@ -691,7 +691,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         c.SDL_UnlockMutex(g_audio_mutex);
 
         // A replay is someone else's playthrough, so it doesn't shake the pad.
-        if (is_replay) rumble.reset() else rumble.afterFrame(audio.lastSoundEffect1());
+        if (is_replay) rumble.reset() else rumble.afterFrame(audio.lastSoundEffect1(), audio.lastSoundEffect2());
 
         frameCtr +%= 1;
 

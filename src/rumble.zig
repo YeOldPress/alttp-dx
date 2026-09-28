@@ -18,6 +18,12 @@ const kSfx1_Explosion = 0x0c;
 /// statues, gravestones, Somaria blocks, pull switches, the Swamp Palace
 /// levers and the Sanctuary's sliding mantle all play it.
 const kSfx1_Moving = 0x22;
+/// The chest-opening fanfare, which a chest plays along with the door sound.
+const kSfx1_Chest = 0x29;
+/// The second sound effect port's id for a door sliding open: shutters,
+/// including the ones floor switches work, key doors, and the eye and torch
+/// doors. Opening a chest plays it too, alongside kSfx1_Chest.
+const kSfx2_DoorOpens = 0x15;
 
 /// Link's arrows live in the ancilla slots: type 9 while one flies, turning
 /// to 10 on the frame it lands, which is when it thuds. The archers' arrows
@@ -49,6 +55,10 @@ fn inGameplay(module: u8) bool {
     return module == 0x07 or module == 0x09 or module == 0x0b;
 }
 
+/// When the countdown last read is at or below this, the boss vanishing next
+/// is the natural end of its explosion rather than the room going away.
+const kBossVanishes = 40;
+
 /// The frames left on a boss's death explosion, or null if nothing is dying.
 /// The boss sits in the explode state (4) with sprite_A clear, counting down
 /// from 224 (255 for some) until it vanishes at 32. The puffs of smoke it
@@ -75,9 +85,15 @@ var g_prev_health: u8 = 0;
 var g_prev_module: u8 = 0;
 /// Frames until a running screen shake gets its rumble topped up.
 var g_shake_refresh: u8 = 0;
-/// The same for a boss blowing up, and whether one was last frame.
+/// The shake offsets last frame, and how many more frames to count the
+/// screen as shaking since they last moved. Every shake flips them each
+/// frame; one that sits still is a leftover, like the pixel the Armos
+/// Knights leave behind if the last one dies mid ground-pound.
+var g_prev_shake: u32 = 0;
+var g_shake_hold: u8 = 0;
+/// The same refresh for a boss blowing up, and its countdown last frame.
 var g_boss_refresh: u8 = 0;
-var g_boss_was_dying = false;
+var g_prev_boss: ?u8 = null;
 /// When the effect sent last runs out, and how strong it was, so a weak shake
 /// refresh does not cut off a bomb that is still going.
 var g_busy_until: u64 = 0;
@@ -88,19 +104,24 @@ var g_busy_low: u16 = 0;
 pub fn reset() void {
     g_prev_module = 0;
     g_shake_refresh = 0;
+    g_shake_hold = 0;
     g_boss_refresh = 0;
-    g_boss_was_dying = false;
+    g_prev_boss = null;
     g_prev_ancilla_type = @splat(0);
 }
 
-/// Called after every frame the game runs. `sfx1` is the value the frame
-/// sent to the first sound effect port.
-pub fn afterFrame(sfx1: u8) void {
+/// Called after every frame the game runs. `sfx1` and `sfx2` are the values
+/// the frame sent to the two sound effect ports.
+pub fn afterFrame(sfx1: u8, sfx2: u8) void {
     const module = vars.main_module_index.*;
     const health = vars.link_health_current.*;
+    const shake = @as(u32, vars.bg1_x_offset.*) << 16 | vars.bg1_y_offset.*;
+    const boss = bossDeathCountdown();
     defer {
         g_prev_module = module;
         g_prev_health = health;
+        g_prev_shake = shake;
+        g_prev_boss = boss;
         @memcpy(&g_prev_ancilla_type, vars.ancilla_type[0..kAncillaSlots]);
     }
     const strength = config.g_config.rumble;
@@ -124,6 +145,9 @@ pub fn afterFrame(sfx1: u8) void {
         else => {},
     }
 
+    if (sfx2 & 0x3f == kSfx2_DoorOpens and sfx1 & 0x3f != kSfx1_Chest)
+        effect = effect.max(.{ .low = 0x5800, .high = 0x1800, .ms = 300 });
+
     // A short thud, a little firmer when the arrow finds an enemy.
     switch (arrowLanding()) {
         .none => {},
@@ -131,7 +155,7 @@ pub fn afterFrame(sfx1: u8) void {
         .enemy => effect = effect.max(.{ .low = 0x7000, .high = 0x3000, .ms = 110 }),
     }
 
-    if (vars.bg1_x_offset.* != 0 or vars.bg1_y_offset.* != 0) {
+    if (screenShaking(shake)) {
         if (g_shake_refresh == 0) {
             effect = effect.max(.{ .low = 0x5000, .high = 0x2000, .ms = 150 });
             g_shake_refresh = 6;
@@ -142,8 +166,11 @@ pub fn afterFrame(sfx1: u8) void {
     }
 
     // A boss dying builds from a strong rumble to everything the pad has,
-    // then lands one big thump when it disappears.
-    if (bossDeathCountdown()) |left| {
+    // then lands one big thump when it disappears. A countdown that isn't
+    // moving means the game has frozen sprites, for a message or an item,
+    // and that shouldn't rumble on and on either.
+    if (boss != null and boss != g_prev_boss) {
+        const left = boss.?;
         if (g_boss_refresh == 0) {
             const progress: u32 = 224 - @as(u32, @max(@min(left, 224), 32));
             effect = effect.max(.{
@@ -154,12 +181,10 @@ pub fn afterFrame(sfx1: u8) void {
             g_boss_refresh = 6;
         }
         g_boss_refresh -= 1;
-        g_boss_was_dying = true;
     } else {
-        if (g_boss_was_dying)
+        if (boss == null and g_prev_boss != null and g_prev_boss.? <= kBossVanishes)
             effect = effect.max(.{ .low = 0xffff, .high = 0xffff, .ms = 700 });
         g_boss_refresh = 0;
-        g_boss_was_dying = false;
     }
 
     if (effect.ms == 0) return;
@@ -168,6 +193,17 @@ pub fn afterFrame(sfx1: u8) void {
     g_busy_until = now + effect.ms;
     g_busy_low = effect.low;
     send(scale(effect.low, strength), scale(effect.high, strength), effect.ms);
+}
+
+/// Whether the screen is shaking, given this frame's shake offsets. It counts
+/// as shaking for a few frames after the offsets last moved.
+fn screenShaking(shake: u32) bool {
+    if (shake != g_prev_shake) {
+        g_shake_hold = 4;
+    } else if (g_shake_hold != 0) {
+        g_shake_hold -= 1;
+    }
+    return g_shake_hold != 0;
 }
 
 fn scale(v: u16, percent: u8) u16 {
@@ -233,4 +269,25 @@ test "an arrow thuds once, on the frame it lands" {
     vars.ancilla_type[5] = kAncilla_ArrowStuck;
     vars.ancilla_S[5] = 4;
     try std.testing.expectEqual(Landing.enemy, arrowLanding());
+}
+
+test "a shake that stops moving stops rumbling" {
+    reset();
+    g_prev_shake = 0;
+
+    // A real shake flips every frame and keeps going.
+    for (0..20) |n| {
+        const shake: u32 = if (n & 1 != 0) 0xffff else 1;
+        try std.testing.expect(screenShaking(shake));
+        g_prev_shake = shake;
+    }
+
+    // The Armos Knights' leftover pixel: stuck at one value, it winds down
+    // within a few frames and stays quiet.
+    var frames: usize = 0;
+    while (screenShaking(1)) : (frames += 1) {
+        g_prev_shake = 1;
+        try std.testing.expect(frames < 8);
+    }
+    for (0..100) |_| try std.testing.expect(!screenShaking(1));
 }
