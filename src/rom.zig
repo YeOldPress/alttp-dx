@@ -10,12 +10,21 @@ pub const Language = enum { us, de, fr, fr_c, en, es, pl, pt, redux, nl, sv };
 
 const KnownRom = struct { sha1: *const [40]u8, lang: Language, name: []const u8 };
 
-/// The ROMs the resource tool knows how to read. Only `us` is supported on
-/// the default path; the rest matter when building extra languages.
+/// The ROMs the tools know. Only `us` can build the assets; the rest supply
+/// their dialogue and font as extra languages.
 pub const kKnownRoms = [_]KnownRom{
     .{ .sha1 = "6D4F10A8B10E10DBE624CB23CF03B88BB8252973", .lang = .us, .name = "Legend of Zelda, The - A Link to the Past (USA)" },
     .{ .sha1 = "2E62494967FB0AFDF5DA1635607F9641DF7C6559", .lang = .de, .name = "Legend of Zelda, The - A Link to the Past (Germany)" },
     .{ .sha1 = "229364A1B92A05167CD38609B1AA98F7041987CC", .lang = .fr, .name = "Legend of Zelda, The - A Link to the Past (France)" },
+    .{ .sha1 = "C1C6C7F76FFF936C534FF11F87A54162FC0AA100", .lang = .fr_c, .name = "Legend of Zelda, The - A Link to the Past (Canada)" },
+    .{ .sha1 = "7C073A222569B9B8E8CA5FCB5DFEC3B5E31DA895", .lang = .en, .name = "Legend of Zelda, The - A Link to the Past (Europe)" },
+    .{ .sha1 = "461FCBD700D1332009C0E85A7A136E2A8E4B111E", .lang = .es, .name = "Spanish - https://www.romhacking.net/translations/2195/" },
+    .{ .sha1 = "3C4D605EEFDA1D76F101965138F238476655B11D", .lang = .pl, .name = "Polish - https://www.romhacking.net/translations/5760/" },
+    .{ .sha1 = "D0D09ED41F9C373FE6AFDCCAFBF0DA8C88D3D90D", .lang = .pt, .name = "Portuguese - https://www.romhacking.net/translations/6530/" },
+    .{ .sha1 = "B2A07A59E64C498BC1B2F28728F9BF4014C8D582", .lang = .redux, .name = "English Redux - https://www.romhacking.net/translations/6657/" },
+    .{ .sha1 = "9325C22EB0A2A1F0017157C8B620BC3A605CEDE1", .lang = .redux, .name = "English Redux - https://www.romhacking.net/hacks/2594/" },
+    .{ .sha1 = "FA8ADFDBA2697C9A54D583A1284A22AC764C7637", .lang = .nl, .name = "Dutch - https://www.romhacking.net/translations/1124/" },
+    .{ .sha1 = "43CD3438469B2C3FE879EA2F410B3EF3CB3F1CA4", .lang = .sv, .name = "Swedish - https://www.romhacking.net/translations/982/" },
 };
 
 pub const Rom = struct {
@@ -51,6 +60,14 @@ pub const Rom = struct {
         var language: ?Language = null;
         for (kKnownRoms) |k| {
             if (std.mem.eql(u8, &hex, k.sha1)) language = k.lang;
+        }
+
+        // The Swedish translation's patch leaves a stray 0x200 bytes at the
+        // front that the size test above can't spot.
+        if (language == .sv and bytes.len == 0x10083b) {
+            const stripped = try alloc.dupe(u8, bytes[0x200..]);
+            alloc.free(bytes);
+            bytes = stripped;
         }
 
         return .{ .bytes = bytes, .language = language, .alloc = alloc };

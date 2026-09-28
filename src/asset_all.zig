@@ -74,12 +74,13 @@ const kEntranceFields = [_][]const u8{
 
 pub fn buildAll(alloc: std.mem.Allocator, rom: Rom) !Assets {
     var problem = import_mod.Problem{};
-    return buildFrom(alloc, rom, null, &problem);
+    return buildFrom(alloc, rom, null, &.{}, &problem);
 }
 
 /// Builds every asset, taking the editable ones from `files` when given and
-/// from the ROM otherwise. The order below is the file format.
-pub fn buildFrom(alloc: std.mem.Allocator, rom: Rom, files: ?*const import_mod.Files, problem: *import_mod.Problem) !Assets {
+/// from the ROM otherwise, with `languages` built in after the US dialogue.
+/// The order below is the file format.
+pub fn buildFrom(alloc: std.mem.Allocator, rom: Rom, files: ?*const import_mod.Files, languages: []const dialogue.Input, problem: *import_mod.Problem) !Assets {
     var b = Builder{ .alloc = alloc, .rom = rom, .list = .empty };
     const out = import_mod.Out{ .alloc = alloc, .list = &b.list };
     errdefer {
@@ -119,7 +120,7 @@ pub fn buildFrom(alloc: std.mem.Allocator, rom: Rom, files: ?*const import_mod.F
     } else try b.add("kSprGfx", .packed_arrays, try build_mod.buildSprGfx(alloc, rom));
     try b.add("kBgGfx", .packed_arrays, try build_mod.buildBgGfx(alloc, rom));
 
-    try addMiscAndOverworld(&b, alloc, rom, files, out, problem);
+    try addMiscAndOverworld(&b, alloc, rom, files, languages, out, problem);
     return .{ .items = try b.list.toOwnedSlice(alloc), .alloc = alloc };
 }
 
@@ -166,7 +167,7 @@ fn addDungeonRoomsFromRom(b: *Builder, alloc: std.mem.Allocator, rom: Rom) !void
     try b.addMany("", &.{ "kDungAttrsForTile_Offs", "kDungAttrsForTile", "kMovableBlockDataInit", "kTorchDataInit", "kTorchDataJunk" });
 }
 
-fn addMiscAndOverworld(b: *Builder, alloc: std.mem.Allocator, rom: Rom, files: ?*const import_mod.Files, out: import_mod.Out, problem: *import_mod.Problem) !void {
+fn addMiscAndOverworld(b: *Builder, alloc: std.mem.Allocator, rom: Rom, files: ?*const import_mod.Files, languages: []const dialogue.Input, out: import_mod.Out, problem: *import_mod.Problem) !void {
     // print_misc
     try b.addMany("", &.{
         "kOverworldMapGfx",         "kLightOverworldTilemap",      "kDarkOverworldTilemap",
@@ -182,16 +183,37 @@ fn addMiscAndOverworld(b: *Builder, alloc: std.mem.Allocator, rom: Rom, files: ?
     });
 
     // print_dialogue
-    if (files) |f| {
-        try b.add("kDialogue", .packed_arrays, try dialogue.buildDialogueFromTexts(alloc, f.dialogue));
-    } else try b.add("kDialogue", .packed_arrays, try dialogue.buildDialogue(alloc, rom));
-    if (files != null and files.?.font != null) {
-        const f = files.?.font.?;
-        const entry = try build_mod.packArrays(alloc, &.{ f.tiles, f.widths });
-        defer alloc.free(entry);
-        try b.add("kDialogueFont", .packed_arrays, try build_mod.packArrays(alloc, &.{entry}));
-    } else try b.add("kDialogueFont", .packed_arrays, try dialogue.buildDialogueFont(alloc, rom));
-    try b.add("kDialogueMap", .packed_arrays, try dialogue.buildDialogueMap(alloc));
+    {
+        var rom_texts = try dialogue.romTexts(alloc, rom);
+        defer rom_texts.deinit();
+        const rom_font = try dialogue.romFont(alloc, rom);
+        defer alloc.free(rom_font.tiles);
+        defer alloc.free(rom_font.widths);
+        var us = dialogue.Input{ .lang = .us, .texts = @ptrCast(rom_texts.items), .font_tiles = rom_font.tiles, .font_widths = rom_font.widths };
+        if (files) |f| {
+            us.texts = f.dialogue;
+            if (f.font) |font| {
+                us.font_tiles = font.tiles;
+                us.font_widths = font.widths;
+            }
+        }
+        const list = try alloc.alloc(dialogue.Input, 1 + languages.len);
+        defer alloc.free(list);
+        list[0] = us;
+        @memcpy(list[1..], languages);
+        var diag = dialogue.Diag{};
+        var built = dialogue.buildLanguages(alloc, list, &diag) catch |e| switch (e) {
+            error.BadDialogue => {
+                var name_buf: [32]u8 = undefined;
+                return problem.set("{s}, message {d}: {s}", .{ dialogue.fileName(&name_buf, diag.lang), diag.message, diag.text() });
+            },
+            else => return e,
+        };
+        errdefer built.deinit(alloc);
+        try b.add("kDialogue", .packed_arrays, built.dialogue);
+        try b.add("kDialogueFont", .packed_arrays, built.font);
+        try b.add("kDialogueMap", .packed_arrays, built.map);
+    }
 
     // print_dungeon_map
     try b.add("kDungMap_FloorLayout", .packed_arrays, try build_mod.buildDungeonMap(alloc, rom, false));

@@ -538,24 +538,6 @@ fn map32ToMap16(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
     return out.toOwnedSlice(alloc);
 }
 
-fn dialogueText(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
-    var strings = try dialogue.decodeStrings(alloc, rom);
-    defer strings.deinit();
-    var texts: std.ArrayList([]const u8) = .empty;
-    defer texts.deinit(alloc);
-    try texts.appendSlice(alloc, strings.items);
-    if (texts.items.len == 396) try texts.insert(alloc, 4, dialogue.kExtraString);
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(alloc);
-    for (texts.items, 1..) |t, n| {
-        var buf: [16]u8 = undefined;
-        try out.appendSlice(alloc, try std.fmt.bufPrint(&buf, "{d}: ", .{n}));
-        try out.appendSlice(alloc, t);
-        try out.append(alloc, '\n');
-    }
-    return out.toOwnedSlice(alloc);
-}
-
 // ----------------------------------------------------------------- export
 
 /// Writes every file the Python's extract step did into `dir`, which must
@@ -584,7 +566,7 @@ pub fn exportFiles(alloc: std.mem.Allocator, rom: Rom, dir: []const u8, progress
     _ = arena_state.reset(.retain_capacity);
     try writeYaml(arena, dir, "dungeon/default_rooms.yaml", fixedRooms(b, rom, 0x84EF2F, 8, "Default"), progress);
     try writeYaml(arena, dir, "dungeon/overlay_rooms.yaml", fixedRooms(b, rom, 0x84ECC0, 19, "Overlay"), progress);
-    try writeFile(arena, dir, "dialogue.txt", try dialogueText(arena, rom), progress);
+    try writeFile(arena, dir, "dialogue.txt", try dialogue.dialogueText(arena, rom, .us), progress);
     try writeFile(arena, dir, "map32_to_map16.txt", try map32ToMap16(arena, rom), progress);
     try writeFile(arena, dir, "linksprite.png", try graphics.exportLink(arena, rom), progress);
     try writeFile(arena, dir, "font.png", try graphics.exportFont(arena, rom, .us), progress);

@@ -16,6 +16,7 @@ const fileio = @import("fileio.zig");
 const png = @import("png.zig");
 const graphics = @import("asset_graphics.zig");
 const sheets_mod = @import("asset_sprite_sheets.zig");
+const dialogue = @import("asset_dialogue.zig");
 
 const Rom = rom_mod.Rom;
 const Value = yaml.Value;
@@ -29,7 +30,7 @@ pub const Problem = struct {
         return self.buf[0..self.len];
     }
 
-    fn set(self: *Problem, comptime fmt: []const u8, args: anytype) error{BadInput} {
+    pub fn set(self: *Problem, comptime fmt: []const u8, args: anytype) error{BadInput} {
         const written: []const u8 = std.fmt.bufPrint(&self.buf, fmt, args) catch &self.buf;
         self.len = written.len;
         return error.BadInput;
@@ -126,6 +127,53 @@ fn loadYaml(a: std.mem.Allocator, dir: []const u8, name: []const u8, problem: *P
         error.OutOfMemory => error.OutOfMemory,
         error.Syntax => problem.set("{s}, line {d}: {s}", .{ name, diag.line, diag.message }),
     };
+}
+
+/// Extra languages to build in: each one's dialogue_xx.txt and font_xx.png,
+/// as extracting them from that language's ROM writes them.
+pub const Languages = struct {
+    arena_state: std.heap.ArenaAllocator,
+    list: []const dialogue.Input = &.{},
+
+    pub fn deinit(self: *Languages) void {
+        self.arena_state.deinit();
+    }
+
+    pub fn load(alloc: std.mem.Allocator, dir: []const u8, which: []const rom_mod.Language, problem: *Problem) Error!Languages {
+        var self = Languages{ .arena_state = std.heap.ArenaAllocator.init(alloc) };
+        errdefer self.deinit();
+        const a = self.arena_state.allocator();
+        const list = try a.alloc(dialogue.Input, which.len);
+        for (which, list) |lang, *entry| {
+            var name_buf: [32]u8 = undefined;
+            const name = try a.dupe(u8, dialogue.fileName(&name_buf, lang));
+            const font_name = graphics.fontType(lang).file;
+            if (!has(a, dir, name) or !has(a, dir, font_name)) {
+                return problem.set("{s} and {s} aren't both in {s}; extract them from that language's ROM first", .{ name, font_name, dir });
+            }
+            const img = (try loadPng(a, dir, font_name, problem)).?;
+            const font = graphics.importFont(a, img, lang) catch |e| return problem.set("{s}: {s}", .{ font_name, pngProblem(e) });
+            entry.* = .{ .lang = lang, .texts = try loadDialogue(a, dir, name, problem), .font_tiles = font.tiles, .font_widths = font.widths };
+        }
+        self.list = list;
+        return self;
+    }
+
+    /// Whether `dir` has what building `lang` in needs.
+    pub fn available(dir: []const u8, lang: rom_mod.Language) bool {
+        var buf: [1024]u8 = undefined;
+        var name_buf: [32]u8 = undefined;
+        for ([_][]const u8{ dialogue.fileName(&name_buf, lang), graphics.fontType(lang).file }) |name| {
+            const path = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ dir, name }) catch return false;
+            if (!fileio.exists(path.ptr)) return false;
+        }
+        return true;
+    }
+};
+
+fn has(a: std.mem.Allocator, dir: []const u8, name: []const u8) bool {
+    const path = std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, name }, 0) catch return false;
+    return fileio.exists(path.ptr);
 }
 
 /// A PNG if the folder has it; null if it doesn't, which means use the ROM's.
@@ -1072,7 +1120,7 @@ test "exporting the ROM and building from the files gives the standard assets" {
     };
     defer files.deinit();
     const asset_all = @import("asset_all.zig");
-    var assets = try asset_all.buildFrom(alloc, rom, &files, &problem);
+    var assets = try asset_all.buildFrom(alloc, rom, &files, &.{}, &problem);
     defer assets.deinit();
     const data = try pack.write(alloc, assets.items);
     defer alloc.free(data);

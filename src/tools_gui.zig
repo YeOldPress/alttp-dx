@@ -9,6 +9,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const c = @import("sdl.zig").c;
 const ops = @import("tools_ops.zig");
+const Language = @import("rom.zig").Language;
 
 const kWindowW = 1024;
 const kWindowH = 680;
@@ -92,7 +93,7 @@ const g_logger = ops.Log{ .ctx = &g_log_dummy, .writeFn = logWrite };
 
 /// Which field a dialog's answer belongs to. The answer can arrive on another
 /// thread, so it lands here under a lock and the main loop picks it up.
-const Field = enum { rom, out, verify, folder };
+const Field = enum { rom, out, verify, folder, lang_rom };
 
 var g_dialog_lock: ?*c.SDL_Mutex = null;
 var g_dialog_field: Field = .rom;
@@ -118,7 +119,7 @@ fn openDialog(window_opt: ?*c.SDL_Window, field: Field) void {
     const window = window_opt orelse return;
     const userdata: ?*anyopaque = @ptrFromInt(@intFromEnum(field) + 1);
     switch (field) {
-        .rom => c.SDL_ShowOpenFileDialog(dialogCallback, userdata, window, &kRomFilters, kRomFilters.len, null, false),
+        .rom, .lang_rom => c.SDL_ShowOpenFileDialog(dialogCallback, userdata, window, &kRomFilters, kRomFilters.len, null, false),
         .verify => c.SDL_ShowOpenFileDialog(dialogCallback, userdata, window, &kDatFilters, kDatFilters.len, null, false),
         .out => c.SDL_ShowSaveFileDialog(dialogCallback, userdata, window, &kDatFilters, kDatFilters.len, null),
         .folder => c.SDL_ShowOpenFolderDialog(dialogCallback, userdata, window, null, false),
@@ -130,11 +131,13 @@ fn openDialog(window_opt: ?*c.SDL_Window, field: Field) void {
 const Page = enum {
     assets,
     modding,
+    languages,
 
     fn title(self: Page) []const u8 {
         return switch (self) {
             .assets => "Assets",
             .modding => "Modding",
+            .languages => "Languages",
         };
     }
 };
@@ -145,7 +148,32 @@ const State = struct {
     out: std.ArrayList(u8) = .empty,
     verify: std.ArrayList(u8) = .empty,
     folder: std.ArrayList(u8) = .empty,
+    lang_rom: std.ArrayList(u8) = .empty,
     sprites_from_png: bool = false,
+    /// Translations ticked to build in, and which ones the folder has files
+    /// for, checked now and then rather than every frame.
+    picked: [kLangCount]bool = @splat(false),
+    available: [kLangCount]bool = @splat(false),
+    available_age: u32 = 0,
+    extra_buf: [kLangCount]Language = undefined,
+
+    /// The ticked translations the folder has files for.
+    fn extra(self: *State) ops.Extra {
+        var n: usize = 0;
+        for (0..kLangCount) |i| {
+            if (!self.picked[i] or !self.available[i]) continue;
+            self.extra_buf[n] = @enumFromInt(i);
+            n += 1;
+        }
+        return .{ .languages = self.extra_buf[0..n], .dir = self.folder.items };
+    }
+
+    fn refreshAvailable(self: *State) void {
+        var buf: [kLangCount]Language = undefined;
+        self.available = @splat(false);
+        for (ops.availableLanguages(self.folder.items, &buf)) |l| self.available[@intFromEnum(l)] = true;
+        self.available_age = 0;
+    }
 
     fn set(self: *State, alloc: std.mem.Allocator, field: Field, path: []const u8) void {
         const list = switch (field) {
@@ -153,6 +181,7 @@ const State = struct {
             .out => &self.out,
             .verify => &self.verify,
             .folder => &self.folder,
+            .lang_rom => &self.lang_rom,
         };
         list.clearRetainingCapacity();
         list.appendSlice(alloc, path) catch {};
@@ -164,6 +193,7 @@ const State = struct {
             .out => self.out.items,
             .verify => self.verify.items,
             .folder => self.folder.items,
+            .lang_rom => self.lang_rom.items,
         };
     }
 };
@@ -231,12 +261,16 @@ const Ui = struct {
 
     /// A checkbox and its label; true on the frame it's clicked.
     fn checkbox(self: Ui, x: f32, y: f32, label: []const u8, on: bool) bool {
+        return self.checkboxEx(x, y, label, on, true);
+    }
+
+    fn checkboxEx(self: Ui, x: f32, y: f32, label: []const u8, on: bool, enabled: bool) bool {
         const box = Rect{ .x = x, .y = y, .w = 20, .h = 20 };
         const hit = Rect{ .x = x, .y = y, .w = 28 + @as(f32, @floatFromInt(label.len * kCharW)), .h = 20 };
-        const hot = self.hovered(hit);
-        self.fill(box, if (hot) kButtonHover else kButton);
-        if (on) self.fill(.{ .x = x + 5, .y = y + 5, .w = 10, .h = 10 }, kAccent);
-        self.text(x + 30, y + 2, kText, label);
+        const hot = enabled and self.hovered(hit);
+        self.fill(box, if (!enabled) kDisabled else if (hot) kButtonHover else kButton);
+        if (on and enabled) self.fill(.{ .x = x + 5, .y = y + 5, .w = 10, .h = 10 }, kAccent);
+        self.text(x + 30, y + 2, if (enabled) kText else kDim, label);
         return hot and self.clicked;
     }
 
@@ -278,6 +312,8 @@ const Ui = struct {
 };
 
 // ------------------------------------------------------------------- pages
+
+const kLangCount = @typeInfo(Language).@"enum".fields.len;
 
 const kContentX = kSidebarW + 32;
 const kContentW = kWindowW - kSidebarW - 64;
@@ -324,7 +360,56 @@ fn drawModding(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Wi
     if (ui.buttonAt(&x, y, "Build From Files", ready and st.get(.out).len != 0)) runJob(alloc, st, .build_from_files);
 }
 
-const Job = enum { build, rom_info, verify, export_files, build_from_files };
+/// Short names, so three fit across.
+fn shortName(lang: Language) []const u8 {
+    return switch (lang) {
+        .us => "English (US)",
+        .de => "German",
+        .fr => "French",
+        .fr_c => "French (CA)",
+        .en => "English (EU)",
+        .es => "Spanish",
+        .pl => "Polish",
+        .pt => "Portuguese",
+        .redux => "Redux",
+        .nl => "Dutch",
+        .sv => "Swedish",
+    };
+}
+
+fn drawLanguages(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window) void {
+    if (st.available_age == 0 or st.available_age > 60) st.refreshAvailable();
+    st.available_age += 1;
+
+    var y: f32 = 32;
+    ui.text(kContentX, y, kAccent, "Play in another language");
+    y += kLineH + 8;
+    y += ui.paragraph(kContentX, y, kContentW, kDim, "Extract the text from a translated ROM into the folder, tick it, and build. Ticked languages go into every build.");
+    y += 12;
+
+    if (ui.pathField(kContentX, y, kContentW, "Translated ROM", st.get(.lang_rom), "A German, French, Spanish... ROM")) openDialog(window, .lang_rom);
+    y += kLineH + 44;
+    if (ui.pathField(kContentX, y, kContentW, "Folder", st.get(.folder), "Where the extracted text goes")) openDialog(window, .folder);
+    y += kLineH + 50;
+
+    const col_w: f32 = kContentW / 3;
+    var n: usize = 0;
+    for (std.enums.values(Language)) |lang| {
+        if (lang == .us) continue;
+        const i = @intFromEnum(lang);
+        const x = kContentX + @as(f32, @floatFromInt(n % 3)) * col_w;
+        const row_y = y + @as(f32, @floatFromInt(n / 3)) * 28;
+        if (ui.checkboxEx(x, row_y, shortName(lang), st.picked[i], st.available[i])) st.picked[i] = !st.picked[i];
+        n += 1;
+    }
+    y += @as(f32, @floatFromInt((n + 2) / 3)) * 28 + 12;
+
+    var x: f32 = kContentX;
+    if (ui.buttonAt(&x, y, "Extract Dialogue", st.get(.lang_rom).len != 0 and st.get(.folder).len != 0)) runJob(alloc, st, .extract_dialogue);
+    if (ui.buttonAt(&x, y, "Build Assets", st.get(.rom).len != 0 and st.get(.out).len != 0)) runJob(alloc, st, .build);
+}
+
+const Job = enum { build, rom_info, verify, export_files, build_from_files, extract_dialogue };
 
 fn runJob(alloc: std.mem.Allocator, st: *State, job: Job) void {
     const rom = alloc.dupeZ(u8, st.get(.rom)) catch return;
@@ -333,13 +418,17 @@ fn runJob(alloc: std.mem.Allocator, st: *State, job: Job) void {
     defer alloc.free(out);
     const folder = alloc.dupeZ(u8, st.get(.folder)) catch return;
     defer alloc.free(folder);
+    const lang_rom = alloc.dupeZ(u8, st.get(.lang_rom)) catch return;
+    defer alloc.free(lang_rom);
+    defer st.refreshAvailable();
     pushLine(.info, "");
     switch (job) {
-        .build => _ = ops.buildAssets(alloc, g_logger, rom, out),
+        .build => _ = ops.buildAssets(alloc, g_logger, rom, out, st.extra()),
         .rom_info => _ = ops.romInfo(alloc, g_logger, rom),
         .verify => _ = ops.verifyAssets(alloc, g_logger, out),
         .export_files => _ = ops.exportFiles(alloc, g_logger, rom, folder),
-        .build_from_files => _ = ops.buildFromFiles(alloc, g_logger, rom, folder, out, .{ .sprites_from_png = st.sprites_from_png }),
+        .build_from_files => _ = ops.buildFromFiles(alloc, g_logger, rom, folder, out, .{ .sprites_from_png = st.sprites_from_png }, st.extra()),
+        .extract_dialogue => _ = ops.extractDialogue(alloc, g_logger, lang_rom, folder, null),
     }
 }
 
@@ -399,6 +488,7 @@ fn drawFrame(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Wind
     switch (st.page) {
         .assets => drawAssets(ui, alloc, st, window),
         .modding => drawModding(ui, alloc, st, window),
+        .languages => drawLanguages(ui, alloc, st, window),
     }
     drawLog(ui);
 }
@@ -468,7 +558,9 @@ pub fn run(alloc: std.mem.Allocator) !void {
                 c.SDL_EVENT_DROP_FILE => if (event.drop.data) |p| {
                     const path = std.mem.span(p);
                     const lower = std.ascii.allocLowerString(alloc, path) catch path;
-                    if (std.mem.endsWith(u8, lower, ".dat")) st.set(alloc, .out, path) else st.set(alloc, .rom, path);
+                    if (std.mem.endsWith(u8, lower, ".dat")) {
+                        st.set(alloc, .out, path);
+                    } else st.set(alloc, if (st.page == .languages) .lang_rom else .rom, path);
                 },
                 else => {},
             }

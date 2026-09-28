@@ -10,15 +10,23 @@ const kUsage =
     \\Run with no arguments to open the window. Commands:
     \\
     \\  build [--rom ROM] [--out FILE] [--from DIR [--sprites-from-png]]
+    \\        [--languages L1,L2 [--lang-dir DIR]]
     \\                    Build zelda3_assets.dat from the US ROM, or with
     \\                    --from, from files exported and edited in DIR.
     \\                    --sprites-from-png also takes the sprite sheets
-    \\                    from DIR/sprites (defaults: zelda3.sfc,
+    \\                    from DIR/sprites. --languages builds in
+    \\                    translations extracted into --lang-dir (or the
+    \\                    --from folder): de, fr, fr-c, en, es, pl, pt,
+    \\                    redux, nl, sv (defaults: zelda3.sfc,
     \\                    zelda3_assets.dat)
     \\  export [--rom ROM] --out DIR
     \\                    Write the overworld, dungeon rooms, map table and
     \\                    dialogue into DIR as YAML and text, and Link, the
     \\                    font, the HUD icons and the sprite sheets as PNGs
+    \\  extract-dialogue --rom ROM --out DIR [--as LANG]
+    \\                    Write a translated ROM's dialogue and font into
+    \\                    DIR, to build in with --languages. --as reads a
+    \\                    ROM this doesn't recognize as that language
     \\  verify [FILE]     Check an asset file against this version
     \\  rom-info ROM      Say which release a ROM is
     \\  gui               Open the window
@@ -110,11 +118,33 @@ fn runCommand(alloc: std.mem.Allocator, args: []const [:0]const u8) !bool {
     if (std.mem.eql(u8, cmd, "build")) {
         const rom = try option(rest, "--rom") orelse "zelda3.sfc";
         const out = try option(rest, "--out") orelse "zelda3_assets.dat";
-        if (try option(rest, "--from")) |dir| {
-            const sprites = flag(rest, "--sprites-from-png");
-            return ops.buildFromFiles(alloc, log, rom, dir, out, .{ .sprites_from_png = sprites });
+        const from = try option(rest, "--from");
+        var extra = ops.Extra{};
+        var lang_buf: [16]@import("rom.zig").Language = undefined;
+        if (try option(rest, "--languages")) |list| {
+            extra.languages = ops.parseLanguages(log, list, &lang_buf) orelse return false;
+            extra.dir = try option(rest, "--lang-dir") orelse from orelse {
+                log.err("Say where the extracted languages are with --lang-dir.", .{});
+                return false;
+            };
         }
-        return ops.buildAssets(alloc, log, rom, out);
+        if (from) |dir| {
+            const sprites = flag(rest, "--sprites-from-png");
+            return ops.buildFromFiles(alloc, log, rom, dir, out, .{ .sprites_from_png = sprites }, extra);
+        }
+        return ops.buildAssets(alloc, log, rom, out, extra);
+    }
+    if (std.mem.eql(u8, cmd, "extract-dialogue")) {
+        const rom = try option(rest, "--rom") orelse return error.Usage;
+        const out = try option(rest, "--out") orelse return error.Usage;
+        var as: ?@import("rom.zig").Language = null;
+        if (try option(rest, "--as")) |code| {
+            as = @import("asset_languages.zig").fromCode(code) orelse {
+                log.err("'{s}' isn't a language this knows. Try de, fr, fr-c, en, es, pl, pt, redux, nl or sv.", .{code});
+                return false;
+            };
+        }
+        return ops.extractDialogue(alloc, log, rom, out, as);
     }
     if (std.mem.eql(u8, cmd, "export")) {
         const rom = try option(rest, "--rom") orelse "zelda3.sfc";
@@ -157,4 +187,5 @@ test {
     _ = @import("asset_import.zig");
     _ = @import("asset_export.zig");
     _ = @import("png.zig");
+    _ = @import("asset_dialogue.zig");
 }
