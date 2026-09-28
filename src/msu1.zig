@@ -1,7 +1,8 @@
 //! MSU-1, the SD2SNES's streaming audio chip, as randomizer seeds use it: the
 //! seed's own code checks for the chip, picks the tracks and fades them, and
-//! this plays the .pcm files it asks for. The data port (for video) isn't
-//! here; nothing the randomizer does uses it.
+//! this plays the files it asks for, from the same MSUPath and in the same
+//! format (.pcm, or .opuz) as the MSU settings say for the normal game. The
+//! data port (for video) isn't here; nothing the randomizer does uses it.
 //!
 //! Registers, in banks $00-$3f and $80-$bf:
 //!   $2000 read: status. $2001 read: data (always 0 here).
@@ -9,8 +10,10 @@
 //!   $2004/$2005 write: track number; writing $2005 loads it.
 //!   $2006 write: volume. $2007 write: bit 0 plays, bit 1 repeats.
 //!
-//! Tracks are standard MSU-1 .pcm: "MSU1", a loop point in samples, then
-//! 44.1kHz 16-bit stereo.
+//! A .pcm track is "MSU1", a loop point in samples, then 44.1kHz 16-bit
+//! stereo. A .opuz track is upstream's Opus container: a table of ranges
+//! (where the audio is, how long it runs, where it loops back to) and then
+//! Opus packets at 48kHz, which carry their own looping.
 const std = @import("std");
 
 const FILE = opaque {};
@@ -20,24 +23,48 @@ extern fn fread(ptr: *anyopaque, size: usize, n: usize, f: *FILE) usize;
 extern fn fseek(f: *FILE, off: c_long, whence: c_int) c_int;
 const SEEK_SET = 0;
 
-const kRate = 44100;
+const OpusDecoder = anyopaque;
+const OPUS_RESET_STATE: c_int = 4028;
+extern fn opus_decoder_create(Fs: i32, channels: c_int, err: ?*c_int) ?*OpusDecoder;
+extern fn opus_decoder_destroy(st: ?*OpusDecoder) void;
+extern fn opus_decode(st: *OpusDecoder, data: [*]const u8, len: i32, pcm: [*]i16, frame_size: c_int, decode_fec: c_int) c_int;
+extern fn opus_decoder_ctl(st: *OpusDecoder, request: c_int, ...) c_int;
+
+pub const Format = enum {
+    pcm,
+    opuz,
+
+    fn rate(self: Format) u32 {
+        return if (self == .opuz) 48000 else 44100;
+    }
+};
 
 pub const Msu1 = struct {
-    /// Track n is at prefix ++ n ++ ".pcm".
+    /// Track n is at prefix ++ n ++ ".pcm" (or ".opuz").
     prefix: [1024]u8 = undefined,
     prefix_len: usize = 0,
+    format: Format = .pcm,
 
     track: u16 = 0,
     file: ?*FILE = null,
-    loop_point: u32 = 0,
     missing: bool = false,
     playing: bool = false,
     repeat: bool = false,
     volume: u8 = 0,
 
-    /// Where the file is read up to, in samples, and a buffer of what's been
-    /// read and not yet played, as stereo frames.
-    buf: [4096][2]i16 = undefined,
+    /// .pcm: where the loop starts, in samples.
+    loop_point: u32 = 0,
+
+    /// .opuz: the decoder, the next range record, the one a loop jumps back
+    /// to, and how much of the current range is left to play.
+    opus: ?*OpusDecoder = null,
+    range_cur: u32 = 0,
+    range_repeat: u32 = 0,
+    samples_left: u32 = 0,
+    preskip: u32 = 0,
+
+    /// Decoded frames not yet played.
+    buf: [1024][2]i16 = undefined,
     buf_len: usize = 0,
     buf_pos: usize = 0,
     /// Output position between two source frames, for resampling, and the
@@ -45,13 +72,14 @@ pub const Msu1 = struct {
     frac: f64 = 0,
     cur: [2]i16 = .{ 0, 0 },
 
-    pub fn setPrefix(self: *Msu1, prefix: []const u8) void {
+    pub fn configure(self: *Msu1, prefix: []const u8, format: Format) void {
         self.prefix_len = @min(prefix.len, self.prefix.len - 16);
         @memcpy(self.prefix[0..self.prefix_len], prefix[0..self.prefix_len]);
+        self.format = format;
     }
 
-    /// Whether any of the first few tracks is there, which is what decides
-    /// whether to show the chip to the game at all.
+    /// Whether any of the first few tracks is there, to warn when MSUPath
+    /// points at nothing.
     pub fn hasTracks(self: *Msu1) bool {
         for (1..10) |n| {
             var path: [1100]u8 = undefined;
@@ -64,8 +92,9 @@ pub const Msu1 = struct {
         return false;
     }
 
-    fn trackPath(self: *Msu1, out: []u8, n: u16) ?[*:0]const u8 {
-        const s = std.fmt.bufPrintZ(out, "{s}{d}.pcm", .{ self.prefix[0..self.prefix_len], n }) catch return null;
+    pub fn trackPath(self: *Msu1, out: []u8, n: u16) ?[*:0]const u8 {
+        const ext = if (self.format == .opuz) "opuz" else "pcm";
+        const s = std.fmt.bufPrintZ(out, "{s}{d}.{s}", .{ self.prefix[0..self.prefix_len], n, ext }) catch return null;
         return s.ptr;
     }
 
@@ -75,7 +104,9 @@ pub const Msu1 = struct {
 
     fn close(self: *Msu1) void {
         if (self.file) |f| _ = fclose(f);
+        if (self.opus) |o| opus_decoder_destroy(o);
         self.file = null;
+        self.opus = null;
         self.buf_len = 0;
         self.buf_pos = 0;
     }
@@ -88,11 +119,25 @@ pub const Msu1 = struct {
         const p = self.trackPath(&path, self.track) orelse return;
         const f = fopen(p, "rb") orelse return;
         var header: [8]u8 = undefined;
-        if (fread(&header, 1, 8, f) != 8 or !std.mem.eql(u8, header[0..4], "MSU1")) {
+        if (fread(&header, 1, 8, f) != 8) {
             _ = fclose(f);
             return;
         }
-        self.loop_point = std.mem.readInt(u32, header[4..8], .little);
+        if (std.mem.eql(u8, header[0..4], "MSU1")) {
+            self.loop_point = std.mem.readInt(u32, header[4..8], .little);
+        } else if (std.mem.eql(u8, header[0..4], "OPUZ")) {
+            self.opus = opus_decoder_create(48000, 2, null) orelse {
+                _ = fclose(f);
+                return;
+            };
+            self.range_cur = 8;
+            self.range_repeat = 0;
+            self.samples_left = 0;
+            self.preskip = 0;
+        } else {
+            _ = fclose(f);
+            return;
+        }
         self.file = f;
         self.missing = false;
     }
@@ -127,31 +172,82 @@ pub const Msu1 = struct {
         return true;
     }
 
-    /// The next source frame, reading ahead from the file and looping or
-    /// stopping at its end.
+    /// Refills the buffer from a .pcm file, looping to the loop point when
+    /// the game asked for repeat. False at the end.
+    fn fillPcm(self: *Msu1, f: *FILE) bool {
+        var raw: [1024 * 4]u8 = undefined;
+        var n = fread(&raw, 4, self.buf.len, f);
+        if (n == 0) {
+            if (!self.repeat) return false;
+            _ = fseek(f, @intCast(8 + @as(i64, self.loop_point) * 4), SEEK_SET);
+            n = fread(&raw, 4, self.buf.len, f);
+            if (n == 0) return false;
+        }
+        for (0..n) |i| {
+            self.buf[i][0] = std.mem.readInt(i16, raw[i * 4 ..][0..2], .little);
+            self.buf[i][1] = std.mem.readInt(i16, raw[i * 4 + 2 ..][0..2], .little);
+        }
+        self.buf_len = n;
+        self.buf_pos = 0;
+        return true;
+    }
+
+    /// Refills the buffer with the next Opus packet of a .opuz file, moving
+    /// through its ranges (which is how it loops). False at the end.
+    fn fillOpuz(self: *Msu1, f: *FILE, dec: *OpusDecoder) bool {
+        while (true) {
+            if (self.samples_left == 0) {
+                if (self.range_cur == 0) return false;
+                _ = opus_decoder_ctl(dec, OPUS_RESET_STATE);
+                _ = fseek(f, @intCast(self.range_cur), SEEK_SET);
+                var rec: [10]u8 = undefined;
+                if (fread(&rec, 1, 10, f) != 10) return false;
+                const file_offs = std.mem.readInt(u32, rec[0..4], .little) & 0x0fffffff;
+                self.samples_left = std.mem.readInt(u32, rec[4..8], .little);
+                const skip = std.mem.readInt(u16, rec[8..10], .little);
+                self.preskip = skip & 0x3fff;
+                if (skip & 0x4000 != 0) self.range_repeat = self.range_cur;
+                self.range_cur = if (skip & 0x8000 != 0) self.range_repeat else self.range_cur + 10;
+                _ = fseek(f, @intCast(file_offs), SEEK_SET);
+                if (self.samples_left == 0) continue;
+            }
+            // A packet: 15 bits of size, and a flag for whether its first
+            // byte (the table of contents, always 0xfc here) was left out.
+            var data: [2 + 1275]u8 = undefined;
+            if (fread(&data, 1, 2, f) != 2) return false;
+            const header = std.mem.readInt(u16, data[0..2], .little);
+            const size: usize = header & 0x7fff;
+            if (size > 1275) return false;
+            const has_toc: usize = header >> 15;
+            if (fread(data[2..].ptr, 1, size, f) != size) return false;
+            data[1] = 0xfc;
+            var pcm: [960][2]i16 = undefined;
+            const r = opus_decode(dec, data[2 - has_toc ..].ptr, @intCast(size + has_toc), @ptrCast(&pcm), 960, 0);
+            if (r <= 0) return false;
+            const got: u32 = @intCast(r);
+            if (got <= self.preskip) {
+                self.preskip -= got;
+                continue;
+            }
+            const n = @min(got - self.preskip, self.samples_left);
+            @memcpy(self.buf[0..n], pcm[@intCast(self.preskip)..][0..n]);
+            self.samples_left -= n;
+            self.preskip = 0;
+            self.buf_len = n;
+            self.buf_pos = 0;
+            return true;
+        }
+    }
+
+    /// The next source frame, or null when the track has ended.
     fn nextFrame(self: *Msu1) ?[2]i16 {
         if (self.buf_pos == self.buf_len) {
             const f = self.file orelse return null;
-            var raw: [4096 * 4]u8 = undefined;
-            var n = fread(&raw, 4, self.buf.len, f);
-            if (n == 0) {
-                if (!self.repeat) {
-                    self.playing = false;
-                    return null;
-                }
-                _ = fseek(f, @intCast(8 + @as(u64, self.loop_point) * 4), SEEK_SET);
-                n = fread(&raw, 4, self.buf.len, f);
-                if (n == 0) {
-                    self.playing = false;
-                    return null;
-                }
+            const ok = if (self.opus) |dec| self.fillOpuz(f, dec) else self.fillPcm(f);
+            if (!ok) {
+                self.playing = false;
+                return null;
             }
-            for (0..n) |i| {
-                self.buf[i][0] = std.mem.readInt(i16, raw[i * 4 ..][0..2], .little);
-                self.buf[i][1] = std.mem.readInt(i16, raw[i * 4 + 2 ..][0..2], .little);
-            }
-            self.buf_len = n;
-            self.buf_pos = 0;
         }
         defer self.buf_pos += 1;
         return self.buf[self.buf_pos];
@@ -161,7 +257,7 @@ pub const Msu1 = struct {
     /// channels).
     pub fn mix(self: *Msu1, out: []i16, samples: usize, channels: usize, rate: u32) void {
         if (!self.playing or self.file == null) return;
-        const step = @as(f64, kRate) / @as(f64, @floatFromInt(rate));
+        const step = @as(f64, @floatFromInt(self.format.rate())) / @as(f64, @floatFromInt(rate));
         const vol: i32 = self.volume;
         for (0..samples) |i| {
             self.frac += step;
@@ -184,7 +280,7 @@ pub const Msu1 = struct {
 
 test "the chip identifies itself and reports a missing track" {
     var m = Msu1{};
-    m.setPrefix("/nonexistent/track-");
+    m.configure("/nonexistent/track-", .pcm);
     try std.testing.expectEqual(@as(?u8, 'S'), m.read(0x2002));
     try std.testing.expectEqual(@as(?u8, '1'), m.read(0x2007));
     _ = m.write(0x2004, 5);
@@ -192,4 +288,13 @@ test "the chip identifies itself and reports a missing track" {
     try std.testing.expect(m.read(0x2000).? & 0x08 != 0);
     _ = m.write(0x2007, 1);
     try std.testing.expect(m.read(0x2000).? & 0x10 == 0);
+}
+
+test "tracks are named the way the MSU settings say" {
+    var m = Msu1{};
+    var buf: [64]u8 = undefined;
+    m.configure("msu/alttp_msu-", .opuz);
+    try std.testing.expectEqualStrings("msu/alttp_msu-12.opuz", std.mem.span(m.trackPath(&buf, 12).?));
+    m.configure("msu/alttp_msu-", .pcm);
+    try std.testing.expectEqualStrings("msu/alttp_msu-3.pcm", std.mem.span(m.trackPath(&buf, 3).?));
 }

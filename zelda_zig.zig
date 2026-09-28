@@ -45,6 +45,12 @@ comptime {
 
     _ = @import("src/sprite_main.zig");
 
+    // Randomizer mode: the whole-ROM console, its tracker and MSU-1.
+    _ = @import("src/emu.zig");
+    _ = @import("src/rando.zig");
+    _ = @import("src/tracker.zig");
+    _ = @import("src/msu1.zig");
+
     if (builtin.is_test) {
         if (@import("build_options").ancilla_parity) _ = @import("tests/ancilla_parity.zig");
     }

@@ -45,27 +45,26 @@ pub fn start(alloc: std.mem.Allocator, path: [:0]const u8, mode: tracker.Mode) !
     tracker.loadGfx(g_gfx, g_console.rom());
     g_mode = mode;
     g_margin = @min(config.g_config.extended_aspect_ratio, kMaxMargin);
-    startMsu(path);
+    startMsu();
     g_active = true;
     toast(mode.label());
 }
 
-/// Finds an MSU-1 pack: seed-1.pcm and so on beside the seed, which is how
-/// packs for randomizer seeds are usually named, or MSUPath from the ini.
-fn startMsu(rom_path: []const u8) void {
-    const ext = std.fs.path.extension(rom_path);
-    var buf: [1024]u8 = undefined;
-    const beside = std.fmt.bufPrint(&buf, "{s}-", .{rom_path[0 .. rom_path.len - ext.len]}) catch return;
-    g_msu.setPrefix(beside);
+/// MSU-1 follows the same settings as the normal game: EnableMSU turns it
+/// on (and says .pcm or .opuz), MSUPath says where the tracks are. The seed
+/// picks its own tracks, so deluxe or not makes no difference here.
+fn startMsu() void {
+    const enable = config.g_config.enable_msu;
+    if (enable == 0) return;
+    const path = config.g_config.msu_path orelse return;
+    const kOpuz = 4;
+    g_msu.configure(std.mem.span(path), if (enable & kOpuz != 0) .opuz else .pcm);
     if (!g_msu.hasTracks()) {
-        const p = config.g_config.msu_path orelse return;
-        if (config.g_config.enable_msu == 0) return;
-        g_msu.setPrefix(std.mem.span(p));
-        if (!g_msu.hasTracks()) return;
+        var buf: [1100]u8 = undefined;
+        std.debug.print("MSU-1: no tracks at {s}; the seed will play its own music\n", .{g_msu.trackPath(&buf, 1) orelse "?"});
     }
     g_have_msu = true;
     snes_pkg.snes.g_io_hooks = .{ .ctx = &g_msu, .read = msuRead, .write = msuWrite };
-    std.debug.print("MSU-1: playing tracks from {s}N.pcm\n", .{g_msu.prefix[0..g_msu.prefix_len]});
 }
 
 fn msuRead(ctx: *anyopaque, adr: u16) ?u8 {

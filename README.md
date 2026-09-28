@@ -168,9 +168,8 @@ Some of the port's extras still come along, because they only watch the game:
 - **Widescreen**, from `ExtendedAspectRatio`. Rooms and areas show as far as
   they go; outdoors the edges can briefly show stale tiles while scrolling,
   and enemies still vanish at the original screen edge.
-- **MSU-1**: put `seed-1.pcm`, `seed-2.pcm` and so on next to `seed.sfc` (the
-  usual way randomizer packs are named), or point `MSUPath` at a pack. The
-  seed's own code picks the tracks. `.pcm` packs only.
+- **MSU-1**, from the same `EnableMSU` and `MSUPath` settings as the normal
+  game, `.pcm` or `.opuz`. The seed's own code picks the tracks.
 
 The item tracker follows along by itself, reading the save data every frame:
 items, all 13 dungeons (checks left, keys, big key, map, compass, boss) and
