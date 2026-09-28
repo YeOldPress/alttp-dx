@@ -44,8 +44,10 @@ pub fn start(alloc: std.mem.Allocator, path: [:0]const u8, mode: tracker.Mode) !
     g_gfx = try alloc.create(tracker.Gfx);
     tracker.loadGfx(g_gfx, g_console.rom());
     g_mode = mode;
-    g_margin = @min(config.g_config.extended_aspect_ratio, kMaxMargin);
-    startMsu(path);
+    // A seed's own choices, from the options it opened on.
+    g_margin = @min(config.g_rando_margin, kMaxMargin);
+    config.g_config.rumble = config.g_rando_rumble;
+    if (config.g_rando_msu) startMsu(path);
     g_active = true;
     toast(mode.label());
 }

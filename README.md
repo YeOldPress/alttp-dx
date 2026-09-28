@@ -165,18 +165,22 @@ and the save goes next to the seed as a `.srm` file.
 Some of the port's extras still come along, because they only watch the game:
 
 - **Rumble**, the same as in the port.
-- **Widescreen**, from `ExtendedAspectRatio`. Rooms and areas show as far as
+- **Widescreen**. Rooms and areas show as far as
   they go; outdoors the edges can briefly show stale tiles while scrolling,
   and enemies still vanish at the original screen edge.
 - **MSU-1**: put `seed-1.pcm`, `seed-2.pcm` and so on (or `.opuz`) next to
   `seed.sfc`, the usual way randomizer packs are named, or it uses `MSUPath`
   when `EnableMSU` is on. The seed's own code picks the tracks.
 
+Before a seed starts, a short options screen asks about widescreen, rumble,
+MSU-1 and the tracker. Those are kept in `[Randomizer]` in `zelda3.ini`, apart
+from the normal game's settings.
+
 The item tracker follows along by itself, reading the save data every frame:
 items, all 13 dungeons (checks left, keys, big key, map, compass, boss) and
 both world maps with every check on them. Its icons and maps come from the
-seed. `Tracker` in `[General]` puts it beside the game, over it, in its own
-window, or turns it off, and T switches between those while playing.
+seed. It goes beside the game, over it, in its own window, or nowhere, and T
+switches between those while playing.
 
 
 Everything to do with the assets besides playing: building them, exporting

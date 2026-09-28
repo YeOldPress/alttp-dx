@@ -68,14 +68,18 @@ fn editable(s: menu.Setting) bool {
     return !menu.isSection(s) and s.kind != .text;
 }
 
+/// The settings this screen shows: everything but the randomizer's, which
+/// are chosen before a seed starts and mean nothing to the normal game.
+const kShown = menu.kSettings[0..menu.kRandomizerStart];
+
 const kIndex = blk: {
     var n: usize = 0;
-    for (menu.kSettings) |s| {
+    for (kShown) |s| {
         if (editable(s)) n += 1;
     }
     var list: [n]u16 = undefined;
     var i: usize = 0;
-    for (menu.kSettings, 0..) |s, si| {
+    for (kShown, 0..) |s, si| {
         if (editable(s)) {
             list[i] = si;
             i += 1;
@@ -96,10 +100,10 @@ const kTabs = blk: {
     var tabs: [kTabIcons.len]Tab = undefined;
     var t: usize = 0;
     var at: usize = 0;
-    for (menu.kSettings, 0..) |s, si| {
+    for (kShown, 0..) |s, si| {
         if (!menu.isSection(s)) continue;
         var count: usize = 0;
-        for (menu.kSettings[si + 1 ..]) |next| {
+        for (kShown[si + 1 ..]) |next| {
             if (menu.isSection(next)) break;
             if (editable(next)) count += 1;
         }

@@ -332,7 +332,7 @@ fn emuRenderToFile(rom: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u8
     // TRACKER=off|panel|overlay picks what's drawn around the game, and
     // WIDE=n adds n widescreen pixels a side.
     const mode = if (std.c.getenv("TRACKER")) |t| tracker.Mode.fromName(std.mem.span(t)) orelse .panel else .panel;
-    if (std.c.getenv("WIDE")) |w| config.g_config.extended_aspect_ratio = std.fmt.parseInt(u8, std.mem.span(w), 10) catch 0;
+    if (std.c.getenv("WIDE")) |w| config.g_rando_margin = std.fmt.parseInt(u8, std.mem.span(w), 10) catch 0;
     rando.start(alloc, std.mem.span(rom), mode) catch |err| {
         std.debug.print("--emu-render: could not load {s}: {s}\n", .{ rom, @errorName(err) });
         return 1;
@@ -634,6 +634,16 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     // A randomizer seed to play in the emulator instead of the port.
     var rando_rom: ?[:0]const u8 = null;
 
+    // `--menu-shot <out.bmp>` draws the seed options screen, for working on it.
+    if (argc == 2 and strcmp(argv[0], "--menu-shot") == 0) {
+        menu.enterDataDirectory();
+        menu.screenshot(alloc, argv[1]) catch |err| {
+            std.debug.print("--menu-shot: {s}\n", .{@errorName(err)});
+            return 1;
+        };
+        return 0;
+    }
+
     // `--emu-render <rom> <script> <out.bmp>` is the same for a ROM run in
     // the emulator, such as a randomizer seed.
     if (argc == 4 and strcmp(argv[0], "--emu-render") == 0) {
@@ -669,6 +679,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
             menu.printDataDirectory();
             return 0;
         }
+        if (std.mem.eql(u8, arg, "--menu-shot")) return 1;
         if (std.mem.eql(u8, arg, "--pad-info")) {
             menu.reportPads();
             return 0;
@@ -684,8 +695,11 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     }
     // A randomizer seed on the command line plays in the emulator; any other
     // ROM there is the original to compare the port against.
+    // The game moves into its data directory next, so the seed's path is
+    // pinned down first.
+    var seed_path_buf: [4096]u8 = undefined;
     if (render_request == null and verify_request == null and argc == 1 and menu.isRandomizerRom(std.mem.span(argv[0]))) {
-        rando_rom = std.mem.span(argv[0]);
+        rando_rom = if (std.c.realpath(argv[0], &seed_path_buf)) |p| std.mem.span(@as([*:0]u8, @ptrCast(p))) else std.mem.span(argv[0]);
         argc = 0;
     }
     if (render_request != null or verify_request != null or config_file != null) {
@@ -696,13 +710,18 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         // the assets are missing or aren't the ones this build makes, since
         // stale assets misbehave in ways that look like game bugs. Comparing
         // against a ROM (zelda3 <rom>) is a developer tool and goes straight in.
-        if (rando_rom == null and argc == 0 and (menu.checkAssets(alloc) != .verified or menu.wantsStartMenu(alloc))) {
-            const outcome = menu.run(alloc) catch |err| {
+        // A seed always gets its options screen first.
+        if (rando_rom != null or (argc == 0 and (menu.checkAssets(alloc) != .verified or menu.wantsStartMenu(alloc)))) {
+            const outcome = menu.run(alloc, rando_rom) catch |err| {
                 std.debug.print("The start menu failed: {s}\n", .{@errorName(err)});
                 return 1;
             };
-            if (outcome == .quit) return 0;
-            if (outcome == .randomizer) rando_rom = menu.g_randomizer_rom;
+            switch (outcome) {
+                .quit => return 0,
+                .randomizer => rando_rom = menu.g_randomizer_rom,
+                // Backed out of the seed and chose the normal game instead.
+                .play => rando_rom = null,
+            }
         }
     }
     ParseConfigFile(config_file);

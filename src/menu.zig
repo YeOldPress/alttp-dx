@@ -103,7 +103,6 @@ pub const kSettings = [_]Setting{
     .{ .section = "General", .key = "ExtendedAspectRatio", .label = "Aspect Ratio", .kind = .{ .choice = .{ .values = &.{ "4:3", "16:9", "16:10", "18:9" } } } },
     .{ .section = "General", .key = "DisableFrameDelay", .label = "Disable Frame Delay", .kind = .toggle },
     .{ .section = "General", .key = "Rumble", .label = "Rumble", .kind = .{ .number = .{ .min = 0, .max = 100, .step = 10, .suffix = "%" } } },
-    .{ .section = "General", .key = "Tracker", .label = "Randomizer Tracker", .kind = .{ .choice = .{ .values = &.{ "panel", "overlay", "window", "off" } } } },
 
     .{ .section = kSectionMark, .key = "", .label = "GRAPHICS", .kind = .text },
     .{ .section = "Graphics", .key = "Fullscreen", .label = "Fullscreen", .kind = .{ .choice = .{
@@ -155,6 +154,18 @@ pub const kSettings = [_]Setting{
     .{ .section = "Features", .key = "MiscBugFixes", .label = "Misc Bug Fixes", .kind = .toggle },
     .{ .section = "Features", .key = "GameChangingBugFixes", .label = "Game Changing Fixes", .kind = .toggle },
     .{ .section = "Features", .key = "CancelBirdTravel", .label = "Cancel Bird Travel", .kind = .toggle },
+
+    // Shown before a randomizer seed starts, not in the lists above: a seed
+    // gets its own choices, so trying widescreen on one leaves the normal
+    // game alone.
+    .{ .section = kSectionMark, .key = "", .label = "RANDOMIZER", .kind = .text },
+    .{ .section = "Randomizer", .key = "Widescreen", .label = "Widescreen", .kind = .{ .choice = .{ .values = &.{ "4:3", "16:9", "16:10", "18:9" } } } },
+    .{ .section = "Randomizer", .key = "Rumble", .label = "Rumble", .kind = .{ .number = .{ .min = 0, .max = 100, .step = 10, .suffix = "%" } } },
+    .{ .section = "Randomizer", .key = "MSU", .label = "MSU Audio", .kind = .toggle },
+    .{ .section = "Randomizer", .key = "Tracker", .label = "Tracker", .kind = .{ .choice = .{
+        .values = &.{ "panel", "overlay", "window", "off" },
+        .labels = &.{ "Beside Game", "Over Game", "Own Window", "Off" },
+    } } },
 };
 
 // ------------------------------------------------------------- ini editing
@@ -518,7 +529,7 @@ const kQuitChoices = [_][]const u8{ "Quit", "Stay" };
 const kQuitStay = 1;
 
 /// The launcher is a short menu and the two lists it opens.
-const Screen = enum { main, settings, features };
+const Screen = enum { main, settings, features, randomizer };
 
 /// Where the FEATURES heading sits, so the two lists are slices of the one
 /// schema instead of separate tables that could drift out of step with it.
@@ -529,10 +540,23 @@ const kFeaturesStart = blk: {
     @compileError("the settings schema has no FEATURES section");
 };
 
+/// Where the RANDOMIZER heading sits; everything from there on is the screen
+/// a seed opens on, and the in-game settings stop short of it.
+pub const kRandomizerStart = blk: {
+    for (kSettings, 0..) |s, i| {
+        if (isSection(s) and std.mem.eql(u8, s.label, "RANDOMIZER")) break :blk i;
+    }
+    @compileError("the settings schema has no RANDOMIZER section");
+};
+
+/// The randomizer screen's last row isn't a setting: it starts the seed.
+const kPlayRow = kSettings.len;
+
 fn screenRange(screen: Screen) struct { from: usize, to: usize } {
     return switch (screen) {
         .settings => .{ .from = 0, .to = kFeaturesStart },
-        .features => .{ .from = kFeaturesStart, .to = kSettings.len },
+        .features => .{ .from = kFeaturesStart, .to = kRandomizerStart },
+        .randomizer => .{ .from = kRandomizerStart, .to = kSettings.len },
         .main => .{ .from = 0, .to = 0 },
     };
 }
@@ -790,15 +814,19 @@ const View = struct {
 };
 
 fn listIndex(sc: Screen) usize {
-    return if (sc == .features) 1 else 0;
+    return switch (sc) {
+        .main, .settings => 0,
+        .features => 1,
+        .randomizer => 2,
+    };
 }
 
 /// Gathers the loop's scattered state into what drawing needs.
 fn viewOf(
     screen: Screen,
     main_cursor: usize,
-    list_cursor: [2]usize,
-    list_top: [2]usize,
+    list_cursor: [3]usize,
+    list_top: [3]usize,
     status: []const u8,
     dirty: bool,
     assets: AssetState,
@@ -818,6 +846,23 @@ fn viewOf(
     };
 }
 
+/// Draws the options a seed opens on into a BMP with no window, for working
+/// on the screen: `zelda3 --menu-shot out.bmp`.
+pub fn screenshot(alloc: std.mem.Allocator, path: [*:0]const u8) !void {
+    var ini = try Ini.load(alloc, "zelda3.ini");
+    defer ini.deinit();
+    const surface = c.SDL_CreateSurface(kWindowW, kWindowH, c.SDL_PIXELFORMAT_XRGB8888) orelse return error.SdlSurface;
+    defer c.SDL_DestroySurface(surface);
+    const renderer = c.SDL_CreateSoftwareRenderer(surface) orelse return error.SdlRenderer;
+    defer c.SDL_DestroyRenderer(renderer);
+    var cursor = [_]usize{ 0, 0, kPlayRow };
+    var top = [_]usize{ 0, kFeaturesStart, kRandomizerStart };
+    _ = &cursor;
+    _ = &top;
+    drawScreen(renderer, &ini, viewOf(.randomizer, 0, cursor, top, "", false, .verified, .none, kQuitStay));
+    if (!c.SDL_SaveBMP(surface, path)) return error.SaveFailed;
+}
+
 fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     fillRect(renderer, 0, 0, kWindowW, kWindowH, kColorBg);
     drawFrame(renderer, 16, 16, kWindowW - 32, kWindowH - 32);
@@ -826,7 +871,7 @@ fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
 
     switch (v.screen) {
         .main => drawMain(renderer, v),
-        .settings, .features => drawList(renderer, ini, v),
+        .settings, .features, .randomizer => drawList(renderer, ini, v),
     }
 
     drawFooter(renderer, v);
@@ -848,7 +893,11 @@ fn drawHeader(renderer: *c.SDL_Renderer, screen: Screen) void {
         return;
     }
 
-    const name = if (screen == .settings) "SETTINGS" else "FEATURES";
+    const name = switch (screen) {
+        .settings => "SETTINGS",
+        .features => "FEATURES",
+        else => "RANDOMIZER SEED",
+    };
     drawText(renderer, 40, 36, kColorSelect, name);
     drawTextScaled(renderer, kWindowW - 40 - textWidth("ESC BACK", kScale), 36, kColorTextDim, "ESC BACK", kScale);
     fillRect(renderer, 40, 36 + kRowH, kWindowW - 80, 2, kColorFrame);
@@ -900,6 +949,10 @@ fn listRowAt(v: View, py: f32) ?usize {
     while (i < range.to and i < v.top + kVisibleRows) : (i += 1) {
         if (py >= y - 3 and py < y - 3 + kRowH and !isSection(kSettings[i])) return i;
         y += kRowH;
+    }
+    if (v.screen == .randomizer) {
+        y += kRowH;
+        if (py >= y - 3 and py < y - 3 + kRowH) return kPlayRow;
     }
     return null;
 }
@@ -975,6 +1028,13 @@ fn drawList(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
             drawText(renderer, 400, y, if (dim) kColorTextDim else kColorValue, shown);
         }
         y += kRowH;
+    }
+    if (v.screen == .randomizer) {
+        // Play sits under the choices, a row apart from them.
+        y += kRowH;
+        const selected = v.cursor == kPlayRow;
+        if (selected) fillRect(renderer, 32, y - 3, kWindowW - 64, kRowH, kColorRowHi);
+        drawTextCentered(renderer, kWindowW / 2, y, if (selected) kColorSelect else kColorText, "PLAY THIS SEED", kScale);
     }
 }
 
@@ -1060,6 +1120,10 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
         .settings, .features => {
             drawText(renderer, 40, footer_y, kColorTextDim, "CHANGE  LEFT/RIGHT OR A");
             drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "SAVE X/S   BACK B/ESC");
+        },
+        .randomizer => {
+            drawText(renderer, 40, footer_y, kColorTextDim, "CHANGE  LEFT/RIGHT OR A");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "PLAY  START   BACK B/ESC");
         },
     }
 
@@ -1319,6 +1383,13 @@ pub const Outcome = enum { play, quit, randomizer };
 pub var g_randomizer_rom: [:0]const u8 = "";
 var g_randomizer_buf: [4096]u8 = undefined;
 
+fn setRandomizerRom(span: []const u8) void {
+    const n = @min(span.len, g_randomizer_buf.len - 1);
+    @memcpy(g_randomizer_buf[0..n], span[0..n]);
+    g_randomizer_buf[n] = 0;
+    g_randomizer_rom = g_randomizer_buf[0..n :0];
+}
+
 /// Whether a dropped file is a randomizer seed (or the Japanese ROM they
 /// start from), which plays in the emulator instead of building assets.
 pub fn isRandomizerRom(path: []const u8) bool {
@@ -1335,7 +1406,7 @@ pub fn isRandomizerRom(path: []const u8) bool {
 /// and shut down in here, so the game sets it up afresh for its own window.
 /// With assets that are missing or don't match, it opens on the ROM question,
 /// and Play won't hand over to the game until the asset file checks out.
-pub fn run(alloc: std.mem.Allocator) !Outcome {
+pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     var ini = Ini.load(alloc, "zelda3.ini") catch |err| {
         std.debug.print("Could not read zelda3.ini: {s}\n", .{@errorName(err)});
         return err;
@@ -1380,14 +1451,20 @@ pub fn run(alloc: std.mem.Allocator) !Outcome {
     var main_cursor: usize = 0;
     // Each list keeps its own place, so stepping out and back in does not
     // dump the cursor at the top again.
-    var list_cursor = [_]usize{ firstSelectable(0, kFeaturesStart), firstSelectable(kFeaturesStart, kSettings.len) };
-    var list_top = [_]usize{ 0, kFeaturesStart };
+    var list_cursor = [_]usize{ firstSelectable(0, kFeaturesStart), firstSelectable(kFeaturesStart, kRandomizerStart), firstSelectable(kRandomizerStart, kSettings.len) };
+    var list_top = [_]usize{ 0, kFeaturesStart, kRandomizerStart };
     var dirty = false;
     var launch = false;
     var randomizer = false;
     var status: []const u8 = "";
     var assets = checkAssets(alloc);
-    if (assets != .verified) {
+    if (seed) |path| {
+        // Started with a seed: its options come first, and assets don't
+        // matter to it.
+        setRandomizerRom(path);
+        screen = .randomizer;
+        list_cursor[listIndex(.randomizer)] = kPlayRow;
+    } else if (assets != .verified) {
         modal = .rom;
         main_cursor = kMainLaunch;
     }
@@ -1397,6 +1474,7 @@ pub fn run(alloc: std.mem.Allocator) !Outcome {
     while (running) {
         const now = c.SDL_GetTicks();
         var confirm = false;
+        var start = false;
         var back = false;
         var save = false;
         var build = false;
@@ -1419,17 +1497,19 @@ pub fn run(alloc: std.mem.Allocator) !Outcome {
                 // A ROM dropped on the window is the quickest path from a
                 // fresh checkout to a playable game.
                 c.SDL_EVENT_DROP_FILE => {
-                    if (event.drop.data) |path| randomizer: {
-                        // A randomizer seed goes straight to playing it.
+                    var was_seed = false;
+                    if (event.drop.data) |path| seed: {
+                        // A randomizer seed opens its own options, then plays.
                         const span = std.mem.span(path);
-                        if (!isRandomizerRom(span)) break :randomizer;
-                        @memcpy(g_randomizer_buf[0..span.len], span);
-                        g_randomizer_buf[span.len] = 0;
-                        g_randomizer_rom = g_randomizer_buf[0..span.len :0];
-                        randomizer = true;
-                        running = false;
+                        if (!isRandomizerRom(span)) break :seed;
+                        setRandomizerRom(span);
+                        screen = .randomizer;
+                        list_cursor[listIndex(.randomizer)] = kPlayRow;
+                        modal = .none;
+                        status = "";
+                        was_seed = true;
                     }
-                    if (!randomizer) if (event.drop.data) |path| {
+                    if (!was_seed) if (event.drop.data) |path| {
                         status = "CHECKING ROM...";
                         drawScreen(renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice));
                         status = buildAssetsFromDrop(alloc, path);
@@ -1487,7 +1567,10 @@ pub fn run(alloc: std.mem.Allocator) !Outcome {
                     // they go by position; the face buttons go by label.
                     _ = held.setButton(event.gbutton.button, true);
                     switch (event.gbutton.button) {
-                        c.SDL_GAMEPAD_BUTTON_START => confirm = true,
+                        c.SDL_GAMEPAD_BUTTON_START => {
+                            confirm = true;
+                            start = true;
+                        },
                         c.SDL_GAMEPAD_BUTTON_DPAD_UP => tap_v -= 1,
                         c.SDL_GAMEPAD_BUTTON_DPAD_DOWN => tap_v += 1,
                         c.SDL_GAMEPAD_BUTTON_DPAD_LEFT => tap_h -= 1,
@@ -1677,21 +1760,27 @@ pub fn run(alloc: std.mem.Allocator) !Outcome {
             if (confirm) adjust = 1;
 
             if (move != 0) {
-                // Step over the section headings.
+                // Step over the section headings, and on to Play at the end
+                // of the randomizer's list.
                 var at: i32 = @intCast(list_cursor[li]);
                 const from: i32 = @intCast(range.from);
-                const to: i32 = @intCast(range.to);
+                const to: i32 = @as(i32, @intCast(range.to)) + @intFromBool(screen == .randomizer);
                 while (true) {
                     at += move;
                     if (at < from) at = to - 1;
                     if (at >= to) at = from;
-                    if (!isSection(kSettings[@intCast(at)])) break;
+                    if (at == kPlayRow or !isSection(kSettings[@intCast(at)])) break;
                 }
                 list_cursor[li] = @intCast(at);
                 status = "";
             }
 
-            if (adjust != 0) {
+            if (screen == .randomizer and (start or (confirm and list_cursor[li] == kPlayRow))) {
+                // Keep the choices for next time, then go.
+                if (dirty) ini.save("zelda3.ini") catch {};
+                randomizer = true;
+                running = false;
+            } else if (adjust != 0 and list_cursor[li] != kPlayRow) {
                 var buf: [64]u8 = undefined;
                 const at = list_cursor[li];
                 const cur = ini.values[at] orelse "";
@@ -1854,17 +1943,24 @@ test "the shipped ini survives a save unchanged" {
     try testing.expectEqualStrings(original, back);
 }
 
-test "the schema splits cleanly into the two menus" {
-    // Everything before the FEATURES heading belongs to Settings, and
-    // everything from it belongs to Features. If a section is ever added
-    // after Features this silently puts it on the wrong screen, so check it.
+test "the schema splits cleanly into the three menus" {
+    // Everything before the FEATURES heading belongs to Settings, Features
+    // runs to the RANDOMIZER heading, and the rest is what a seed opens on.
+    // A section added in the wrong place would land on the wrong screen.
     const settings = screenRange(.settings);
     const features = screenRange(.features);
+    const randomizer = screenRange(.randomizer);
 
     try testing.expect(settings.to > settings.from);
     try testing.expect(features.to > features.from);
+    try testing.expect(randomizer.to > randomizer.from);
     try testing.expectEqual(settings.to, features.from);
-    try testing.expectEqual(kSettings.len, features.to);
+    try testing.expectEqual(features.to, randomizer.from);
+    try testing.expectEqual(kSettings.len, randomizer.to);
+    for (kSettings[randomizer.from..randomizer.to]) |s| {
+        if (isSection(s)) continue;
+        try testing.expectEqualStrings("Randomizer", s.section);
+    }
 
     for (kSettings[settings.from..settings.to]) |s| {
         if (isSection(s)) continue;

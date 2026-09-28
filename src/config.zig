@@ -577,6 +577,7 @@ fn getIniSection(str: [*:0]const u8) c_int {
     if (util.StringEqualsNoCase(str, "[General]")) return 3;
     if (util.StringEqualsNoCase(str, "[Features]")) return 4;
     if (util.StringEqualsNoCase(str, "[GamepadMap]")) return 5;
+    if (util.StringEqualsNoCase(str, "[Randomizer]")) return 6;
     return -1;
 }
 
@@ -625,8 +626,38 @@ fn parseBoolBit(value: [*:0]const u8, data: *u32, mask: u32) bool {
 /// for the in-game settings menu. Only the plain sections are handled; key
 /// bindings stay with the file. False when the section, key or value isn't
 /// understood.
-/// Where the randomizer item tracker goes: panel, overlay, window or off.
+/// The choices a randomizer seed starts with, from [Randomizer]: where the
+/// item tracker goes, widescreen pixels a side, rumble strength and whether
+/// to look for MSU-1 tracks. Separate from the normal game's settings.
 pub var g_tracker: []const u8 = "panel";
+pub var g_rando_margin: u8 = 0;
+pub var g_rando_rumble: u8 = 100;
+pub var g_rando_msu: bool = true;
+
+fn handleRandomizer(key: [*:0]const u8, value: [*:0]u8) bool {
+    if (util.StringEqualsNoCase(key, "Tracker")) {
+        g_tracker = std.mem.span(value);
+        return true;
+    } else if (util.StringEqualsNoCase(key, "Widescreen")) {
+        const v = std.mem.span(value);
+        const h: c_int = 224;
+        g_rando_margin = if (std.mem.eql(u8, v, "16:9"))
+            @intCast(@divTrunc(@divTrunc(h * 16, 9) - 256, 2))
+        else if (std.mem.eql(u8, v, "16:10"))
+            @intCast(@divTrunc(@divTrunc(h * 16, 10) - 256, 2))
+        else if (std.mem.eql(u8, v, "18:9"))
+            @intCast(@divTrunc(@divTrunc(h * 18, 9) - 256, 2))
+        else
+            0;
+        return true;
+    } else if (util.StringEqualsNoCase(key, "Rumble")) {
+        g_rando_rumble = @intCast(std.math.clamp(atoi(value), 0, 100));
+        return true;
+    } else if (util.StringEqualsNoCase(key, "MSU")) {
+        return ParseBool(value, &g_rando_msu);
+    }
+    return false;
+}
 
 pub fn applySetting(section: []const u8, key: []const u8, value: []const u8) bool {
     const id: c_int = if (std.mem.eql(u8, section, "Graphics"))
@@ -637,6 +668,8 @@ pub fn applySetting(section: []const u8, key: []const u8, value: []const u8) boo
         3
     else if (std.mem.eql(u8, section, "Features"))
         4
+    else if (std.mem.eql(u8, section, "Randomizer"))
+        6
     else
         return false;
     var key_buf: [64]u8 = undefined;
@@ -670,6 +703,7 @@ fn handleIniConfig(section: c_int, key: [*:0]const u8, value: [*:0]u8) bool {
         2 => return handleSound(key, value),
         3 => return handleGeneral(key, value),
         4 => return handleFeatures(key, value),
+        6 => return handleRandomizer(key, value),
         else => {},
     }
     return false;
