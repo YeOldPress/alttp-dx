@@ -16,6 +16,7 @@ const nmi = @import("nmi.zig");
 const audio = @import("audio.zig");
 const attract = @import("attract.zig");
 const player_oam = @import("player_oam.zig");
+const settings_menu = @import("settings_menu.zig");
 
 const MemBlk = util.MemBlk;
 const OamEnt = vars.OamEnt;
@@ -409,9 +410,12 @@ pub export fn Module0E_09_BluePotion() callconv(.c) void {
 }
 
 pub export fn Module0E_0B_SaveMenu() callconv(.c) void {
-    // This is the continue / save and quit menu
+    // This is the continue / save and quit menu, and the settings screen that
+    // hangs off it.
     if (vars.player_is_indoors.* == 0)
         Overworld_DwDeathMountainPaletteAnimation();
+    if (settings_menu.isOpen())
+        return settings_menu.update();
     RenderText();
     vars.flag_update_hud_in_nmi.* = 0;
     vars.nmi_disable_core_updates.* = 0;
@@ -423,6 +427,8 @@ pub export fn Module0E_0B_SaveMenu() callconv(.c) void {
     if (vars.submodule_index.* == 0) {
         vars.subsubmodule_index.* = 0;
         vars.nmi_load_bg_from_vram.* = 1;
+        if (settings_menu.afterBoxClosed())
+            return;
         if (vars.choice_in_multiselect_box.* != 0) {
             vars.sound_effect_ambient.* = 15;
             vars.main_module_index.* = 23;
@@ -2267,7 +2273,12 @@ pub export fn Text_DecodeCmd(a_in: u8, src: [*]const u8) callconv(.c) u32 {
 pub export fn Text_LoadCharacterBuffer() callconv(.c) void {
     const dictionary = util.FindIndexInMemblk(@bitCast(g_zenv.dialogue_blk), 0);
     const dialogue = util.FindIndexInMemblk(@bitCast(g_zenv.dialogue_blk), 1);
-    const text_str = util.FindIndexInMemblk(dialogue, vars.dialogue_message_index.*);
+    // Text written by the settings menu comes from there rather than from the
+    // game's dialogue.
+    const text_str: util.MemBlk = if (settings_menu.customMessage(vars.dialogue_message_index.*)) |custom|
+        .{ .ptr = custom.ptr, .size = custom.len }
+    else
+        util.FindIndexInMemblk(dialogue, vars.dialogue_message_index.*);
     var src = text_str.ptr.?;
     const src_end = src + text_str.size;
     var dst = vars.messaging_text_buffer;
@@ -2966,7 +2977,9 @@ pub export fn Death_PrepFaint() callconv(.c) void {
 
 pub export fn DisplaySelectMenu() callconv(.c) void {
     vars.choice_in_multiselect_box_bak.* = vars.choice_in_multiselect_box.*;
-    vars.dialogue_message_index.* = 0x186;
+    // Continue Game, Save and Quit, and this port's Settings when it can be
+    // offered; the game's own two-choice message otherwise.
+    vars.dialogue_message_index.* = if (settings_menu.offerSelectMenu()) settings_menu.kMsgCustom else 0x186;
     const bak = vars.main_module_index.*;
     misc.Main_ShowTextMessage();
     vars.main_module_index.* = bak;
@@ -3075,4 +3088,3 @@ test "the signed dungeon-map tables kept their negative entries" {
     try testing.expectEqual(@as(i16, 0x60), tables.kDungMap_Tab26[0]);
     try testing.expectEqual(@as(i16, -0x60), tables.kDungMap_Tab26[1]);
 }
-

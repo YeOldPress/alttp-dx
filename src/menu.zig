@@ -58,7 +58,7 @@ const kColorSection = Rgb{ .r = 0x78, .g = 0xd8, .b = 0x98 };
 /// The file's spelling is not always meant for people to read - Fullscreen is
 /// stored as 0, 1 or 2 - so `labels` gives each value a name to show instead.
 /// Leave it empty and the value is shown as written.
-const Choice = struct {
+pub const Choice = struct {
     values: []const []const u8,
     labels: []const []const u8 = &.{},
 
@@ -71,7 +71,7 @@ const Choice = struct {
     }
 };
 
-const Kind = union(enum) {
+pub const Kind = union(enum) {
     /// 0 or 1, shown as OFF / ON.
     toggle,
     /// One of a fixed set of spellings, cycled in order.
@@ -84,7 +84,7 @@ const Kind = union(enum) {
     text,
 };
 
-const Setting = struct {
+pub const Setting = struct {
     section: []const u8,
     key: []const u8,
     label: []const u8,
@@ -95,7 +95,7 @@ const Setting = struct {
 /// when the cursor moves.
 const kSectionMark = "\x00SECTION";
 
-const kSettings = [_]Setting{
+pub const kSettings = [_]Setting{
     .{ .section = kSectionMark, .key = "", .label = "GENERAL", .kind = .text },
     .{ .section = "General", .key = "StartMenu", .label = "Start Menu", .kind = .toggle },
     .{ .section = "General", .key = "Autosave", .label = "Autosave", .kind = .toggle },
@@ -161,7 +161,7 @@ const kSettings = [_]Setting{
 /// The ini kept as its original lines, with each setting bound to the line it
 /// came from. Values are rewritten in place so comments, blank lines, ordering
 /// and line endings all survive.
-const Ini = struct {
+pub const Ini = struct {
     alloc: std.mem.Allocator,
     text: []u8,
     lines: std.ArrayList([]const u8),
@@ -171,7 +171,7 @@ const Ini = struct {
     line_of: [kSettings.len]?usize,
     crlf: bool,
 
-    fn load(alloc: std.mem.Allocator, path: [*:0]const u8) !Ini {
+    pub fn load(alloc: std.mem.Allocator, path: [*:0]const u8) !Ini {
         const text = try fileio.readWholeFile(alloc, path);
         var self = Ini{
             .alloc = alloc,
@@ -210,19 +210,19 @@ const Ini = struct {
         return self;
     }
 
-    fn deinit(self: *Ini) void {
+    pub fn deinit(self: *Ini) void {
         for (self.values) |v| if (v) |owned| self.alloc.free(owned);
         self.lines.deinit(self.alloc);
         self.alloc.free(self.text);
     }
 
-    fn set(self: *Ini, si: usize, value: []const u8) !void {
+    pub fn set(self: *Ini, si: usize, value: []const u8) !void {
         const owned = try self.alloc.dupe(u8, value);
         if (self.values[si]) |old| self.alloc.free(old);
         self.values[si] = owned;
     }
 
-    fn save(self: *Ini, path: [*:0]const u8) !void {
+    pub fn save(self: *Ini, path: [*:0]const u8) !void {
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(self.alloc);
         const eol: []const u8 = if (self.crlf) "\r\n" else "\n";
@@ -254,14 +254,14 @@ const Ini = struct {
 
 // ------------------------------------------------------------------- value
 
-fn splitSuffix(value: []const u8, suffix: []const u8) []const u8 {
+pub fn splitSuffix(value: []const u8, suffix: []const u8) []const u8 {
     if (suffix.len != 0 and std.mem.endsWith(u8, value, suffix))
         return value[0 .. value.len - suffix.len];
     return value;
 }
 
 /// Steps a setting's value. `dir` is +1 or -1.
-fn cycle(alloc: std.mem.Allocator, buf: []u8, s: Setting, current: []const u8, dir: i32) ?[]const u8 {
+pub fn cycle(alloc: std.mem.Allocator, buf: []u8, s: Setting, current: []const u8, dir: i32) ?[]const u8 {
     switch (s.kind) {
         .toggle => return if (std.mem.eql(u8, std.mem.trim(u8, current, " \t"), "1")) "0" else "1",
         .choice => |opts| {
@@ -293,7 +293,7 @@ fn cycle(alloc: std.mem.Allocator, buf: []u8, s: Setting, current: []const u8, d
 
 /// What the list shows for a value: toggles read as words, everything else as
 /// written, with empty text made visible.
-fn displayValue(buf: []u8, s: Setting, value: []const u8) []const u8 {
+pub fn displayValue(buf: []u8, s: Setting, value: []const u8) []const u8 {
     const v = std.mem.trim(u8, value, " \t");
     switch (s.kind) {
         .toggle => return if (std.mem.eql(u8, v, "1")) "ON" else "OFF",
@@ -364,7 +364,7 @@ fn drawTextScaled(r: *c.SDL_Renderer, x: f32, y: f32, col: Rgb, text: []const u8
 
 // --------------------------------------------------------------------- main
 
-fn isSection(s: Setting) bool {
+pub fn isSection(s: Setting) bool {
     return std.mem.eql(u8, s.section, kSectionMark);
 }
 

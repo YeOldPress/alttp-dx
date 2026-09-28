@@ -178,46 +178,142 @@ const kDefaultKbdControls: [kKeys.Total]u16 = blk: {
     const listed = [_]u16{
         0,
         // Controls
-        k(c.SDLK_UP),       k(c.SDLK_DOWN),     k(c.SDLK_LEFT),     k(c.SDLK_RIGHT),
-        k(c.SDLK_RSHIFT),   k(c.SDLK_RETURN),   k(c.SDLK_X),        k(c.SDLK_Z),
-        k(c.SDLK_S),        k(c.SDLK_A),        k(c.SDLK_C),        k(c.SDLK_V),
+        k(c.SDLK_UP),
+        k(c.SDLK_DOWN),
+        k(c.SDLK_LEFT),
+        k(c.SDLK_RIGHT),
+        k(c.SDLK_RSHIFT),
+        k(c.SDLK_RETURN),
+        k(c.SDLK_X),
+        k(c.SDLK_Z),
+        k(c.SDLK_S),
+        k(c.SDLK_A),
+        k(c.SDLK_C),
+        k(c.SDLK_V),
         // LoadState
-        k(c.SDLK_F1),       k(c.SDLK_F2),       k(c.SDLK_F3),       k(c.SDLK_F4),
-        k(c.SDLK_F5),       k(c.SDLK_F6),       k(c.SDLK_F7),       k(c.SDLK_F8),
-        k(c.SDLK_F9),       k(c.SDLK_F10),      0,                  0,
-        0,                  0,                  0,                  0,
-        0,                  0,                  0,                  0,
+        k(c.SDLK_F1),
+        k(c.SDLK_F2),
+        k(c.SDLK_F3),
+        k(c.SDLK_F4),
+        k(c.SDLK_F5),
+        k(c.SDLK_F6),
+        k(c.SDLK_F7),
+        k(c.SDLK_F8),
+        k(c.SDLK_F9),
+        k(c.SDLK_F10),
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
         // SaveState
-        shift(c.SDLK_F1),   shift(c.SDLK_F2),   shift(c.SDLK_F3),   shift(c.SDLK_F4),
-        shift(c.SDLK_F5),   shift(c.SDLK_F6),   shift(c.SDLK_F7),   shift(c.SDLK_F8),
-        shift(c.SDLK_F9),   shift(c.SDLK_F10),  0,                  0,
-        0,                  0,                  0,                  0,
-        0,                  0,                  0,                  0,
+        shift(c.SDLK_F1),
+        shift(c.SDLK_F2),
+        shift(c.SDLK_F3),
+        shift(c.SDLK_F4),
+        shift(c.SDLK_F5),
+        shift(c.SDLK_F6),
+        shift(c.SDLK_F7),
+        shift(c.SDLK_F8),
+        shift(c.SDLK_F9),
+        shift(c.SDLK_F10),
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
         // Replay State
-        ctrl(c.SDLK_F1),    ctrl(c.SDLK_F2),    ctrl(c.SDLK_F3),    ctrl(c.SDLK_F4),
-        ctrl(c.SDLK_F5),    ctrl(c.SDLK_F6),    ctrl(c.SDLK_F7),    ctrl(c.SDLK_F8),
-        ctrl(c.SDLK_F9),    ctrl(c.SDLK_F10),   0,                  0,
-        0,                  0,                  0,                  0,
-        0,                  0,                  0,                  0,
+        ctrl(c.SDLK_F1),
+        ctrl(c.SDLK_F2),
+        ctrl(c.SDLK_F3),
+        ctrl(c.SDLK_F4),
+        ctrl(c.SDLK_F5),
+        ctrl(c.SDLK_F6),
+        ctrl(c.SDLK_F7),
+        ctrl(c.SDLK_F8),
+        ctrl(c.SDLK_F9),
+        ctrl(c.SDLK_F10),
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
         // Load Ref State
-        0,                  0,                  0,                  0,
-        0,                  0,                  0,                  0,
-        0,                  0,                  0,                  0,
-        0,                  0,                  0,                  0,
-        0,                  0,                  0,                  0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
         // Replay Ref State
-        0,                  0,                  0,                  0,
-        0,                  0,                  0,                  0,
-        0,                  0,                  0,                  0,
-        0,                  0,                  0,                  0,
-        0,                  0,                  0,                  0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
         // CheatLife, CheatKeys, CheatEquipment, CheatWalkThroughWalls
-        k(c.SDLK_W),        k(c.SDLK_O),        shift(c.SDLK_W),    ctrl(c.SDLK_E),
+        k(c.SDLK_W),
+        k(c.SDLK_O),
+        shift(c.SDLK_W),
+        ctrl(c.SDLK_E),
         // ClearKeyLog, StopReplay, Fullscreen, Reset, Pause, PauseDimmed,
         // Turbo, ReplayTurbo, WindowBigger, WindowSmaller, DisplayPerf, ToggleRenderer
-        k(c.SDLK_K),        k(c.SDLK_L),        alt(c.SDLK_RETURN), ctrl(c.SDLK_R),
-        shift(c.SDLK_P),    k(c.SDLK_P),        k(c.SDLK_TAB),      k(c.SDLK_T),
-        0,                  0,                  k(c.SDLK_F),        k(c.SDLK_R),
+        k(c.SDLK_K),
+        k(c.SDLK_L),
+        alt(c.SDLK_RETURN),
+        ctrl(c.SDLK_R),
+        shift(c.SDLK_P),
+        k(c.SDLK_P),
+        k(c.SDLK_TAB),
+        k(c.SDLK_T),
+        0,
+        0,
+        k(c.SDLK_F),
+        k(c.SDLK_R),
     };
     for (listed, 0..) |v, i| t[i] = v;
     break :blk t;
@@ -396,19 +492,17 @@ export fn FindCmdForGamepadButton(button: c_int, modifiers: u32) callconv(.c) c_
 
 // Longest substring first, so that "L1" does not shadow "L3" and friends.
 const kGamepadKeyNames = [_][:0]const u8{
-    "Back",     "Guide",     "Start",     "L3", "R3",
-    "L1",       "R1",        "DpadUp",    "DpadDown",
-    "DpadLeft", "DpadRight", "L2",        "R2",
-    "Lb",       "Rb",        "A",         "B",
-    "X",        "Y",
+    "Back",      "Guide", "Start",  "L3",       "R3",
+    "L1",        "R1",    "DpadUp", "DpadDown", "DpadLeft",
+    "DpadRight", "L2",    "R2",     "Lb",       "Rb",
+    "A",         "B",     "X",      "Y",
 };
 
 const kGamepadKeyIds = [_]u8{
-    kGamepadBtn.Back,     kGamepadBtn.Guide,     kGamepadBtn.Start, kGamepadBtn.L3, kGamepadBtn.R3,
-    kGamepadBtn.L1,       kGamepadBtn.R1,        kGamepadBtn.DpadUp, kGamepadBtn.DpadDown,
-    kGamepadBtn.DpadLeft, kGamepadBtn.DpadRight, kGamepadBtn.L2,    kGamepadBtn.R2,
-    kGamepadBtn.L1,       kGamepadBtn.R1,        kGamepadBtn.A,     kGamepadBtn.B,
-    kGamepadBtn.X,        kGamepadBtn.Y,
+    kGamepadBtn.Back,      kGamepadBtn.Guide, kGamepadBtn.Start,  kGamepadBtn.L3,       kGamepadBtn.R3,
+    kGamepadBtn.L1,        kGamepadBtn.R1,    kGamepadBtn.DpadUp, kGamepadBtn.DpadDown, kGamepadBtn.DpadLeft,
+    kGamepadBtn.DpadRight, kGamepadBtn.L2,    kGamepadBtn.R2,     kGamepadBtn.L1,       kGamepadBtn.R1,
+    kGamepadBtn.A,         kGamepadBtn.B,     kGamepadBtn.X,      kGamepadBtn.Y,
 };
 
 fn parseGamepadButtonName(value: *[*:0]const u8) c_int {
@@ -525,6 +619,28 @@ fn parseBoolBit(value: [*:0]const u8, data: *u32, mask: u32) bool {
     if (!ParseBool(value, &tmp)) return false;
     data.* = data.* & ~mask | (if (tmp) mask else 0);
     return true;
+}
+
+/// Applies one setting to g_config the way reading it from zelda3.ini would,
+/// for the in-game settings menu. Only the plain sections are handled; key
+/// bindings stay with the file. False when the section, key or value isn't
+/// understood.
+pub fn applySetting(section: []const u8, key: []const u8, value: []const u8) bool {
+    const id: c_int = if (std.mem.eql(u8, section, "Graphics"))
+        1
+    else if (std.mem.eql(u8, section, "Sound"))
+        2
+    else if (std.mem.eql(u8, section, "General"))
+        3
+    else if (std.mem.eql(u8, section, "Features"))
+        4
+    else
+        return false;
+    var key_buf: [64]u8 = undefined;
+    var value_buf: [64]u8 = undefined;
+    const key_z = std.fmt.bufPrintZ(&key_buf, "{s}", .{key}) catch return false;
+    const value_z = std.fmt.bufPrintZ(&value_buf, "{s}", .{value}) catch return false;
+    return handleIniConfig(id, key_z.ptr, value_z.ptr);
 }
 
 fn handleIniConfig(section: c_int, key: [*:0]const u8, value: [*:0]u8) bool {

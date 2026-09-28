@@ -9,6 +9,8 @@ const opengl = @import("opengl.zig");
 const audio = @import("audio.zig");
 const rumble = @import("rumble.zig");
 const menu = @import("menu.zig");
+const settings_menu = @import("settings_menu.zig");
+const frame_capture = @import("frame_capture.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const emu = @import("zelda_cpu_infra.zig");
 const snes_pkg = @import("snes");
@@ -290,6 +292,41 @@ var perf_history: [64]f32 = @splat(0);
 var perf_average: f32 = 0;
 var perf_history_pos: usize = 0;
 
+/// The --render path: load a chapter snapshot, play the script, and write the
+/// frame it ends on. Runs before SDL is started, so no window ever opens.
+fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u8) c_int {
+    const ref = std.fmt.parseInt(c_int, std.mem.span(ref_arg), 10) catch {
+        std.debug.print("--render: the snapshot is a number from 0 to 12\n", .{});
+        return 1;
+    };
+    SaveLoadSlot(kSaveLoad_Load, 256 + ref);
+
+    var it = std.mem.tokenizeScalar(u8, std.mem.span(script), ',');
+    while (it.next()) |text| {
+        const step = frame_capture.parseStep(text) catch |err| {
+            std.debug.print("--render: bad step '{s}': {s}\n", .{ text, @errorName(err) });
+            return 1;
+        };
+        for (0..step.frames) |_| {
+            _ = ZeldaRunFrame(step.buttons);
+            rumble.reset();
+        }
+    }
+
+    const width: usize = @intCast(g_snes_width);
+    const height: usize = @intCast(g_snes_height);
+    const pixels = std.heap.c_allocator.alloc(u32, width * height) catch return 1;
+    defer std.heap.c_allocator.free(pixels);
+    // One pixel per SNES pixel, so no 4x Mode 7.
+    ZeldaDrawPpuFrame(@ptrCast(pixels.ptr), width * 4, g_ppu_render_flags & ~kPpuRenderFlags_4x4Mode7);
+    settings_menu.drawOver(@ptrCast(pixels.ptr), width * 4, width, height, 1);
+    frame_capture.writeBmp(out, pixels, width, height) catch |err| {
+        std.debug.print("--render: could not write {s}: {s}\n", .{ out, @errorName(err) });
+        return 1;
+    };
+    return 0;
+}
+
 fn DrawPpuFrameWithPerf() void {
     const ppu: *Ppu = @ptrCast(@alignCast(g_zenv.ppu.?));
     const render_scale = ppu_mod.PpuGetCurrentRenderScale(ppu, g_ppu_render_flags);
@@ -315,6 +352,7 @@ fn DrawPpuFrameWithPerf() void {
     } else {
         ZeldaDrawPpuFrame(pixel_buffer, @intCast(pitch), g_ppu_render_flags);
     }
+    settings_menu.drawOver(pixel_buffer, @intCast(pitch), @intCast(g_snes_width), @intCast(g_snes_height), @intCast(render_scale));
     if (g_display_perf)
         RenderNumber(pixel_buffer + @as(usize, @intCast(pitch * render_scale)), @intCast(pitch), g_curr_fps, render_scale == 4);
     g_renderer_funcs.EndDraw.?();
@@ -464,6 +502,15 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     var config_file: ?[*:0]const u8 = null;
     const alloc = std.heap.c_allocator;
 
+    // `--render <ref> <script> <out.bmp>` plays a script from a snapshot with
+    // no window and saves the last frame. See frame_capture.zig.
+    var render_request: ?[*]const [*:0]u8 = null;
+    if (argc == 4 and strcmp(argv[0], "--render") == 0) {
+        render_request = argv + 1;
+        argc = 0;
+        menu.enterDataDirectory();
+    }
+
     // Flags that do one job and exit rather than starting the game.
     if (argc == 1) {
         const arg = std.mem.span(argv[0]);
@@ -482,7 +529,9 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         }
     }
 
-    if (argc >= 2 and strcmp(argv[0], "--config") == 0) {
+    if (render_request != null) {
+        // Already in the data directory, and no menu for a picture.
+    } else if (argc >= 2 and strcmp(argv[0], "--config") == 0) {
         config_file = argv[1];
         argc -= 2;
         argv += 2;
@@ -537,6 +586,8 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     // after the rate above is settled.
     audio.ZeldaEnableMsu(config.g_config.enable_msu);
     ZeldaSetLanguage(config.g_config.language);
+
+    if (render_request) |r| return renderToFile(r[0], r[1], r[2]);
 
     // SDL3 folded SDL_WINDOW_FULLSCREEN_DESKTOP into SDL_WINDOW_FULLSCREEN: a
     // fullscreen window stays at the desktop resolution unless a display mode
@@ -638,8 +689,12 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         _ = c.SDL_ResumeAudioStreamDevice(g_audio_stream);
     }
 
-    if (argc >= 1 and !g_run_without_emu)
+    if (argc >= 1 and !g_run_without_emu) {
         _ = LoadRom(argv[0]);
+        // The RAM comparison against the original would trip over a menu the
+        // original never had, so Select keeps its two choices.
+        settings_menu.enabled = false;
+    }
 
     makeSaveDir();
 
@@ -856,6 +911,24 @@ fn RenderNumber(dst: [*]u8, pitch: usize, n: c_int, big: bool) void {
 }
 
 const kKbdRemap = [13]u8{ 0, 4, 5, 6, 7, 2, 3, 8, 0, 9, 1, 10, 11 };
+
+/// Brings the window and renderer in line with g_config after the in-game
+/// settings menu changes something they otherwise read only at startup.
+pub fn applyDisplaySettings() void {
+    const want_full = config.g_config.fullscreen != 0;
+    if (want_full != ((g_win_flags & c.SDL_WINDOW_FULLSCREEN) != 0)) {
+        g_win_flags ^= c.SDL_WINDOW_FULLSCREEN;
+        _ = c.SDL_SetWindowFullscreen(g_window, want_full);
+        g_cursor = !want_full;
+        _ = if (g_cursor) c.SDL_ShowCursor() else c.SDL_HideCursor();
+    }
+    const live = kPpuRenderFlags_NewRenderer | kPpuRenderFlags_NoSpriteLimits;
+    g_ppu_render_flags = g_ppu_render_flags & ~live |
+        @as(u32, @intFromBool(config.g_config.new_renderer)) * kPpuRenderFlags_NewRenderer |
+        @as(u32, @intFromBool(config.g_config.no_sprite_limits)) * kPpuRenderFlags_NoSpriteLimits;
+    if (g_texture) |t|
+        _ = c.SDL_SetTextureScaleMode(t, if (config.g_config.linear_filtering) c.SDL_SCALEMODE_LINEAR else c.SDL_SCALEMODE_NEAREST);
+}
 
 fn HandleCommand(j: u32, pressed: bool) void {
     if (j <= kKeys_Controls_Last) {
