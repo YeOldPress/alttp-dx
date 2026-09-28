@@ -504,7 +504,7 @@ test "SetShapePointer picks up the model's vertex and poly counts" {
     try testing.expectEqual(@as(u16, 0xffe4), poly_fromlut_ptr4.*);
 }
 
-test "SetColorMask splits a 32-bit colour across the two raster words" {
+test "SetColorMask splits a 32-bit color across the two raster words" {
     Polyhedral_SetColorMask(15);
     try testing.expectEqual(@as(u16, 0xffff), poly_raster_color0.*);
     try testing.expectEqual(@as(u16, 0xffff), poly_raster_color1.*);

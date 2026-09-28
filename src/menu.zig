@@ -731,21 +731,21 @@ pub const AssetState = enum {
     verified,
     /// Present, but not a file this build of the tool produces. Usually an
     /// older .dat; the game may or may not accept it.
-    unrecognised,
+    unrecognized,
 
     fn line(self: AssetState) []const u8 {
         return switch (self) {
             .missing => "ASSETS MISSING",
             .verified => "ASSETS VERIFIED",
-            .unrecognised => "ASSETS PRESENT - CHECKSUM DIFFERS",
+            .unrecognized => "ASSETS PRESENT - CHECKSUM DIFFERS",
         };
     }
 
-    fn colour(self: AssetState) Rgb {
+    fn color(self: AssetState) Rgb {
         return switch (self) {
             .missing => kColorWarn,
             .verified => kColorOk,
-            .unrecognised => kColorWarn,
+            .unrecognized => kColorWarn,
         };
     }
 };
@@ -771,7 +771,7 @@ fn checkAssetsAt(alloc: std.mem.Allocator, path: [*:0]const u8) AssetState {
         hex[i * 2] = kHexDigits[byte >> 4];
         hex[i * 2 + 1] = kHexDigits[byte & 0xf];
     }
-    return if (std.mem.eql(u8, &hex, asset_all.kReferenceDigest)) .verified else .unrecognised;
+    return if (std.mem.eql(u8, &hex, asset_all.kReferenceDigest)) .verified else .unrecognized;
 }
 
 /// State the drawing needs. Passed as one value because the slow paths -
@@ -920,7 +920,7 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
         drawTextCentered(renderer, cx, y, if (selected) kColorSelect else kColorText, label, kScale);
     }
 
-    // Launch: a button, centred, big enough to be the obvious thing to press.
+    // Launch: a button, centered, big enough to be the obvious thing to press.
     const scale = kLaunchScale;
     const label = kMainItems[kMainLaunch];
     const box = launchRect();
@@ -943,7 +943,7 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     // the asset builder produces and reported as its own state.
     const state_y = box_y + box_h + 18;
 
-    drawTextCentered(renderer, cx, state_y, v.assets.colour(), v.assets.line(), kScale);
+    drawTextCentered(renderer, cx, state_y, v.assets.color(), v.assets.line(), kScale);
 
     if (v.assets == .missing) {
         drawTextCentered(renderer, cx, state_y + kRowH, kColorTextDim, "DRAG A .SFC ROM ONTO THIS WINDOW", kScale);
@@ -1116,7 +1116,7 @@ fn buildAssetsFromDrop(alloc: std.mem.Allocator, path: [*:0]const u8) []const u8
     var rom = rom_mod.Rom.load(alloc, path) catch return "COULD NOT READ THAT FILE";
     defer rom.deinit();
 
-    const lang = rom.language orelse return "UNRECOGNISED ROM";
+    const lang = rom.language orelse return "UNRECOGNIZED ROM";
     if (lang != .us) {
         // Naming the region makes it obvious this is the wrong dump rather
         // than a corrupt one.
@@ -1223,7 +1223,7 @@ pub fn reportPads() void {
                 .save => "save",
                 .none => "-",
             };
-            std.debug.print("  {s:<6} labelled {s:<8} does {s}\n", .{ b.pos, printed, does });
+            std.debug.print("  {s:<6} labeled {s:<8} does {s}\n", .{ b.pos, printed, does });
         }
     }
 }
@@ -1914,7 +1914,7 @@ test "the on-screen strings fit the window" {
         "Borderless",
         "Windowed",
         "Exclusive",
-        "UNRECOGNISED ROM",
+        "UNRECOGNIZED ROM",
         "UNSAVED CHANGES",
         "US ROM VERIFIED - ASSETS BUILT",
     }) |line| {
@@ -1938,18 +1938,18 @@ test "the asset check tells the three states apart" {
     try testing.expectEqual(AssetState.missing, checkAssetsAt(alloc, "no-such-file.dat"));
 
     // Anything that is not the file the builder produces is reported as
-    // present but unrecognised rather than waved through - a stale .dat loads
+    // present but unrecognized rather than waved through - a stale .dat loads
     // and then misbehaves in ways that look like game bugs.
     const scratch = "zelda3_assets_checktest.dat";
     try fileio.writeWholeFile(scratch, "not an asset file");
     defer _ = fileio.remove(scratch);
-    try testing.expectEqual(AssetState.unrecognised, checkAssetsAt(alloc, scratch));
+    try testing.expectEqual(AssetState.unrecognized, checkAssetsAt(alloc, scratch));
 
     // An empty file is not a crash.
     const empty = "zelda3_assets_emptytest.dat";
     try fileio.writeWholeFile(empty, "");
     defer _ = fileio.remove(empty);
-    try testing.expectEqual(AssetState.unrecognised, checkAssetsAt(alloc, empty));
+    try testing.expectEqual(AssetState.unrecognized, checkAssetsAt(alloc, empty));
 
     // And the real thing, when this machine has one.
     if (fileio.exists("zig-out/bin/zelda3_assets.dat"))
@@ -1971,7 +1971,7 @@ test "a corrupted asset file is not reported as verified" {
     const scratch = "zelda3_assets_corrupttest.dat";
     try fileio.writeWholeFile(scratch, copy);
     defer _ = fileio.remove(scratch);
-    try testing.expectEqual(AssetState.unrecognised, checkAssetsAt(alloc, scratch));
+    try testing.expectEqual(AssetState.unrecognized, checkAssetsAt(alloc, scratch));
 }
 
 test "every named choice names all of its values" {

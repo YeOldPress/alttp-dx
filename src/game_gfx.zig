@@ -1,11 +1,11 @@
 //! Draws with the game's own graphics straight onto a finished frame.
 //!
 //! The PPU has already turned the SNES state into pixels by the time this
-//! runs; this paints on top of them, reading the HUD's tiles, the colours
+//! runs; this paints on top of them, reading the HUD's tiles, the colors
 //! out of CGRAM and the dialogue font out of the asset file, so what it draws
 //! looks exactly like the game's menus without touching any of the state the
 //! game will want back afterwards. Coordinates are in SNES pixels on a 256x224
-//! screen, scaled and centred to whatever the frame really is.
+//! screen, scaled and centered to whatever the frame really is.
 const std = @import("std");
 const rtl = @import("zelda_rtl_types.zig");
 const util = @import("util.zig");
@@ -88,7 +88,7 @@ pub const Canvas = struct {
     }
 
     /// One 8x8 BG3 tile, given the way a tilemap names it: tile number,
-    /// palette and flips all in the one word. Colour 0 is see-through.
+    /// palette and flips all in the one word. Color 0 is see-through.
     pub fn tile(self: Canvas, x: i32, y: i32, word: u16) void {
         if (!g_hud_chr_loaded) return;
         const num: usize = word & 0x3ff;
@@ -229,7 +229,7 @@ pub fn bgr555(c: u16) u32 {
     return (r << 3 | r >> 2) << 16 | (g << 3 | g >> 2) << 8 | (b << 3 | b >> 2);
 }
 
-test "SNES colours widen to eight bits per channel" {
+test "SNES colors widen to eight bits per channel" {
     try std.testing.expectEqual(@as(u32, 0xffffff), bgr555(0x7fff));
     try std.testing.expectEqual(@as(u32, 0xff0000), bgr555(0x001f));
     try std.testing.expectEqual(@as(u32, 0x0000ff), bgr555(0x7c00));

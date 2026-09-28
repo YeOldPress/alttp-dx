@@ -183,7 +183,7 @@ pub fn buildAll(alloc: std.mem.Allocator, rom: Rom) !Assets {
     return .{ .items = try b.list.toOwnedSlice(alloc), .alloc = alloc };
 }
 
-/// Builds every asset and serialises the container.
+/// Builds every asset and serializes the container.
 pub fn buildFile(alloc: std.mem.Allocator, rom: Rom) ![]u8 {
     var assets = try buildAll(alloc, rom);
     defer assets.deinit();

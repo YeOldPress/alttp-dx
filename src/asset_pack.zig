@@ -54,7 +54,7 @@ pub const Asset = struct {
 
 const kHeaderSize = 88;
 
-/// Serialises assets in the order given. Order is part of the format: the
+/// Serializes assets in the order given. Order is part of the format: the
 /// game refers to assets by index, so it has to match what the headers say.
 pub fn write(alloc: std.mem.Allocator, assets: []const Asset) ![]u8 {
     var names: std.ArrayList(u8) = .empty;
@@ -210,7 +210,7 @@ test "a corrupted name table is rejected" {
 
 // The built file is not in the repository - it is made from a ROM the user
 // supplies - so this only runs when one happens to be lying around.
-test "a built zelda3_assets.dat re-serialises to the same bytes" {
+test "a built zelda3_assets.dat re-serializes to the same bytes" {
     const alloc = testing.allocator;
     const path = "zig-out/bin/zelda3_assets.dat";
     if (!fileio.exists(path)) return error.SkipZigTest;

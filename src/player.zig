@@ -823,7 +823,7 @@ pub export fn LinkState_ReceivingEther() callconv(.c) void {
     vars.link_auxiliary_state.* = 0;
     vars.link_incapacitated_timer.* = 0;
     vars.link_give_damage.* = 0;
-    // The C decrements a 16-bit view over button_b_frames and its neighbour.
+    // The C decrements a 16-bit view over button_b_frames and its neighbor.
     const bbf = wordPtr(vars.button_b_frames);
     bbf.* -%= 1;
     const i = bbf.*;
@@ -7834,7 +7834,7 @@ test "Refund_Magic clamps at 128 only when the bugfix flag is set" {
     Refund_Magic(4);
     try std.testing.expectEqual(@as(u8, 128), vars.link_magic_power.*);
 
-    // Without the fix the original overflow behaviour is preserved.
+    // Without the fix the original overflow behavior is preserved.
     vars.link_magic_power.* = 127;
     features.enhanced_features0.* = 0;
     Refund_Magic(4);

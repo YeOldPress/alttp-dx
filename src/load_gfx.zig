@@ -2278,7 +2278,7 @@ test "IrisSpotlight_CalculateCircleValue clamps the window to a byte each side" 
     // a == spotlight_var1 puts the divide at 0x100, so the table index is 0x80,
     // the last entry, which is zero -- a fully closed row.
     try testing.expectEqual(@as(u16, 0xff), IrisSpotlight_CalculateCircleValue(0x40));
-    // At the centre the table is 0xff, giving the widest span.
+    // At the center the table is 0xff, giving the widest span.
     const mid = IrisSpotlight_CalculateCircleValue(0);
     try testing.expect(mid != 0xff);
     try testing.expect(mid & 0xff <= 255 and mid >> 8 <= 255);

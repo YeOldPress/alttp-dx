@@ -61,7 +61,7 @@ extern fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
 extern fn fclose(f: *anyopaque) c_int;
 
 /// Creates the save directory if it is not already there. The condition is
-/// comptime, so only the call that exists on this platform is analysed.
+/// comptime, so only the call that exists on this platform is analyzed.
 fn makeSaveDir() void {
     if (builtin.os.tag == .windows) {
         _ = _mkdir("saves");

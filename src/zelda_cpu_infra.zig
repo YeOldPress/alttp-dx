@@ -492,7 +492,7 @@ pub export fn EmuRunFrameWithCompare(input_state: u16, run_what: c_int) callconv
 
     // The C loops back to `again_theirs` on mismatch. Its `goto again_mine` is
     // guarded by `if (0)` and the block after the goto is unreachable, so this
-    // is the whole of the retry behaviour.
+    // is the whole of the retry behavior.
     while (true) {
         // Run orig version then snapshot
         snesInput1().currentState = input_state;

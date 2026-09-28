@@ -320,7 +320,7 @@ pub fn build(alloc: std.mem.Allocator, rom: Rom, song: Song) ![]u8 {
 
     while (w.queue.pop()) |item| {
         // Bounded by whatever object starts next, which is what makes a
-        // pattern stop instead of running into its neighbour.
+        // pattern stop instead of running into its neighbor.
         const next_ea: ?u16 = if (w.queue.peek()) |n| n.ea else null;
         switch (item.kind) {
             .song => try w.walkSong(item.ea),

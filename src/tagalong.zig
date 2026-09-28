@@ -1139,7 +1139,7 @@ test "the blind trigger is a box around one fixed spot" {
 test "a message trigger fires inside a 24x28 box around Link" {
     resetRam();
     const info = TagalongMessageInfo{ .y = 0x100, .x = 0x200, .bit = 1, .msg = 0x20, .tagalong = 1 };
-    // Centre the probe: link + 12 == info + 8.
+    // Center the probe: link + 12 == info + 8.
     link_x_coord.* = 0x200 + 8 - 12;
     link_y_coord.* = 0x100 + 8 - 12;
     try testing.expect(Follower_CheckForTrigger(&info));

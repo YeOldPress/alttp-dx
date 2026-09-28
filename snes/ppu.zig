@@ -1707,7 +1707,7 @@ test "ppu_reset puts the chip in forced blank with the object tables set" {
     try testing.expect(ppu.m7largeField);
 }
 
-test "vram writes honour the increment mode" {
+test "vram writes honor the increment mode" {
     const ppu = try testPpu();
     defer testing.allocator.destroy(ppu);
 
@@ -1728,7 +1728,7 @@ test "vram writes honour the increment mode" {
     try testing.expectEqual(@as(u16, 0x21), ppu.vramPointer);
 }
 
-test "cgram takes two writes per colour" {
+test "cgram takes two writes per color" {
     const ppu = try testPpu();
     defer testing.allocator.destroy(ppu);
     ppu_write(ppu, 0x21, 0x05); // CGADD

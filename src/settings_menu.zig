@@ -385,7 +385,7 @@ const kRowHighlight = 0x182c58;
 const kMeterOn = 0x48c848;
 const kMeterOff = 0x303848;
 
-/// The text box's own colours, from BG3 palette 6: the dark outline, the
+/// The text box's own colors, from BG3 palette 6: the dark outline, the
 /// white body, and a third the dialogue rarely uses. Read from CGRAM each
 /// frame so the words match the Select menu's exactly. Selected and dimmed
 /// text keep the outline and swap only the body.

@@ -74,7 +74,7 @@ zig build -Dsdl-include=<sdl>\x86_64-w64-mingw32\include ^
 `-Dsdl-lib` points at `bin` rather than `lib` on purpose. That package's import
 library is called `libSDL3.dll.a`, which zig doesn't go looking for, so it
 links against `SDL3.dll` itself instead. If you'd rather use the Visual Studio
-package, point it at `lib\x64`, which has a `SDL3.lib` zig does recognise.
+package, point it at `lib\x64`, which has a `SDL3.lib` zig does recognize.
 
 Copy `SDL3.dll` in next to the binaries when you're done, or put it on PATH.
 Nothing starts without it.
@@ -161,6 +161,33 @@ It's drawn with the game's own graphics: the inventory's framed boxes, item
 icons for tabs (the Book of Mudora for General, the Magic Mirror for Graphics,
 the Flute for Sound, the Pegasus Boots for Features), hearts for on and off, a
 magic-meter bar for numbers, and the dialogue font for every word.
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/select-menu.png" alt="The Select menu with Continue Game, Save and Quit, and Settings" width="384"></td>
+    <td><img src="docs/screenshots/file-select.png" alt="The player select screen, with Settings beside Quit Game on the bottom row" width="384"></td>
+  </tr>
+  <tr>
+    <td align="center">Start, then Select</td>
+    <td align="center">Or from the player select screen</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/settings-general.png" alt="The General tab, with Rumble selected and its meter full" width="384"></td>
+    <td><img src="docs/screenshots/settings-graphics.png" alt="The Graphics tab, with Output Method selected" width="384"></td>
+  </tr>
+  <tr>
+    <td align="center">Hearts for on and off, a meter for numbers</td>
+    <td align="center">Choices get arrows; some apply next start</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/settings-info.png" alt="The info box for Rumble, explaining what it does" width="384"></td>
+    <td></td>
+  </tr>
+  <tr>
+    <td align="center">Y explains any setting</td>
+    <td></td>
+  </tr>
+</table>
 
 | Button | Does |
 | --- | --- |
@@ -325,7 +352,7 @@ second, and the file it writes is byte-for-byte the one `assets/restool.py`
 used to produce. There's a test pinning that digest, because "close enough" on
 an asset file means bugs that look like game bugs.
 
-ROMs are recognised by SHA-1. The US, German and French releases are known, but
+ROMs are recognized by SHA-1. The US, German and French releases are known, but
 only the US ROM can build the asset file; the other two are for pulling
 dialogue out in their language. A headered `.smc` is fine, the copier header
 gets stripped on the way in. The US ROM's SHA256 is
@@ -375,7 +402,7 @@ are in `[Features]`, which is the start menu's Features screen.
   X, L or R in the item screen to assign)
 - Turning while dashing, using the mirror to reach the Dark World, collecting
   items and breaking pots with the sword, carrying 9999 rupees, four active
-  bombs instead of two, skipping the intro, cancelling bird travel, showing
+  bombs instead of two, skipping the intro, canceling bird travel, showing
   maxed-out counts in yellow
 - An assortment of bug fixes, both the cosmetic kind and the kind that changes
   how the game plays
@@ -398,7 +425,7 @@ Added here:
 **Why Zig?**
 
 Because I love programming in it. That's the whole answer. It reads like C,
-but a debug build trips over most of C's undefined behaviour out loud instead
+but a debug build trips over most of C's undefined behavior out loud instead
 of letting it quietly corrupt something, the build system is the language
 instead of a second language bolted on the side, it cross-compiles for Windows
 from a Mac without complaint, and it talks to C as if it had always been
@@ -433,26 +460,26 @@ disassembly and the other disassemblies that documented function names and
 variables.
 
 The SNES PPU and DSP come from [LakeSnes](https://github.com/elzo-d/LakeSnes)
-by elzo_d, by way of upstream, which optimised them heavily.
+by elzo_d, by way of upstream, which optimized them heavily.
 
-## Licence
+## License
 
 MIT, see `LICENSE.txt`.
 
-This is a fork and it inherits that licence. `LICENSE.txt` is unchanged and
+This is a fork and it inherits that license. `LICENSE.txt` is unchanged and
 keeps the original copyright notices, Copyright (c) 2022 snesrev and Copyright
-(c) 2021 elzo_d, as the MIT licence requires.
+(c) 2021 elzo_d, as the MIT license requires.
 
 No game assets are distributed here. Playing requires a ROM you already own,
 which the assets get extracted from locally.
 
-Vendored under `third_party/`, each under its own licence:
+Vendored under `third_party/`, each under its own license:
 
-| Component | Licence | Full text |
+| Component | License | Full text |
 | --- | --- | --- |
 | Opus 1.3.1 (stripped) | 3-clause BSD, (c) Xiph.Org Foundation and others | `third_party/opus-1.3.1-stripped/COPYING`, also appended to `LICENSE.txt` |
 | stb_image v2.27 | MIT or public domain (Unlicense), (c) Sean Barrett | end of `third_party/stb/stb_image.h` |
-| gl_core 3.1 | Generated OpenGL loader (glLoadGen), carries no licence text | none |
+| gl_core 3.1 | Generated OpenGL loader (glLoadGen), carries no license text | none |
 
 SDL3, libc and OpenGL are linked as system dependencies and aren't included
 here.

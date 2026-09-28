@@ -1159,8 +1159,8 @@ test "the main routing table dispatches all 28 modules" {
 test "sfx panning splits the screen into three zones" {
     @memset(g_ram[0..0x1000], 0);
     vars.BG2HOFS_copy2.* = 0;
-    // Left of the window pans left, the middle is centred, the right pans right.
-    try testing.expectEqual(@as(u8, 0), CalculateSfxPan(80)); // dead centre
+    // Left of the window pans left, the middle is centered, the right pans right.
+    try testing.expectEqual(@as(u8, 0), CalculateSfxPan(80)); // dead center
     try testing.expectEqual(@as(u8, 0x40), CalculateSfxPan(200)); // far right
     try testing.expectEqual(@as(u8, 0x80), CalculateSfxPan(0)); // far left
     try testing.expectEqual(3, kPanTable.len);

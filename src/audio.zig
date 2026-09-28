@@ -487,7 +487,7 @@ fn MsuPlayer_Open(mp: *MsuPlayer, orig_track: c_int, resume_from_snapshot: bool)
     }
 }
 
-/// The C reaches this through `goto READ_ERROR` into a labelled block.
+/// The C reaches this through `goto READ_ERROR` into a labeled block.
 /// Byte offset of a sample index in an MSU file, past the 8 byte header.
 ///
 /// fseek takes a c_long, which is 64-bit on Linux and macOS but 32-bit on
@@ -566,7 +566,7 @@ fn MixToBuffer(mp: *MsuPlayer, dst_in: [*]i16, src_in: [*]const i16, n_in: u32) 
     MixToBufferWithVolume(dst, src, n, mp.volume);
 }
 
-/// The C reaches these through `goto` into labelled blocks inside the loop.
+/// The C reaches these through `goto` into labeled blocks inside the loop.
 fn mixFinishedPlaying(mp: *MsuPlayer) void {
     mp.state = kMsuState_FinishedPlaying;
     MsuPlayer_CloseFile(mp);
@@ -985,7 +985,7 @@ test "negative samples survive the C's unsigned-product truncation" {
 test "the msu mixer asks for the rate its decoder produces" {
     // Off means no constraint; the DSP resamples to any rate on its own.
     try testing.expectEqual(@as(?u16, null), MsuRequiredAudioFreq(0));
-    // Opuz decodes at 48000, every other MSU flavour is 44100 PCM.
+    // Opuz decodes at 48000, every other MSU flavor is 44100 PCM.
     try testing.expectEqual(@as(?u16, 48000), MsuRequiredAudioFreq(kMsuEnabled_Opuz));
     try testing.expectEqual(@as(?u16, 48000), MsuRequiredAudioFreq(kMsuEnabled_Msu | kMsuEnabled_Opuz));
     try testing.expectEqual(@as(?u16, 44100), MsuRequiredAudioFreq(kMsuEnabled_Msu));

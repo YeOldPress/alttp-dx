@@ -1,5 +1,5 @@
 //! Port of snes/cpu.c: the 65816 core, including the game-specific brk hooks
-//! that patch over places where the original ROM relies on uninitialised state.
+//! that patch over places where the original ROM relies on uninitialized state.
 const std = @import("std");
 const snes_types = @import("snes_types.zig");
 const snes_mod = @import("snes.zig");
@@ -792,7 +792,7 @@ fn setAL(cpu: *Cpu, value: u8) void {
 }
 
 /// The brk handler: the ROM is patched with brk at a handful of places where
-/// the original game reads uninitialised memory or relies on a junk carry.
+/// the original game reads uninitialized memory or relies on a junk carry.
 /// Returns true if the opcode should be re-dispatched (see `retry`).
 fn cpu_doBrk(cpu: *Cpu, retry: *?u8) void {
     const addr = (@as(u32, cpu.k) << 16) | cpu.pc;

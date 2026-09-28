@@ -14810,7 +14810,7 @@ pub export fn FortuneTeller_PerformPseudoScience(k: c_int) callconv(.c) void {
     v.sprite_ai_state[i] +%= 1;
 
     // The C fills two message slots with a macro that jumps to `done` as soon
-    // as both are taken; the labelled block reproduces that early exit.
+    // as both are taken; the labeled block reproduces that early exit.
     var slots = [2]u8{ 0, 0 };
     var n: usize = 0;
     fill: {

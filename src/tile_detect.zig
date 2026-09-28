@@ -1,7 +1,7 @@
-//! Port of src/tile_detect.c: works out which tile behaviours Link (or a
+//! Port of src/tile_detect.c: works out which tile behaviors Link (or a
 //! hookshot) is touching, and records them as bitmasks in work ram.
 //!
-//! `TileDetect_ExecuteInner` is one big switch over the 256 tile behaviour
+//! `TileDetect_ExecuteInner` is one big switch over the 256 tile behavior
 //! types; the original aborts on anything it does not know, so the default
 //! prong panics rather than silently ignoring a tile.
 const std = @import("std");
@@ -602,7 +602,7 @@ pub export fn TileDetect_ExecuteInner(tile_in: u8, offs: u16, bits: u16, is_indo
             }
         },
         // The C ends with `default: assert(0)`, but every one of the 256
-        // behaviour values is handled above, so that assert can never fire --
+        // behavior values is handled above, so that assert can never fire --
         // and Zig proves the switch exhaustive without an else prong.
     }
 }

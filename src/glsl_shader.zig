@@ -968,7 +968,7 @@ test "wrap modes map onto the GL enums and default to clamp-to-border" {
     try testing.expectEqual(@as(c_uint, c.GL_CLAMP_TO_BORDER), ParseWrapMode("anything else"));
 }
 
-test "a glsl filename is recognised only by its extension" {
+test "a glsl filename is recognized only by its extension" {
     try testing.expect(IsGlslFilename("shader.glsl"));
     try testing.expect(IsGlslFilename("a/b/c.glsl"));
     try testing.expect(!IsGlslFilename("shader.glslp"));
