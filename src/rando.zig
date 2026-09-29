@@ -156,39 +156,83 @@ pub fn audio(out: [*]i16, samples: c_int, channels: c_int) void {
     g_console.audio(out, samples, channels);
 }
 
-// The console makes a frame's sound at a time and the audio device takes it
-// on its own schedule, so it waits in a ring in between. A late frame repeats
-// nothing and a spare one waits its turn, instead of either being stretched.
+// The sound chip and the audio device keep their own time, so the sound goes
+// through two stages. Each frame's samples, exactly as many as the chip made,
+// join one continuous stream at the chip's rate; that stream is resampled to
+// the device's rate with the position carried from frame to frame, so there's
+// no seam where frames meet. The result waits in a ring for the device. The
+// resampling runs a hair fast or slow (half a percent at most, too little to
+// hear) to keep the ring near half full, which is what stops it running dry
+// or overflowing - either of which is a click.
+const kChipRate = 32040.0;
+var g_src: [4096]i16 = undefined; // stereo pairs at the chip's rate
+var g_src_len: usize = 0; // in pairs
+var g_src_pos: f64 = 0;
 var g_ring: [16384]i16 = undefined;
 var g_ring_read: usize = 0;
 var g_ring_len: usize = 0;
+var g_last: [2]i16 = .{ 0, 0 };
 
-/// Called with the audio lock held, after each frame.
+/// Called with the audio lock held, after each frame. `samples` is how many
+/// the device takes a frame, which sets how full the ring is kept.
 pub fn makeAudio(samples: usize, channels: usize) void {
+    const chip = g_console.takeSamples();
+    const pairs = @min(chip.len / 2, g_src.len / 2 - g_src_len);
+    @memcpy(g_src[g_src_len * 2 ..][0 .. pairs * 2], chip[0 .. pairs * 2]);
+    g_src_len += pairs;
+
+    const freq: f64 = @floatFromInt(config.g_config.audio_freq);
+    const fill: f64 = @floatFromInt(g_ring_len / channels);
+    const target: f64 = @floatFromInt(samples * 2);
+    const nudge = std.math.clamp((fill - target) / target, -1.0, 1.0) * 0.005;
+    const step = kChipRate / freq * (1.0 + nudge);
+
     var buf: [4096]i16 = undefined;
-    const n = @min(samples * channels, buf.len);
-    g_console.audio(&buf, @intCast(n / channels), @intCast(channels));
-    if (g_have_msu) g_msu.mix(buf[0..n], n / channels, channels, @intCast(config.g_config.audio_freq));
-    // Keep no more than a few frames' worth, so sound doesn't lag the game.
-    const limit = n * 4;
-    for (buf[0..n]) |v| {
-        if (g_ring_len >= limit or g_ring_len == g_ring.len) {
-            g_ring_read = (g_ring_read + 1) % g_ring.len;
-            g_ring_len -= 1;
+    var n: usize = 0;
+    while (g_src_pos + 1 < @as(f64, @floatFromInt(g_src_len)) and n + channels <= buf.len) {
+        const i: usize = @intFromFloat(g_src_pos);
+        const t = g_src_pos - @as(f64, @floatFromInt(i));
+        var lr: [2]i16 = undefined;
+        for (0..2) |ch| {
+            const a: f64 = @floatFromInt(g_src[i * 2 + ch]);
+            const b: f64 = @floatFromInt(g_src[i * 2 + 2 + ch]);
+            lr[ch] = @intFromFloat(a + (b - a) * t);
         }
+        if (channels == 1) {
+            buf[n] = @intCast((@as(i32, lr[0]) + lr[1]) >> 1);
+        } else {
+            buf[n] = lr[0];
+            buf[n + 1] = lr[1];
+        }
+        n += channels;
+        g_src_pos += step;
+    }
+    // Drop what's been used, keeping the pair the next sample starts from.
+    const used: usize = @intFromFloat(g_src_pos);
+    std.mem.copyForwards(i16, g_src[0 .. (g_src_len - used) * 2], g_src[used * 2 .. g_src_len * 2]);
+    g_src_len -= used;
+    g_src_pos -= @floatFromInt(used);
+
+    if (g_have_msu) g_msu.mix(buf[0..n], n / channels, channels, @intCast(config.g_config.audio_freq));
+    for (buf[0..n]) |v| {
+        if (g_ring_len == g_ring.len) break;
         g_ring[(g_ring_read + g_ring_len) % g_ring.len] = v;
         g_ring_len += 1;
     }
 }
 
-/// Called from the audio device with the lock held.
+/// Called from the audio device with the lock held. Should the ring run dry
+/// anyway, it holds the last sample rather than dropping to zero, which is
+/// the difference between a gap and a pop.
 pub fn takeAudio(out: [*]i16, samples: usize, channels: usize) void {
     for (0..samples * channels) |i| {
+        const ch = i % channels;
         if (g_ring_len == 0) {
-            out[i] = 0;
+            out[i] = g_last[ch];
             continue;
         }
         out[i] = g_ring[g_ring_read];
+        g_last[ch] = out[i];
         g_ring_read = (g_ring_read + 1) % g_ring.len;
         g_ring_len -= 1;
     }

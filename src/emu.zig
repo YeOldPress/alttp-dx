@@ -117,6 +117,16 @@ pub const Console = struct {
         dsp_mod.dsp_getSamples(@ptrCast(@alignCast(apu.dsp.?)), out, samples, channels);
     }
 
+    /// The samples the sound chip made since the last call, stereo at its
+    /// own rate (about 32040 a second), exactly as many as it made.
+    pub fn takeSamples(self: *Console) []const i16 {
+        const apu: *Apu = @ptrCast(@alignCast(self.snes.apu.?));
+        const dsp: *dsp_mod.Dsp = @ptrCast(@alignCast(apu.dsp.?));
+        const n: usize = dsp.sampleOffset;
+        dsp.sampleOffset = 0;
+        return dsp.sampleBuffer[0 .. n * 2];
+    }
+
     pub fn reset(self: *Console) void {
         snes_mod.snes_reset(self.snes, false);
     }
