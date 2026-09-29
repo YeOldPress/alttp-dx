@@ -14,6 +14,7 @@ const fileio = @import("fileio.zig");
 const rom_mod = @import("rom.zig");
 const asset_all = @import("asset_all.zig");
 const c = @import("sdl.zig").c;
+const seed_info = @import("seed_info.zig");
 
 /// The zelda3.ini this build shipped with, written out whenever there is no
 /// ini to be found, so a fresh folder or data directory still starts.
@@ -49,6 +50,8 @@ const kColorLaunchText = Rgb{ .r = 0x00, .g = 0x18, .b = 0x00 };
 const kColorOk = Rgb{ .r = 0x78, .g = 0xe0, .b = 0x88 };
 const kColorWarn = Rgb{ .r = 0xf8, .g = 0xc0, .b = 0x58 };
 const kColorSection = Rgb{ .r = 0x78, .g = 0xd8, .b = 0x98 };
+const kColorRandoBg = Rgb{ .r = 0x58, .g = 0x38, .b = 0xb0 };
+const kColorDisabledBg = Rgb{ .r = 0x30, .g = 0x34, .b = 0x3c };
 
 // ---------------------------------------------------------------- settings
 
@@ -89,6 +92,9 @@ pub const Setting = struct {
     key: []const u8,
     label: []const u8,
     kind: Kind,
+    /// A line shown under the list while the setting is selected, for what
+    /// the label can't say: that something is experimental, or a spoiler.
+    note: []const u8 = "",
 };
 
 /// A heading row in the list. Not a setting; drawn differently and skipped
@@ -155,17 +161,74 @@ pub const kSettings = [_]Setting{
     .{ .section = "Features", .key = "GameChangingBugFixes", .label = "Game Changing Fixes", .kind = .toggle },
     .{ .section = "Features", .key = "CancelBirdTravel", .label = "Cancel Bird Travel", .kind = .toggle },
 
-    // Shown before a randomizer seed starts, not in the lists above: a seed
-    // gets its own choices, so trying widescreen on one leaves the normal
-    // game alone.
+    // The ALTTPR.COM page, not the lists above: a seed gets its own
+    // choices, so trying widescreen on one leaves the normal game alone.
     .{ .section = kSectionMark, .key = "", .label = "RANDOMIZER", .kind = .text },
-    .{ .section = "Randomizer", .key = "Widescreen", .label = "Widescreen", .kind = .{ .choice = .{ .values = &.{ "4:3", "16:9", "16:10", "18:9" } } } },
+    .{ .section = "Randomizer", .key = "Widescreen", .label = "Widescreen", .note = "EXPERIMENTAL - CAN CAUSE ISSUES", .kind = .{ .choice = .{
+        .values = &.{ "4:3", "16:9", "16:10", "18:9" },
+        .labels = &.{ "Off", "16:9", "16:10", "18:9" },
+    } } },
     .{ .section = "Randomizer", .key = "Rumble", .label = "Rumble", .kind = .{ .number = .{ .min = 0, .max = 100, .step = 10, .suffix = "%" } } },
-    .{ .section = "Randomizer", .key = "MSU", .label = "MSU Audio", .kind = .toggle },
-    .{ .section = "Randomizer", .key = "Tracker", .label = "Tracker", .kind = .{ .choice = .{
+    .{ .section = "Randomizer", .key = "MSU", .label = "MSU-1 Audio", .note = "SEED-1.PCM BESIDE THE SEED, OR MSUPATH", .kind = .toggle },
+
+    .{ .section = kSectionMark, .key = "", .label = "TRACKER", .kind = .text },
+    .{ .section = "Randomizer", .key = "Tracker", .label = "Placement", .note = "T SWITCHES THIS WHILE PLAYING", .kind = .{ .choice = .{
         .values = &.{ "panel", "overlay", "window", "off" },
         .labels = &.{ "Beside Game", "Over Game", "Own Window", "Off" },
     } } },
+    .{ .section = "Randomizer", .key = "TrackerSize", .label = "Layout", .note = "LARGE HAS BIGGER MAPS AND A TABLE", .kind = .{ .choice = .{
+        .values = &.{ "large", "compact" },
+        .labels = &.{ "Large", "Compact" },
+    } } },
+    .{ .section = "Randomizer", .key = "TrackerSide", .label = "Panel Side", .kind = .{ .choice = .{
+        .values = &.{ "right", "left" },
+        .labels = &.{ "Right", "Left" },
+    } } },
+    .{ .section = "Randomizer", .key = "TrackerItems", .label = "Show Items", .kind = .toggle },
+    .{ .section = "Randomizer", .key = "TrackerDungeons", .label = "Show Dungeons", .kind = .toggle },
+    .{ .section = "Randomizer", .key = "TrackerMaps", .label = "Show Maps", .kind = .{ .choice = .{
+        .values = &.{ "both", "current", "off" },
+        .labels = &.{ "Both Worlds", "Current World", "Off" },
+    } } },
+    .{ .section = "Randomizer", .key = "TrackerNames", .label = "Dungeon Names", .note = "SHORT IS EP, DP, TOH AND SO ON", .kind = .{ .choice = .{
+        .values = &.{ "full", "short" },
+        .labels = &.{ "Full", "Short" },
+    } } },
+    .{ .section = "Randomizer", .key = "TrackerKeys", .label = "Small Keys", .kind = .toggle },
+    .{ .section = "Randomizer", .key = "TrackerDungeonItems", .label = "Big Key/Map/Compass", .kind = .toggle },
+    .{ .section = "Randomizer", .key = "TrackerBosses", .label = "Bosses", .kind = .toggle },
+    .{ .section = "Randomizer", .key = "TrackerPrizes", .label = "Dungeon Prizes", .note = "ALWAYS IS A SPOILER", .kind = .{ .choice = .{
+        .values = &.{ "map", "always", "off" },
+        .labels = &.{ "With Map", "Always", "Off" },
+    } } },
+    .{ .section = "Randomizer", .key = "TrackerMedallions", .label = "MM/TR Medallions", .note = "SPOILER - SHOWN UNDER THE MEDALLIONS", .kind = .toggle },
+    .{ .section = "Randomizer", .key = "TrackerCounter", .label = "Item Counter", .note = "ITEMS FOUND, HEARTS, GT AND GANON", .kind = .toggle },
+    .{ .section = "Randomizer", .key = "TrackerMissing", .label = "Missing Items", .kind = .{ .choice = .{
+        .values = &.{ "dim", "hide" },
+        .labels = &.{ "Dimmed", "Hidden" },
+    } } },
+    .{ .section = "Randomizer", .key = "TrackerCleared", .label = "Cleared Checks", .kind = .{ .choice = .{
+        .values = &.{ "grey", "hide" },
+        .labels = &.{ "Greyed", "Hidden" },
+    } } },
+    .{ .section = "Randomizer", .key = "TrackerMarkers", .label = "Map Markers", .kind = .{ .choice = .{
+        .values = &.{ "large", "small" },
+        .labels = &.{ "Large", "Small" },
+    } } },
+    .{ .section = "Randomizer", .key = "TrackerBackground", .label = "Background", .note = "GREEN AND MAGENTA KEY OUT ON STREAM", .kind = .{ .choice = .{
+        .values = &.{ "dark", "black", "green", "magenta" },
+        .labels = &.{ "Dark", "Black", "Green Screen", "Magenta" },
+    } } },
+    .{ .section = "Randomizer", .key = "TrackerOpacity", .label = "Overlay Opacity", .kind = .{ .number = .{ .min = 10, .max = 100, .step = 10, .suffix = "%" } } },
+    .{ .section = "Randomizer", .key = "TrackerCorner", .label = "Overlay Corner", .kind = .{ .choice = .{
+        .values = &.{ "bottom-right", "bottom-left", "top-right", "top-left" },
+        .labels = &.{ "Bottom Right", "Bottom Left", "Top Right", "Top Left" },
+    } } },
+    .{ .section = "Randomizer", .key = "TrackerOverlaySize", .label = "Overlay Size", .note = "LARGE COVERS MORE OF THE GAME", .kind = .{ .choice = .{
+        .values = &.{ "small", "large" },
+        .labels = &.{ "Small", "Large" },
+    } } },
+    .{ .section = "Randomizer", .key = "TrackerLegend", .label = "Map Legend", .kind = .toggle },
 };
 
 // ------------------------------------------------------------- ini editing
@@ -528,8 +591,10 @@ const kQuitChoices = [_][]const u8{ "Quit", "Stay" };
 /// confirming what the first press only meant to ask about.
 const kQuitStay = 1;
 
-/// The launcher is a short menu and the two lists it opens.
-const Screen = enum { main, settings, features, randomizer };
+/// The launcher is a short menu and the screens it opens: the two lists of
+/// settings, and the randomizer's pages (a choice of randomizer, then the
+/// ALTTPR.COM page seeds are dropped on, and what a seed says about itself).
+const Screen = enum { main, settings, features, hub, alttpr, details };
 
 /// Where the FEATURES heading sits, so the two lists are slices of the one
 /// schema instead of separate tables that could drift out of step with it.
@@ -540,8 +605,8 @@ const kFeaturesStart = blk: {
     @compileError("the settings schema has no FEATURES section");
 };
 
-/// Where the RANDOMIZER heading sits; everything from there on is the screen
-/// a seed opens on, and the in-game settings stop short of it.
+/// Where the RANDOMIZER heading sits; everything from there on is on the
+/// ALTTPR.COM page, and the in-game settings stop short of it.
 pub const kRandomizerStart = blk: {
     for (kSettings, 0..) |s, i| {
         if (isSection(s) and std.mem.eql(u8, s.label, "RANDOMIZER")) break :blk i;
@@ -549,22 +614,66 @@ pub const kRandomizerStart = blk: {
     @compileError("the settings schema has no RANDOMIZER section");
 };
 
-/// The randomizer screen's last row isn't a setting: it starts the seed.
+/// The ALTTPR.COM page's first two rows aren't settings: one starts the
+/// seed, the other shows what it says about itself.
 const kPlayRow = kSettings.len;
+const kDetailsRow = kSettings.len + 1;
+const kVirtualRows = [_]usize{ kPlayRow, kDetailsRow };
 
 fn screenRange(screen: Screen) struct { from: usize, to: usize } {
     return switch (screen) {
         .settings => .{ .from = 0, .to = kFeaturesStart },
         .features => .{ .from = kFeaturesStart, .to = kRandomizerStart },
-        .randomizer => .{ .from = kRandomizerStart, .to = kSettings.len },
-        .main => .{ .from = 0, .to = 0 },
+        .alttpr => .{ .from = kRandomizerStart, .to = kSettings.len },
+        .main, .hub, .details => .{ .from = 0, .to = 0 },
     };
 }
 
-const kMainItems = [_][]const u8{ "Settings", "Features", "Save Settings", "Build Assets", "Play" };
+/// How many rows a list has, counting headings and the ALTTPR.COM page's
+/// two buttons. Cursors and scroll positions count rows, not settings.
+fn rowCount(screen: Screen) usize {
+    const r = screenRange(screen);
+    return r.to - r.from + if (screen == .alttpr) kVirtualRows.len else 0;
+}
+
+/// What sits at a row: an index into kSettings, or kPlayRow/kDetailsRow.
+fn rowAt(screen: Screen, pos: usize) usize {
+    if (screen == .alttpr and pos < kVirtualRows.len) return kVirtualRows[pos];
+    const extra: usize = if (screen == .alttpr) kVirtualRows.len else 0;
+    return screenRange(screen).from + pos - extra;
+}
+
+fn rowSelectable(screen: Screen, pos: usize) bool {
+    const at = rowAt(screen, pos);
+    return at >= kSettings.len or !isSection(kSettings[at]);
+}
+
+fn firstRow(screen: Screen) usize {
+    var p: usize = 0;
+    while (p < rowCount(screen) and !rowSelectable(screen, p)) p += 1;
+    return p;
+}
+
+/// Where a list starts and how many rows show. The ALTTPR.COM page gives
+/// the top of the screen to the seed.
+fn listStartY(screen: Screen) f32 {
+    return if (screen == .alttpr) kEmuNoteY + kEmuNoteH + 10 else kListStartY;
+}
+
+fn visibleRows(screen: Screen) usize {
+    return if (screen == .alttpr) 9 else kVisibleRows;
+}
+
+const kMainItems = [_][]const u8{ "Settings", "Features", "Save Settings", "Build Assets", "Play", "Randomizer" };
 const kMainSave = 2;
 const kMainBuild = 3;
 const kMainLaunch = 4;
+const kMainRandomizer = 5;
+
+/// The randomizer page's two choices. Only one exists yet.
+const kHubItems = [_][]const u8{ "BUILT-IN RANDOMIZER", "ALTTPR.COM RANDOMIZER" };
+const kHubBuiltIn = 0;
+const kHubAlttpr = 1;
 
 /// Every gamepad currently plugged in. Held open so their sticks and pads
 /// can be polled each frame, which is what gives held-direction repeat.
@@ -811,13 +920,15 @@ const View = struct {
     status: []const u8,
     dirty: bool,
     assets: AssetState,
+    /// The seed details' scroll position.
+    details_top: usize = 0,
 };
 
 fn listIndex(sc: Screen) usize {
     return switch (sc) {
-        .main, .settings => 0,
+        .main, .settings, .hub, .details => 0,
         .features => 1,
-        .randomizer => 2,
+        .alttpr => 2,
     };
 }
 
@@ -838,7 +949,12 @@ fn viewOf(
         .screen = screen,
         .modal = modal,
         .quit_choice = quit_choice,
-        .cursor = if (screen == .main) main_cursor else list_cursor[li],
+        .cursor = switch (screen) {
+            .main => main_cursor,
+            .hub => g_hub_cursor,
+            else => list_cursor[li],
+        },
+        .details_top = g_details_top,
         .top = list_top[li],
         .status = status,
         .dirty = dirty,
@@ -846,20 +962,22 @@ fn viewOf(
     };
 }
 
-/// Draws the options a seed opens on into a BMP with no window, for working
-/// on the screen: `zelda3 --menu-shot out.bmp`.
-pub fn screenshot(alloc: std.mem.Allocator, path: [*:0]const u8) !void {
+/// Draws a screen into a BMP with no window, for working on the menu:
+/// `zelda3 --menu-shot <main|hub|alttpr|details> out.bmp [seed.sfc]`.
+pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const u8, seed: ?[]const u8) !void {
     var ini = try Ini.load(alloc, "zelda3.ini");
     defer ini.deinit();
     const surface = c.SDL_CreateSurface(kWindowW, kWindowH, c.SDL_PIXELFORMAT_XRGB8888) orelse return error.SdlSurface;
     defer c.SDL_DestroySurface(surface);
     const renderer = c.SDL_CreateSoftwareRenderer(surface) orelse return error.SdlRenderer;
     defer c.SDL_DestroyRenderer(renderer);
-    var cursor = [_]usize{ 0, 0, kPlayRow };
-    var top = [_]usize{ 0, kFeaturesStart, kRandomizerStart };
-    _ = &cursor;
-    _ = &top;
-    drawScreen(renderer, &ini, viewOf(.randomizer, 0, cursor, top, "", false, .verified, .none, kQuitStay));
+    if (seed) |sp| _ = loadSeed(sp);
+    const screen = std.meta.stringToEnum(Screen, which) orelse .alttpr;
+    g_spoilers = std.c.getenv("SPOILERS") != null;
+    if (std.c.getenv("DETAILS_TOP")) |t| g_details_top = std.fmt.parseInt(usize, std.mem.span(t), 10) catch 0;
+    const cursor = [_]usize{ 0, 0, 0 };
+    const top = [_]usize{ 0, 0, 0 };
+    drawScreen(renderer, &ini, viewOf(screen, kMainRandomizer, cursor, top, "", false, .verified, .none, kQuitStay));
     if (!c.SDL_SaveBMP(surface, path)) return error.SaveFailed;
 }
 
@@ -871,7 +989,13 @@ fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
 
     switch (v.screen) {
         .main => drawMain(renderer, v),
-        .settings, .features, .randomizer => drawList(renderer, ini, v),
+        .hub => drawHub(renderer, v),
+        .details => drawDetails(renderer, v),
+        .alttpr => {
+            drawSeedBox(renderer);
+            drawList(renderer, ini, v);
+        },
+        .settings, .features => drawList(renderer, ini, v),
     }
 
     drawFooter(renderer, v);
@@ -896,7 +1020,10 @@ fn drawHeader(renderer: *c.SDL_Renderer, screen: Screen) void {
     const name = switch (screen) {
         .settings => "SETTINGS",
         .features => "FEATURES",
-        else => "RANDOMIZER SEED",
+        .hub => "RANDOMIZER",
+        .alttpr => "ALTTPR.COM",
+        .details => "SEED DETAILS",
+        .main => unreachable,
     };
     drawText(renderer, 40, 36, kColorSelect, name);
     drawTextScaled(renderer, kWindowW - 40 - textWidth("ESC BACK", kScale), 36, kColorTextDim, "ESC BACK", kScale);
@@ -917,18 +1044,30 @@ const Rect = struct {
     }
 };
 
-// The menu's group of entries, then the Launch button below them.
-const kEntryY: f32 = 124;
-const kEntryGap: f32 = 32;
-const kLaunchY: f32 = 250;
+// The menu's group of entries, then the Launch button below them, and the
+// Randomizer button under that.
+const kEntryY: f32 = 112;
+const kEntryGap: f32 = 28;
+const kLaunchY: f32 = 222;
 const kLaunchScale: f32 = kScale * 2;
+const kRandoY: f32 = 334;
 const kListStartY: f32 = 36 + kRowH + 14;
+const kSeedBoxY: f32 = kListStartY - 4;
+const kSeedBoxH: f32 = kRowH * 4 + 12;
+// Under the seed: why this page plays in an emulator and the rest doesn't.
+const kEmuNoteY: f32 = kSeedBoxY + kSeedBoxH + 8;
+const kEmuNoteH: f32 = 20;
+const kEmuNote = [_][]const u8{
+    "SEEDS RUN IN A SNES EMULATOR, NOT THE PC PORT. ALTTPR.COM REWRITES",
+    "TOO MUCH OF THE GAME'S CODE - ONLY THE ROM ITSELF PLAYS IT EXACTLY.",
+};
 
 fn mainEntryRect(i: usize) Rect {
     if (i == kMainLaunch) return launchRect();
+    if (i == kMainRandomizer) return randoRect();
     // Wider than the highlight, so aiming at a short word still lands.
     const y = kEntryY + kEntryGap * @as(f32, @floatFromInt(i));
-    return .{ .x = kWindowW / 2 - 150, .y = y - 8, .w = 300, .h = kRowH + 10 };
+    return .{ .x = kWindowW / 2 - 150, .y = y - 6, .w = 300, .h = kEntryGap };
 }
 
 fn launchRect() Rect {
@@ -941,18 +1080,24 @@ fn launchRect() Rect {
     };
 }
 
-/// Which row of a list sits under a point, as an index into kSettings.
+fn randoRect() Rect {
+    const w = textWidth(kMainItems[kMainRandomizer], kScale) + 72;
+    return .{ .x = kWindowW / 2 - w / 2, .y = kRandoY, .w = w, .h = 8 * kScale + 20 };
+}
+
+/// The randomizer page's two big buttons.
+fn hubRect(i: usize) Rect {
+    return .{ .x = 100, .y = 120 + 120 * @as(f32, @floatFromInt(i)), .w = kWindowW - 200, .h = 84 };
+}
+
+/// Which row of a list sits under a point, as a row position.
 fn listRowAt(v: View, py: f32) ?usize {
-    const range = screenRange(v.screen);
-    var i = v.top;
-    var y: f32 = kListStartY;
-    while (i < range.to and i < v.top + kVisibleRows) : (i += 1) {
-        if (py >= y - 3 and py < y - 3 + kRowH and !isSection(kSettings[i])) return i;
+    const n = rowCount(v.screen);
+    var p = v.top;
+    var y: f32 = listStartY(v.screen);
+    while (p < n and p < v.top + visibleRows(v.screen)) : (p += 1) {
+        if (py >= y - 3 and py < y - 3 + kRowH and rowSelectable(v.screen, p)) return p;
         y += kRowH;
-    }
-    if (v.screen == .randomizer) {
-        y += kRowH;
-        if (py >= y - 3 and py < y - 3 + kRowH) return kPlayRow;
     }
     return null;
 }
@@ -968,7 +1113,7 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
         if (selected) {
             // Sized to the word rather than the window, so the highlight
             // reads as a selection and not as a banner.
-            fillRect(renderer, cx - w / 2 - 20, y - 8, w + 40, kRowH + 10, kColorRowHi);
+            fillRect(renderer, cx - w / 2 - 20, y - 6, w + 40, kEntryGap - 2, kColorRowHi);
             drawTextScaled(renderer, cx - w / 2 - 36, y, kColorSelect, ">", kScale);
         }
         drawTextCentered(renderer, cx, y, if (selected) kColorSelect else kColorText, label, kScale);
@@ -995,46 +1140,297 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     // enough - a .dat left over from another build loads and then misbehaves
     // in ways that look like game bugs, so it is checked against the digest
     // the asset builder produces and reported as its own state.
-    const state_y = box_y + box_h + 18;
+    const state_y = box_y + box_h + 8;
 
     drawTextCentered(renderer, cx, state_y, v.assets.color(), v.assets.line(), kScale);
+    if (v.assets == .missing)
+        drawTextCentered(renderer, cx, state_y + kRowH, kColorTextDim, "DRAG A .SFC ROM ONTO THIS WINDOW", kScale);
 
-    var hint_y = state_y + kRowH;
-    if (v.assets == .missing) {
-        drawTextCentered(renderer, cx, hint_y, kColorTextDim, "DRAG A .SFC ROM ONTO THIS WINDOW", kScale);
-        hint_y += kRowH;
+    // The randomizer: smaller, and a color of its own, since it plays
+    // something other than the port.
+    const r = randoRect();
+    fillRect(renderer, r.x, r.y, r.w, r.h, kColorRandoBg);
+    if (v.cursor == kMainRandomizer) drawOutline(renderer, r.x - 6, r.y - 6, r.w + 12, r.h + 12, 3, kColorFrameHi);
+    drawTextCentered(renderer, cx, r.y + 10, kColorText, "RANDOMIZER", kScale);
+}
+
+/// The choice of randomizer: the built-in one, still to come, and seeds
+/// from alttpr.com.
+fn drawHub(renderer: *c.SDL_Renderer, v: View) void {
+    const cx: f32 = kWindowW / 2;
+    for (kHubItems, 0..) |label, i| {
+        const r = hubRect(i);
+        const selected = v.cursor == i;
+        const soon = i == kHubBuiltIn;
+        fillRect(renderer, r.x, r.y, r.w, r.h, if (soon) kColorDisabledBg else kColorRandoBg);
+        if (selected) drawOutline(renderer, r.x - 8, r.y - 8, r.w + 16, r.h + 16, 4, kColorFrameHi);
+        drawTextCentered(renderer, cx, r.y + 18, if (soon) kColorTextDim else kColorText, label, kScale);
+        const sub = if (soon) "COMING SOON" else "PLAY A SEED FROM ALTTPR.COM";
+        drawTextCentered(renderer, cx, r.y + 18 + kRowH + 8, if (soon) kColorWarn else kColorValue, sub, kScale);
     }
-    // Seeds need none of the above: they play in the emulator as they are.
-    drawTextCentered(renderer, cx, hint_y, kColorTextDim, "OR DROP A RANDOMIZER SEED TO PLAY IT", kScale);
+}
+
+/// Text that fits: at the menu's size when there's room, half that when not.
+fn drawFit(renderer: *c.SDL_Renderer, x: f32, y: f32, col: Rgb, text: []const u8, max_w: f32) void {
+    if (textWidth(text, kScale) <= max_w) {
+        drawText(renderer, x, y, col, text);
+    } else {
+        drawTextScaled(renderer, x, y + 4, col, text[0..@min(text.len, @as(usize, @intFromFloat(max_w / 8)))], 1);
+    }
+}
+
+/// The seed at the top of the ALTTPR.COM page, or where to drop one.
+fn drawSeedBox(renderer: *c.SDL_Renderer) void {
+    for (kEmuNote, 0..) |line, i|
+        drawTextCentered(renderer, kWindowW / 2, kEmuNoteY + 10 * @as(f32, @floatFromInt(i)), kColorWarn, line, 1);
+    const x: f32 = 32;
+    const w: f32 = kWindowW - 64;
+    const y = kSeedBoxY;
+    drawOutline(renderer, x, y, w, kSeedBoxH, 2, kColorFrameLo);
+    const tx = x + 12;
+    const max_w = w - 24;
+    const line0 = y + 8;
+    if (!g_seed_loaded) {
+        drawTextCentered(renderer, kWindowW / 2, line0, kColorSelect, "DROP AN ALTTPR.COM SEED HERE", kScale);
+        drawTextCentered(renderer, kWindowW / 2, line0 + kRowH, kColorTextDim, "GENERATE ONE AT ALTTPR.COM FROM", kScale);
+        drawTextCentered(renderer, kWindowW / 2, line0 + kRowH * 2, kColorTextDim, "THE JAPANESE 1.0 ROM, THEN DRAG", kScale);
+        drawTextCentered(renderer, kWindowW / 2, line0 + kRowH * 3, kColorTextDim, "THE .SFC ONTO THIS WINDOW", kScale);
+        return;
+    }
+    const info = &g_seed_info;
+    var buf: [128]u8 = undefined;
+    if (!g_seed_is_seed) {
+        drawFit(renderer, tx, line0, kColorSelect, g_seed_name, max_w);
+        drawText(renderer, tx, line0 + kRowH, kColorWarn, "JAPANESE 1.0 ROM - NOT A SEED");
+        drawText(renderer, tx, line0 + kRowH * 2, kColorTextDim, "IT PLAYS, BUT UNRANDOMIZED");
+        return;
+    }
+    // The seed's name, which is its alttpr.com address, and its hash.
+    drawFit(renderer, tx, line0, kColorSelect, info.titleText(), max_w);
+    var link_buf: [64]u8 = undefined;
+    const link = seedLink(&link_buf, info);
+    drawTextScaled(renderer, tx + max_w - textWidth(link, 1), line0 + 4, kColorTextDim, link, 1);
+    drawFit(renderer, tx, line0 + kRowH, kColorValue, hashLine(&buf, info), max_w);
+    var buf2: [128]u8 = undefined;
+    const summary = std.fmt.bufPrint(&buf2, "{s} - {s} - {s}", .{ info.logic, info.mode, info.goal }) catch "";
+    drawFit(renderer, tx, line0 + kRowH * 2, kColorText, upper(&buf, summary), max_w);
+    var buf3: [128]u8 = undefined;
+    const counts = std.fmt.bufPrint(&buf3, "GT {d}  GANON {d}  {d} ITEMS{s}", .{
+        info.tower_crystals,
+        info.ganon_crystals,
+        info.total_items,
+        if (g_seed_has_save) "  SAVE FOUND" else "",
+    }) catch "";
+    drawFit(renderer, tx, line0 + kRowH * 3, kColorTextDim, counts, max_w);
+}
+
+/// Where the seed lives on alttpr.com: its title is "VT " and its hash.
+fn seedLink(buf: []u8, info: *const seed_info.Info) []const u8 {
+    const title = info.titleText();
+    const hash = if (std.mem.startsWith(u8, title, "VT ")) title[3..] else title;
+    return std.fmt.bufPrint(buf, "alttpr.com/h/{s}", .{hash}) catch "";
+}
+
+/// The seed's five hash icons by name, the way alttpr.com shows them.
+fn hashLine(buf: []u8, info: *const seed_info.Info) []const u8 {
+    var n: usize = 0;
+    for (info.hash, 0..) |h, i| {
+        const name = seed_info.kHashIcons[h];
+        if (n + name.len + 1 > buf.len) break;
+        if (i != 0) {
+            buf[n] = ' ';
+            n += 1;
+        }
+        for (name) |ch| {
+            buf[n] = std.ascii.toUpper(ch);
+            n += 1;
+        }
+    }
+    return buf[0..n];
+}
+
+fn upper(buf: []u8, text: []const u8) []const u8 {
+    const n = @min(buf.len, text.len);
+    for (text[0..n], 0..) |ch, i| buf[i] = std.ascii.toUpper(ch);
+    return buf[0..n];
+}
+
+/// One line of the seed details: a label and its value, or a heading when
+/// there's no value.
+const DetailLine = struct { label: []const u8, value: []const u8 = "", color: Rgb = kColorValue, heading: bool = false };
+
+fn yesNo(b: bool) []const u8 {
+    return if (b) "YES" else "NO";
+}
+
+/// Everything the seed says about itself, as lines; the spoilers only when
+/// they've been asked for.
+fn detailLines(out: []DetailLine, bufs: [][40]u8) []DetailLine {
+    const info = &g_seed_info;
+    var n: usize = 0;
+    var b: usize = 0;
+    const add = struct {
+        fn f(o: []DetailLine, k: *usize, l: DetailLine) void {
+            if (k.* < o.len) {
+                o[k.*] = l;
+                k.* += 1;
+            }
+        }
+    }.f;
+    const up = struct {
+        fn f(bs: [][40]u8, k: *usize, text: []const u8) []const u8 {
+            if (k.* >= bs.len) return text;
+            const r = upper(&bs[k.*], text);
+            k.* += 1;
+            return r;
+        }
+    }.f;
+    const num = struct {
+        fn f(bs: [][40]u8, k: *usize, v: u32) []const u8 {
+            if (k.* >= bs.len) return "?";
+            const r = std.fmt.bufPrint(&bs[k.*], "{d}", .{v}) catch "?";
+            k.* += 1;
+            return r;
+        }
+    }.f;
+
+    add(out, &n, .{ .label = "SEED", .color = kColorSection, .heading = true });
+    add(out, &n, .{ .label = "Title", .value = info.titleText() });
+    var link_buf: [64]u8 = undefined;
+    add(out, &n, .{ .label = "Plays In", .value = "SNES EMULATOR" });
+    add(out, &n, .{ .label = "Link", .value = if (b < bufs.len) blk: {
+        const l = seedLink(&link_buf, info);
+        const m = @min(l.len, bufs[b].len);
+        @memcpy(bufs[b][0..m], l[0..m]);
+        b += 1;
+        break :blk bufs[b - 1][0..m];
+    } else "?" });
+    add(out, &n, .{ .label = "File", .value = g_seed_name });
+    add(out, &n, .{ .label = "Size", .value = if (b < bufs.len) blk: {
+        const r = std.fmt.bufPrint(&bufs[b], "{d} KB", .{g_seed_size / 1024}) catch "?";
+        b += 1;
+        break :blk r;
+    } else "?" });
+    add(out, &n, .{ .label = "Save File", .value = if (g_seed_has_save) "FOUND BESIDE THE SEED" else "NONE YET" });
+    add(out, &n, .{ .label = "MSU-1 Tracks", .value = if (g_seed_has_msu) "FOUND BESIDE THE SEED" else "NONE BESIDE IT" });
+    add(out, &n, .{ .label = "HASH", .color = kColorSection, .heading = true });
+    for (info.hash, 0..) |h, i| {
+        const labels = [_][]const u8{ "Icon 1", "Icon 2", "Icon 3", "Icon 4", "Icon 5" };
+        add(out, &n, .{ .label = labels[i], .value = up(bufs, &b, seed_info.kHashIcons[h]) });
+    }
+    add(out, &n, .{ .label = "SETTINGS", .color = kColorSection, .heading = true });
+    add(out, &n, .{ .label = "Logic", .value = up(bufs, &b, info.logic) });
+    add(out, &n, .{ .label = "Game", .value = up(bufs, &b, info.game_type) });
+    add(out, &n, .{ .label = "Mode", .value = up(bufs, &b, info.mode) });
+    add(out, &n, .{ .label = "Goal", .value = up(bufs, &b, info.goal) });
+    if (info.goal_count != 0) add(out, &n, .{ .label = "Pieces Needed", .value = num(bufs, &b, info.goal_count) });
+    add(out, &n, .{ .label = "GT Crystals", .value = num(bufs, &b, info.tower_crystals) });
+    add(out, &n, .{ .label = "Ganon Crystals", .value = num(bufs, &b, info.ganon_crystals) });
+    add(out, &n, .{ .label = "Item Locations", .value = num(bufs, &b, info.total_items) });
+    add(out, &n, .{ .label = "Swords", .value = if (info.swordless) "SWORDLESS" else "RANDOMIZED" });
+    add(out, &n, .{ .label = "Maps/Compasses", .value = if (info.shuffled_maps_compasses) "SHUFFLED" else "IN DUNGEON" });
+    add(out, &n, .{ .label = "Small Keys", .value = if (info.retro_keys) "RETRO" else if (info.shuffled_keys) "SHUFFLED" else "IN DUNGEON" });
+    add(out, &n, .{ .label = "Big Keys", .value = if (info.shuffled_big_keys) "SHUFFLED" else "IN DUNGEON" });
+    add(out, &n, .{ .label = "Tournament", .value = yesNo(info.tournament) });
+    add(out, &n, .{ .label = "GAMEPLAY", .color = kColorSection, .heading = true });
+    add(out, &n, .{ .label = "Item Quickswap", .value = yesNo(info.quickswap) });
+    add(out, &n, .{ .label = "Pseudo Boots", .value = yesNo(info.pseudo_boots) });
+    add(out, &n, .{ .label = "Silver Arrows", .value = up(bufs, &b, info.silvers) });
+    add(out, &n, .{ .label = "Menu Speed", .value = up(bufs, &b, info.menu_speed) });
+    add(out, &n, .{ .label = "Heart Beep", .value = up(bufs, &b, info.heart_beep) });
+    add(out, &n, .{ .label = "Heart Color", .value = up(bufs, &b, info.heart_color) });
+    add(out, &n, .{ .label = "Clock", .value = up(bufs, &b, info.timer) });
+    add(out, &n, .{ .label = "STARTING ITEMS", .color = kColorSection, .heading = true });
+    var names: [32][]const u8 = undefined;
+    const start = seed_info.startingItems(info, &names);
+    if (start.len == 0) add(out, &n, .{ .label = "None" });
+    for (start) |name| add(out, &n, .{ .label = name });
+
+    add(out, &n, .{ .label = "SPOILERS", .color = kColorWarn, .heading = true });
+    if (!g_spoilers) {
+        add(out, &n, .{ .label = "Hidden - A/ENTER shows them", .color = kColorTextDim });
+        return out[0..n];
+    }
+    add(out, &n, .{ .label = "Misery Mire", .value = up(bufs, &b, seed_info.medallionName(info.misery_mire)) });
+    add(out, &n, .{ .label = "Turtle Rock", .value = up(bufs, &b, seed_info.medallionName(info.turtle_rock)) });
+    for (seed_info.kPrizeDungeons, 0..) |d, i| {
+        add(out, &n, .{ .label = d.name, .value = up(bufs, &b, seed_info.prizeName(info.prizes[i])) });
+    }
+    return out[0..n];
+}
+
+const kDetailsRows = 15;
+
+fn detailCount() usize {
+    var lines: [96]DetailLine = undefined;
+    var bufs: [64][40]u8 = undefined;
+    return detailLines(&lines, &bufs).len;
+}
+
+fn drawDetails(renderer: *c.SDL_Renderer, v: View) void {
+    var lines: [96]DetailLine = undefined;
+    var bufs: [64][40]u8 = undefined;
+    const all = detailLines(&lines, &bufs);
+    var y: f32 = kListStartY;
+    const top = @min(v.details_top, all.len);
+    for (all[top..@min(all.len, top + kDetailsRows)]) |l| {
+        if (l.heading) {
+            var ub: [64]u8 = undefined;
+            drawText(renderer, 40, y, l.color, upper(&ub, l.label));
+        } else if (l.value.len == 0) {
+            var ub: [64]u8 = undefined;
+            drawText(renderer, 56, y, l.color, upper(&ub, l.label));
+        } else {
+            var ub: [64]u8 = undefined;
+            drawText(renderer, 56, y, kColorText, upper(&ub, l.label));
+            drawFit(renderer, 300, y, l.color, l.value, kWindowW - 300 - 32);
+        }
+        y += kRowH;
+    }
+    // Say there's more, when there is.
+    if (top + kDetailsRows < all.len) drawTextScaled(renderer, kWindowW - 64, y - kRowH, kColorTextDim, "V", kScale);
+    if (top > 0) drawTextScaled(renderer, kWindowW - 64, kListStartY, kColorTextDim, "^", kScale);
 }
 
 fn drawList(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
-    const range = screenRange(v.screen);
-    var y: f32 = kListStartY;
-    var i = v.top;
-    while (i < range.to and i < v.top + kVisibleRows) : (i += 1) {
-        const s = kSettings[i];
-        if (isSection(s)) {
-            drawText(renderer, 40, y, kColorSection, s.label);
+    const n = rowCount(v.screen);
+    var y: f32 = listStartY(v.screen);
+    var p = v.top;
+    while (p < n and p < v.top + visibleRows(v.screen)) : (p += 1) {
+        const at = rowAt(v.screen, p);
+        const selected = p == v.cursor;
+        if (at >= kSettings.len) {
+            // The page's two buttons, which only work with a seed.
+            if (selected) fillRect(renderer, 32, y - 3, kWindowW - 64, kRowH, kColorRowHi);
+            const label = if (at == kPlayRow) "PLAY THIS SEED" else "SEED DETAILS";
+            const col = if (!g_seed_loaded) kColorTextDim else if (selected) kColorSelect else if (at == kPlayRow) kColorOk else kColorText;
+            drawTextCentered(renderer, kWindowW / 2, y, col, label, kScale);
+        } else if (isSection(kSettings[at])) {
+            drawText(renderer, 40, y, kColorSection, kSettings[at].label);
         } else {
-            if (i == v.cursor) {
+            const s = kSettings[at];
+            if (selected) {
                 fillRect(renderer, 32, y - 3, kWindowW - 64, kRowH, kColorRowHi);
                 drawText(renderer, 36, y, kColorSelect, ">");
             }
-            drawText(renderer, 56, y, if (i == v.cursor) kColorSelect else kColorText, s.label);
+            drawText(renderer, 56, y, if (selected) kColorSelect else kColorText, s.label);
             var vbuf: [64]u8 = undefined;
-            const shown = displayValue(&vbuf, s, ini.values[i] orelse "(missing)");
+            const shown = displayValue(&vbuf, s, ini.values[at] orelse "(missing)");
             const dim = s.kind == .text;
             drawText(renderer, 400, y, if (dim) kColorTextDim else kColorValue, shown);
         }
         y += kRowH;
     }
-    if (v.screen == .randomizer) {
-        // Play sits under the choices, a row apart from them.
-        y += kRowH;
-        const selected = v.cursor == kPlayRow;
-        if (selected) fillRect(renderer, 32, y - 3, kWindowW - 64, kRowH, kColorRowHi);
-        drawTextCentered(renderer, kWindowW / 2, y, if (selected) kColorSelect else kColorText, "PLAY THIS SEED", kScale);
+    // A scrollbar, since the ALTTPR.COM page runs past the bottom.
+    const shown = visibleRows(v.screen);
+    if (n > shown) {
+        const track_y = listStartY(v.screen) - 3;
+        const track_h = kRowH * @as(f32, @floatFromInt(shown));
+        const nf: f32 = @floatFromInt(n);
+        const bar_h = track_h * @as(f32, @floatFromInt(shown)) / nf;
+        const bar_y = track_y + track_h * @as(f32, @floatFromInt(v.top)) / nf;
+        fillRect(renderer, kWindowW - 30, track_y, 4, track_h, kColorFrameLo);
+        fillRect(renderer, kWindowW - 30, bar_y, 4, bar_h, kColorFrameHi);
     }
 }
 
@@ -1121,10 +1517,28 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
             drawText(renderer, 40, footer_y, kColorTextDim, "CHANGE  LEFT/RIGHT OR A");
             drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "SAVE X/S   BACK B/ESC");
         },
-        .randomizer => {
-            drawText(renderer, 40, footer_y, kColorTextDim, "CHANGE  LEFT/RIGHT OR A");
-            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "PLAY  START   BACK B/ESC");
+        .hub => {
+            drawText(renderer, 40, footer_y, kColorTextDim, "SELECT A/ENTER");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "BACK B/ESC");
         },
+        .alttpr => {
+            drawText(renderer, 40, footer_y, kColorTextDim, "CHANGE  LEFT/RIGHT OR A");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "PLAY START  SAVE X/S  BACK B");
+        },
+        .details => {
+            drawText(renderer, 40, footer_y, kColorTextDim, "SCROLL UP/DOWN");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "SPOILERS A/ENTER   BACK B/ESC");
+        },
+    }
+
+    // What the selected setting can't say in its label.
+    if (v.status.len == 0 and v.screen == .alttpr) {
+        const at = rowAt(.alttpr, v.cursor);
+        const note = if (at < kSettings.len) kSettings[at].note else if (!g_seed_loaded) "DROP A SEED ON THIS WINDOW FIRST" else "";
+        if (note.len != 0) {
+            drawText(renderer, 40, footer_y - kRowH, kColorWarn, note);
+            return;
+        }
     }
 
     // One line above the footer, in order of what the player most needs to
@@ -1402,6 +1816,59 @@ pub fn isRandomizerRom(path: []const u8) bool {
     return @import("emu.zig").romKind(data) != .other;
 }
 
+// The seed on the ALTTPR.COM page, once one has been dropped there.
+var g_seed_loaded = false;
+/// A real seed, rather than the Japanese ROM seeds are made from.
+var g_seed_is_seed = false;
+var g_seed_info: seed_info.Info = .{};
+var g_seed_name: []const u8 = "";
+var g_seed_size: usize = 0;
+var g_seed_has_save = false;
+var g_seed_has_msu = false;
+var g_spoilers = false;
+var g_details_top: usize = 0;
+var g_hub_cursor: usize = kHubAlttpr;
+
+fn fileExists(path: []const u8) bool {
+    var z: [4200:0]u8 = undefined;
+    if (path.len >= z.len) return false;
+    @memcpy(z[0..path.len], path);
+    z[path.len] = 0;
+    const f = std.c.fopen(&z, "rb") orelse return false;
+    _ = std.c.fclose(f);
+    return true;
+}
+
+/// Reads a seed for the ALTTPR.COM page. False, and nothing changed, when the
+/// file isn't one.
+fn loadSeed(path: []const u8) bool {
+    if (!looksLikeRom(path) or path.len >= g_randomizer_buf.len) return false;
+    var z: [4096:0]u8 = undefined;
+    @memcpy(z[0..path.len], path);
+    z[path.len] = 0;
+    const data = fileio.readWholeFile(std.heap.c_allocator, &z) catch return false;
+    defer std.heap.c_allocator.free(data);
+    const kind = @import("emu.zig").romKind(data);
+    if (kind == .other) return false;
+
+    setRandomizerRom(path);
+    g_seed_loaded = true;
+    g_seed_is_seed = kind == .randomizer;
+    g_seed_info = seed_info.read(data);
+    g_seed_name = std.fs.path.basename(g_randomizer_rom);
+    g_seed_size = data.len;
+    g_spoilers = false;
+    g_details_top = 0;
+    // What rando.zig will find beside it: the save, and MSU-1 tracks.
+    const ext = std.fs.path.extension(g_randomizer_rom);
+    const stem = g_randomizer_rom[0 .. g_randomizer_rom.len - ext.len];
+    var buf: [4200]u8 = undefined;
+    g_seed_has_save = fileExists(std.fmt.bufPrint(&buf, "{s}.srm", .{stem}) catch "");
+    g_seed_has_msu = fileExists(std.fmt.bufPrint(&buf, "{s}-1.pcm", .{stem}) catch "") or
+        fileExists(std.fmt.bufPrint(&buf, "{s}-1.opuz", .{stem}) catch "");
+    return true;
+}
+
 /// Runs the start menu until the player picks Play or leaves. SDL is started
 /// and shut down in here, so the game sets it up afresh for its own window.
 /// With assets that are missing or don't match, it opens on the ROM question,
@@ -1451,19 +1918,17 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     var main_cursor: usize = 0;
     // Each list keeps its own place, so stepping out and back in does not
     // dump the cursor at the top again.
-    var list_cursor = [_]usize{ firstSelectable(0, kFeaturesStart), firstSelectable(kFeaturesStart, kRandomizerStart), firstSelectable(kRandomizerStart, kSettings.len) };
-    var list_top = [_]usize{ 0, kFeaturesStart, kRandomizerStart };
+    var list_cursor = [_]usize{ firstRow(.settings), firstRow(.features), firstRow(.alttpr) };
+    var list_top = [_]usize{ 0, 0, 0 };
     var dirty = false;
     var launch = false;
     var randomizer = false;
     var status: []const u8 = "";
     var assets = checkAssets(alloc);
-    if (seed) |path| {
-        // Started with a seed: its options come first, and assets don't
-        // matter to it.
-        setRandomizerRom(path);
-        screen = .randomizer;
-        list_cursor[listIndex(.randomizer)] = kPlayRow;
+    if (seed != null and loadSeed(seed.?)) {
+        // Started with a seed: its page comes first, on Play, and assets
+        // don't matter to it.
+        screen = .alttpr;
     } else if (assets != .verified) {
         modal = .rom;
         main_cursor = kMainLaunch;
@@ -1497,19 +1962,29 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 // A ROM dropped on the window is the quickest path from a
                 // fresh checkout to a playable game.
                 c.SDL_EVENT_DROP_FILE => {
-                    var was_seed = false;
-                    if (event.drop.data) |path| seed: {
-                        // A randomizer seed opens its own options, then plays.
+                    var handled = false;
+                    if (event.drop.data) |path| {
                         const span = std.mem.span(path);
-                        if (!isRandomizerRom(span)) break :seed;
-                        setRandomizerRom(span);
-                        screen = .randomizer;
-                        list_cursor[listIndex(.randomizer)] = kPlayRow;
-                        modal = .none;
-                        status = "";
-                        was_seed = true;
+                        const rando_page = screen == .hub or screen == .alttpr or screen == .details;
+                        if (rando_page) {
+                            // Seeds go here, and only seeds.
+                            handled = true;
+                            if (loadSeed(span)) {
+                                screen = .alttpr;
+                                list_cursor[listIndex(.alttpr)] = 0;
+                                list_top[listIndex(.alttpr)] = 0;
+                                status = if (g_seed_is_seed) "SEED LOADED" else "JAPANESE ROM LOADED";
+                            } else {
+                                status = if (looksLikeRom(span)) "NOT AN ALTTPR.COM SEED" else "NOT A .SFC FILE";
+                            }
+                            modal = .none;
+                        } else if (isRandomizerRom(span)) {
+                            // The main menu's drops are for the port's assets.
+                            handled = true;
+                            status = "SEEDS GO ON THE RANDOMIZER PAGE";
+                        }
                     }
-                    if (!was_seed) if (event.drop.data) |path| {
+                    if (!handled) if (event.drop.data) |path| {
                         status = "CHECKING ROM...";
                         drawScreen(renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice));
                         status = buildAssetsFromDrop(alloc, path);
@@ -1553,7 +2028,9 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         c.SDLK_ESCAPE => back = true,
                         c.SDLK_RETURN, c.SDLK_SPACE => confirm = true,
                         c.SDLK_S => save = true,
-                        c.SDLK_B => build = true,
+                        c.SDLK_B => if (screen == .main) {
+                            build = true;
+                        },
                         else => {},
                     }
                 },
@@ -1692,6 +2169,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
             }
 
             if (move != 0) {
+                // Down from Play reaches Randomizer, the last one.
                 const n: i32 = @intCast(kMainItems.len);
                 var at: i32 = @intCast(main_cursor);
                 at = @mod(at + move + n, n);
@@ -1711,6 +2189,10 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                     kMainSave => save = true,
                     kMainBuild => {
                         modal = .rom;
+                        status = "";
+                    },
+                    kMainRandomizer => {
+                        screen = .hub;
                         status = "";
                     },
                     else => {
@@ -1733,15 +2215,57 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                     },
                 }
             }
-        } else {
+        } else if (screen == .hub) {
             if (back) {
                 screen = .main;
                 status = "";
             }
+            for (0..kHubItems.len) |i| {
+                if ((hovered or clicked) and hubRect(i).contains(hover_x, hover_y)) {
+                    g_hub_cursor = i;
+                    if (clicked) confirm = true;
+                }
+            }
+            const step = if (move != 0) move else adjust;
+            if (step != 0) {
+                g_hub_cursor = 1 - g_hub_cursor;
+                status = "";
+            }
+            if (confirm) {
+                if (g_hub_cursor == kHubBuiltIn) {
+                    status = "COMING SOON";
+                } else {
+                    screen = .alttpr;
+                    status = "";
+                }
+            }
+        } else if (screen == .details) {
+            if (back) {
+                screen = .alttpr;
+                status = "";
+            }
+            if (wheel != 0) move = if (wheel > 0) -1 else 1;
+            const count = detailCount();
+            const max_top = count -| kDetailsRows;
+            if (move < 0) g_details_top -|= 1;
+            if (move > 0) g_details_top = @min(g_details_top + 1, max_top);
+            if (confirm or clicked) {
+                g_spoilers = !g_spoilers;
+                status = if (g_spoilers) "SPOILERS SHOWN" else "SPOILERS HIDDEN";
+                // Jump to them, since they're at the end.
+                if (g_spoilers) g_details_top = detailCount() -| kDetailsRows;
+            }
+            g_details_top = @min(g_details_top, detailCount() -| kDetailsRows);
+        } else {
+            if (back) {
+                screen = if (screen == .alttpr) .hub else .main;
+                status = "";
+            }
 
-            // The two lists behave the same; only their range differs.
+            // The lists behave the same; only their rows differ.
             const li = listIndex(screen);
-            const range = screenRange(screen);
+            const n = rowCount(screen);
+            const shown = visibleRows(screen);
 
             if (hovered) {
                 const v = viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice);
@@ -1760,29 +2284,38 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
             if (confirm) adjust = 1;
 
             if (move != 0) {
-                // Step over the section headings, and on to Play at the end
-                // of the randomizer's list.
+                // Step over the section headings, wrapping at either end.
                 var at: i32 = @intCast(list_cursor[li]);
-                const from: i32 = @intCast(range.from);
-                const to: i32 = @as(i32, @intCast(range.to)) + @intFromBool(screen == .randomizer);
+                const count: i32 = @intCast(n);
                 while (true) {
                     at += move;
-                    if (at < from) at = to - 1;
-                    if (at >= to) at = from;
-                    if (at == kPlayRow or !isSection(kSettings[@intCast(at)])) break;
+                    if (at < 0) at = count - 1;
+                    if (at >= count) at = 0;
+                    if (rowSelectable(screen, @intCast(at))) break;
                 }
                 list_cursor[li] = @intCast(at);
                 status = "";
             }
 
-            if (screen == .randomizer and (start or (confirm and list_cursor[li] == kPlayRow))) {
-                // Keep the choices for next time, then go.
-                if (dirty) ini.save("zelda3.ini") catch {};
-                randomizer = true;
-                running = false;
-            } else if (adjust != 0 and list_cursor[li] != kPlayRow) {
+            const at = rowAt(screen, list_cursor[li]);
+            if (screen == .alttpr and (start or (confirm and at == kPlayRow))) {
+                if (!g_seed_loaded) {
+                    status = "DROP A SEED ON THIS WINDOW FIRST";
+                } else {
+                    // Keep the choices for next time, then go.
+                    if (dirty) ini.save("zelda3.ini") catch {};
+                    randomizer = true;
+                    running = false;
+                }
+            } else if (confirm and at == kDetailsRow) {
+                if (!g_seed_loaded) {
+                    status = "DROP A SEED ON THIS WINDOW FIRST";
+                } else {
+                    screen = .details;
+                    status = "";
+                }
+            } else if (adjust != 0 and at < kSettings.len) {
                 var buf: [64]u8 = undefined;
-                const at = list_cursor[li];
                 const cur = ini.values[at] orelse "";
                 if (cycle(alloc, &buf, kSettings[at], cur, adjust)) |next| {
                     try ini.set(at, next);
@@ -1793,9 +2326,8 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
 
             // Keep the cursor inside the visible window.
             if (list_cursor[li] < list_top[li]) list_top[li] = list_cursor[li];
-            if (list_cursor[li] >= list_top[li] + kVisibleRows)
-                list_top[li] = list_cursor[li] - kVisibleRows + 1;
-            if (list_top[li] < range.from) list_top[li] = range.from;
+            if (list_cursor[li] >= list_top[li] + shown)
+                list_top[li] = list_cursor[li] - shown + 1;
         }
 
         if (build) {
@@ -1949,7 +2481,7 @@ test "the schema splits cleanly into the three menus" {
     // A section added in the wrong place would land on the wrong screen.
     const settings = screenRange(.settings);
     const features = screenRange(.features);
-    const randomizer = screenRange(.randomizer);
+    const randomizer = screenRange(.alttpr);
 
     try testing.expect(settings.to > settings.from);
     try testing.expect(features.to > features.from);
@@ -2033,7 +2565,26 @@ test "the on-screen strings fit the window" {
         "ASSETS VERIFIED",
         "ASSETS PRESENT - CHECKSUM DIFFERS",
         "DRAG A .SFC ROM ONTO THIS WINDOW",
-        "OR DROP A RANDOMIZER SEED TO PLAY IT",
+        // The randomizer's pages.
+        "DROP AN ALTTPR.COM SEED HERE",
+        "GENERATE ONE AT ALTTPR.COM FROM",
+        "THE JAPANESE 1.0 ROM, THEN DRAG",
+        "THE .SFC ONTO THIS WINDOW",
+        "JAPANESE 1.0 ROM - NOT A SEED",
+        "IT PLAYS, BUT UNRANDOMIZED",
+        "PLAY A SEED FROM ALTTPR.COM",
+        "ALTTPR.COM RANDOMIZER",
+        "BUILT-IN RANDOMIZER",
+        "SEED DETAILS",
+        "PLAY THIS SEED",
+        "SELECT A/ENTER",
+        "PLAY START  SAVE X/S  BACK B",
+        "SCROLL UP/DOWN",
+        "SPOILERS A/ENTER   BACK B/ESC",
+        "DROP A SEED ON THIS WINDOW FIRST",
+        "SEEDS GO ON THE RANDOMIZER PAGE",
+        "NOT AN ALTTPR.COM SEED",
+        "JAPANESE ROM LOADED",
         // Every status line the loop can put up.
         "ASSETS BUILT",
         "BUILDING ASSETS...",
@@ -2131,6 +2682,10 @@ test "every named choice names all of its values" {
             return err;
         };
     }
+}
+
+test "the emulator note fits inside the frame" {
+    for (kEmuNote) |line| try testing.expect(textWidth(line, 1) <= kWindowW - 64);
 }
 
 test "a value's name fits the column it is drawn in" {

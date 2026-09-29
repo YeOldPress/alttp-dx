@@ -3,13 +3,16 @@
 //! and nothing to get wrong; everything it draws comes out of the seed ROM,
 //! so it looks like the game and ships no art.
 //!
-//! One layout, drawn at any scale: the items, a table of the dungeons, and
-//! the light and dark world maps with every check on them. The panel beside
-//! the game, the separate window and the overlay all draw it (the overlay
-//! leaves the maps out, since it sits on top of the game).
+//! Two layouts, drawn at any scale. Large puts the items and a table of the
+//! dungeons on the left and both world maps stacked on the right; compact is
+//! the narrow one, with the dungeons three across and the maps side by side.
+//! Nearly every part can be switched off or changed in [Randomizer]. The
+//! panel beside the game, the separate window and the overlay all draw it
+//! (the overlay leaves the maps out, since it sits on top of the game).
 const std = @import("std");
 const data = @import("tracker_data.zig");
 const hud = @import("hud_tables.zig");
+const seed_info = @import("seed_info.zig");
 
 pub const Mode = enum {
     off,
@@ -42,12 +45,6 @@ pub const Mode = enum {
         return null;
     }
 };
-
-/// The layout's size in its own units; it's drawn at a whole multiple.
-pub const kWidth = 192;
-pub const kHeight = 224;
-/// The part without the maps, for the overlay.
-pub const kOverlayHeight = 138;
 
 // ------------------------------------------------------------ graphics
 
@@ -319,19 +316,186 @@ fn dim(rgb: u32) u32 {
     return blend(rgb, 0x101010, 190);
 }
 
-const kBackground: u32 = 0x10141c;
-const kCell: u32 = 0x1c2230;
-const kText: u32 = 0xe8e8ec;
-const kDim: u32 = 0x6a7080;
-const kGood: u32 = 0x6cc86c;
-const kGold: u32 = 0xe8c040;
-const kBad: u32 = 0xc84848;
+// ------------------------------------------------------------- options
+
+/// Everything about the tracker a player can choose, from [Randomizer] in
+/// zelda3.ini. The defaults are what a first-time player sees.
+pub const Options = struct {
+    size: Size = .large,
+    /// Which side of the game the panel goes on.
+    side: Side = .right,
+    items: bool = true,
+    dungeons: bool = true,
+    maps: Maps = .both,
+    names: Names = .full,
+    keys: bool = true,
+    /// Big key, map and compass.
+    dungeon_items: bool = true,
+    bosses: bool = true,
+    prizes: Prizes = .map,
+    /// Which medallion Misery Mire and Turtle Rock want: a spoiler, so off.
+    medallions: bool = false,
+    counter: bool = true,
+    missing: Missing = .dim,
+    cleared: Cleared = .grey,
+    markers: Markers = .large,
+    background: Background = .dark,
+    /// The overlay's opacity, in percent.
+    opacity: u8 = 80,
+    corner: Corner = .bottom_right,
+    /// Small draws the overlay a pixel a unit, large at the panel's size.
+    overlay_size: OverlaySize = .small,
+    legend: bool = true,
+
+    pub const Size = enum { large, compact };
+    pub const Side = enum { right, left };
+    pub const Maps = enum { both, current, off };
+    pub const Names = enum { full, short };
+    pub const Prizes = enum { map, always, off };
+    pub const Missing = enum { dim, hide };
+    pub const Cleared = enum { grey, hide };
+    pub const Markers = enum { large, small };
+    pub const Background = enum { dark, black, green, magenta };
+    pub const Corner = enum { bottom_right, bottom_left, top_right, top_left };
+    pub const OverlaySize = enum { small, large };
+
+    /// Sets one option from its zelda3.ini key (TrackerSize and so on) and
+    /// value. False when either isn't one of ours.
+    pub fn set(self: *Options, key: []const u8, value: []const u8) bool {
+        const kPrefix = "Tracker";
+        if (key.len <= kPrefix.len or !std.ascii.startsWithIgnoreCase(key, kPrefix)) return false;
+        const name = key[kPrefix.len..];
+        inline for (.{
+            .{ "Size", "size" },                .{ "Side", "side" },
+            .{ "Items", "items" },              .{ "Dungeons", "dungeons" },
+            .{ "Maps", "maps" },                .{ "Names", "names" },
+            .{ "Keys", "keys" },                .{ "DungeonItems", "dungeon_items" },
+            .{ "Bosses", "bosses" },            .{ "Prizes", "prizes" },
+            .{ "Medallions", "medallions" },    .{ "Counter", "counter" },
+            .{ "Missing", "missing" },          .{ "Cleared", "cleared" },
+            .{ "Markers", "markers" },          .{ "Background", "background" },
+            .{ "Opacity", "opacity" },          .{ "Corner", "corner" },
+            .{ "OverlaySize", "overlay_size" },
+            .{ "Legend", "legend" },
+        }) |entry| {
+            if (std.ascii.eqlIgnoreCase(name, entry[0])) {
+                const field = &@field(self, entry[1]);
+                const T = @TypeOf(field.*);
+                const v = std.mem.trim(u8, value, " \t%");
+                switch (@typeInfo(T)) {
+                    .bool => field.* = parseBool(v) orelse return false,
+                    .int => field.* = @intCast(std.math.clamp(std.fmt.parseInt(i32, v, 10) catch return false, 0, 100)),
+                    .@"enum" => field.* = enumByName(T, v) orelse return false,
+                    else => unreachable,
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+fn parseBool(v: []const u8) ?bool {
+    for ([_][]const u8{ "1", "true", "on", "yes" }) |s| if (std.ascii.eqlIgnoreCase(v, s)) return true;
+    for ([_][]const u8{ "0", "false", "off", "no" }) |s| if (std.ascii.eqlIgnoreCase(v, s)) return false;
+    return null;
+}
+
+/// An enum value by name, with - standing in for _ the way the ini writes it.
+fn enumByName(comptime T: type, v: []const u8) ?T {
+    inline for (@typeInfo(T).@"enum".fields) |f| {
+        if (f.name.len == v.len) {
+            var same = true;
+            for (f.name, v) |a, b| {
+                const bb = if (b == '-') '_' else std.ascii.toLower(b);
+                if (a != bb) same = false;
+            }
+            if (same) return @enumFromInt(f.value);
+        }
+    }
+    return null;
+}
+
+/// What the tracker draws from: the graphics, the save data, the options
+/// and, when the seed could be read, what it says about itself.
+pub const Context = struct {
+    gfx: *Gfx,
+    st: State,
+    opts: Options = .{},
+    info: ?*const seed_info.Info = null,
+};
+
+// ------------------------------------------------------------- layout
+
+/// The panel is always as tall as the game.
+pub const kHeight = 224;
+pub const kCompactWidth = 192;
+/// The large layout: items and dungeons on the left, the maps on the right.
+pub const kLeftWidth = 180;
+pub const kMapsWidth = 110;
+pub const kMaxWidth = kLeftWidth + kMapsWidth;
+
+const Size2 = struct { w: usize, h: usize };
+
+/// How big the tracker is drawn with these options, in layout units:
+/// the panel and the window with maps, the overlay without.
+pub fn size(o: Options, with_maps: bool) Size2 {
+    const maps = with_maps and o.maps != .off;
+    switch (o.size) {
+        .compact => {
+            var h: usize = 2;
+            if (o.items) h += 82;
+            if (o.dungeons or o.counter) h += 52;
+            return .{ .w = kCompactWidth, .h = if (maps) kHeight else @max(h, 20) };
+        },
+        .large => {
+            const left = o.items or o.dungeons or o.counter or !maps;
+            const w: usize = (if (left) @as(usize, kLeftWidth) else 0) + (if (maps) @as(usize, kMapsWidth) else 0);
+            return .{ .w = w, .h = if (maps) kHeight else @max(leftHeight(o), 20) };
+        },
+    }
+}
+
+/// How far down the large layout's left column goes.
+fn leftHeight(o: Options) usize {
+    var y: usize = 1;
+    if (o.counter) y += 10;
+    if (o.items) y += 82;
+    if (o.dungeons) y += 9 + data.kDungeons.len * 9 + 1;
+    return y;
+}
+
+// ------------------------------------------------------------- drawing
+
+const Palette = struct { bg: u32, cell: u32, cell_on: u32 };
+
+fn palette(b: Options.Background) Palette {
+    return switch (b) {
+        .dark => .{ .bg = 0x10141c, .cell = 0x1c2230, .cell_on = 0x2c3850 },
+        .black => .{ .bg = 0x000000, .cell = 0x141418, .cell_on = 0x262a34 },
+        // Keyed out by streaming software; the cells stay, as dark boxes.
+        .green => .{ .bg = 0x00ff00, .cell = 0x1c2230, .cell_on = 0x2c3850 },
+        .magenta => .{ .bg = 0xff00ff, .cell = 0x1c2230, .cell_on = 0x2c3850 },
+    };
+}
+
+const kText: u32 = 0xf0f0f4;
+const kDim: u32 = 0x78808e;
+const kFaint: u32 = 0x3a4252;
+const kGood: u32 = 0x60d860;
+const kGold: u32 = 0xf0c840;
+const kBad: u32 = 0xe05050;
+const kDone: u32 = 0x565e6a;
+const kTodo: u32 = 0x60e0ff;
+const kHeading: u32 = 0x9ad0ff;
+const kMapColor: u32 = 0x78a8f0;
+const kCompassColor: u32 = 0xf09050;
 
 /// Draws a 16x16 inventory icon (four tile words, as the game's tables have
 /// them) with its top left at x, y in layout units.
 fn icon(cv: Canvas, gfx: *const Gfx, words: [4]u16, x: usize, y: usize, owned: bool) void {
     if (!gfx.have_icons) {
-        cv.rect(x + 2, y + 2, 12, 12, if (owned) kText else kCell);
+        cv.rect(x + 2, y + 2, 12, 12, if (owned) kText else kFaint);
         return;
     }
     for (words, 0..) |w, k| {
@@ -387,21 +551,123 @@ pub fn text(cv: Canvas, x: usize, y: usize, s: []const u8, rgb: u32) void {
     }
 }
 
-fn number(cv: Canvas, x: usize, y: usize, n: usize, rgb: u32) void {
-    var buf: [8]u8 = undefined;
-    text(cv, x, y, std.fmt.bufPrint(&buf, "{d}", .{n}) catch "?", rgb);
+/// Text with a black shadow, for putting over icons and maps.
+fn shadowText(cv: Canvas, x: usize, y: usize, s: []const u8, rgb: u32) void {
+    text(cv, x + 1, y + 1, s, 0x000000);
+    text(cv, x, y, s, rgb);
 }
 
-/// Draws the whole tracker, or the overlay's part of it, onto `cv`.
-pub fn draw(cv: Canvas, gfx: *Gfx, st: State, with_maps: bool) void {
-    const height: usize = if (with_maps) kHeight else kOverlayHeight;
-    cv.rect(0, 0, kWidth, height, kBackground);
-    drawItems(cv, gfx, st);
-    drawDungeons(cv, st, 84);
-    if (with_maps) drawMaps(cv, gfx, st, 138);
+fn fmt(buf: []u8, comptime f: []const u8, args: anytype) []const u8 {
+    return std.fmt.bufPrint(buf, f, args) catch "?";
 }
 
-fn drawItems(cv: Canvas, gfx: *const Gfx, st: State) void {
+// Small pictures for the dungeon table, 7x7, a bit a pixel (bit 6 leftmost).
+const Glyph = [7]u7;
+const kKeyGlyph = Glyph{ 0b0011100, 0b0010100, 0b0011100, 0b0001000, 0b0001100, 0b0001000, 0b0001100 };
+const kBigKeyGlyph = Glyph{ 0b0111110, 0b0100010, 0b0111110, 0b0001000, 0b0001110, 0b0001000, 0b0001110 };
+const kMapGlyph = Glyph{ 0b1111111, 0b1000001, 0b1011101, 0b1000001, 0b1011001, 0b1000001, 0b1111111 };
+const kCompassGlyph = Glyph{ 0b0011100, 0b0100010, 0b1001001, 0b1011101, 0b1001001, 0b0100010, 0b0011100 };
+const kSkullGlyph = Glyph{ 0b0111110, 0b1111111, 0b1001001, 0b1111111, 0b0110110, 0b0101010, 0b0000000 };
+const kCrystalGlyph = Glyph{ 0b0001000, 0b0011100, 0b0111110, 0b1111111, 0b0111110, 0b0011100, 0b0001000 };
+const kPendantGlyph = Glyph{ 0b0011100, 0b0100010, 0b0011100, 0b0111110, 0b0111110, 0b0011100, 0b0001000 };
+
+fn glyph(cv: Canvas, x: usize, y: usize, g: Glyph, rgb: u32) void {
+    for (g, 0..) |row, ry| {
+        for (0..7) |rx| {
+            if (row >> @intCast(6 - rx) & 1 != 0) cv.rect(x + rx, y + ry, 1, 1, rgb);
+        }
+    }
+}
+
+/// A dungeon's prize as the tracker shows it: a glyph and its color, when
+/// the options and what the player has found allow it to be known.
+fn prizeLook(ctx: Context, di: usize) ?struct { g: Glyph, color: u32 } {
+    if (ctx.opts.prizes == .off or di >= seed_info.kPrizeDungeons.len) return null;
+    const info = ctx.info orelse return null;
+    if (ctx.opts.prizes == .map and !ctx.st.has(data.kDungeons[di].map)) return null;
+    return switch (info.prizes[di]) {
+        .unknown => null,
+        .green_pendant => .{ .g = kPendantGlyph, .color = 0x50d050 },
+        .blue_pendant => .{ .g = kPendantGlyph, .color = 0x5890ff },
+        .red_pendant => .{ .g = kPendantGlyph, .color = 0xf05050 },
+        .crystal5, .crystal6 => .{ .g = kCrystalGlyph, .color = 0xff6070 },
+        else => .{ .g = kCrystalGlyph, .color = 0x80c8ff },
+    };
+}
+
+/// How a dungeon stands: the color for its row and its map marker.
+fn dungeonColor(st: State, d: data.Dungeon) u32 {
+    const left = d.checks.len - st.done(d.checks);
+    const beaten = if (d.boss) |b| st.has(b) else left == 0;
+    return if (left == 0 and beaten) kDone else if (beaten) kGood else kBad;
+}
+
+/// Draws the whole tracker, or the overlay's part of it (no maps), onto
+/// `cv`, whose size should be size(ctx.opts, with_maps) times its scale.
+pub fn draw(cv: Canvas, ctx: Context, with_maps: bool) void {
+    const o = ctx.opts;
+    const pal = palette(o.background);
+    const sz = size(o, with_maps);
+    cv.rect(0, 0, sz.w, sz.h, pal.bg);
+    const maps = with_maps and o.maps != .off;
+    switch (o.size) {
+        .compact => {
+            var y: usize = 2;
+            if (o.items) {
+                drawItems(cv, ctx, pal, 4, y, 24);
+                y += 82;
+            }
+            if (o.dungeons or o.counter) {
+                drawDungeonGrid(cv, ctx, pal, y);
+                y += 52;
+            }
+            if (maps) {
+                y = @max(y, 138);
+                drawCompactMaps(cv, ctx, pal, y);
+            }
+        },
+        .large => {
+            const left = o.items or o.dungeons or o.counter or !maps;
+            if (left) {
+                var y: usize = 1;
+                if (o.counter) {
+                    drawCounter(cv, ctx, 3, y);
+                    y += 10;
+                }
+                if (o.items) {
+                    drawItems(cv, ctx, pal, 3, y, 22);
+                    y += 82;
+                }
+                if (o.dungeons) drawDungeonTable(cv, ctx, pal, 2, y);
+            }
+            if (maps) drawLargeMaps(cv, ctx, pal, if (left) kLeftWidth else 0);
+        },
+    }
+}
+
+/// Items found out of the seed's total, hearts, and crystals against what
+/// Ganon's Tower and Ganon want.
+fn drawCounter(cv: Canvas, ctx: Context, x: usize, y: usize) void {
+    const st = ctx.st;
+    var buf: [32]u8 = undefined;
+    const found = @as(u16, st.at(0x423)) | @as(u16, st.at(0x424)) << 8;
+    const total: u16 = if (ctx.info) |i| i.total_items else 0;
+    text(cv, x, y + 1, "ITEMS", kHeading);
+    text(cv, x + 24, y + 1, if (total != 0) fmt(&buf, "{d}/{d}", .{ found, total }) else fmt(&buf, "{d}", .{found}), kText);
+    text(cv, x + 66, y + 1, "HEARTS", kHeading);
+    text(cv, x + 94, y + 1, fmt(&buf, "{d}", .{st.at(0x36c) / 8}), kText);
+    const crystals = @popCount(st.at(0x37a) & 0x7f);
+    if (ctx.info) |i| {
+        text(cv, x + 108, y + 1, "GT", kHeading);
+        text(cv, x + 118, y + 1, fmt(&buf, "{d}/{d}", .{ crystals, i.tower_crystals }), if (crystals >= i.tower_crystals) kGood else kText);
+        text(cv, x + 138, y + 1, "GAN", kHeading);
+        text(cv, x + 152, y + 1, fmt(&buf, "{d}/{d}", .{ crystals, i.ganon_crystals }), if (crystals >= i.ganon_crystals) kGood else kText);
+    }
+}
+
+/// The inventory, 8 across and 4 down, `pitch` units apart.
+fn drawItems(cv: Canvas, ctx: Context, pal: Palette, x0: usize, y0: usize, pitch: usize) void {
+    const st = ctx.st;
     const inv = st.at(0x38c); // what's been found of the items that share a slot
     const bows = st.at(0x38e);
     var bottles: usize = 0;
@@ -449,83 +715,216 @@ fn drawItems(cv: Canvas, gfx: *const Gfx, st: State) void {
         .{ .words = item(hud.kHudPendants0, 1), .owned = st.at(0x374) & 0x07 != 0, .count = @popCount(st.at(0x374) & 0x07) },
         .{ .words = .{ 0x2D44, 0x2D45, 0xffff, 0xffff }, .owned = st.at(0x37a) & 0x7f != 0, .count = @popCount(st.at(0x37a) & 0x7f) },
     };
+    const kPendantsAt = 30;
     for (entries, 0..) |e, i| {
-        const x = (i % 8) * 24 + 4;
-        const y = (i / 8) * 20 + 2;
-        cv.rect(x - 2, y - 1, 20, 18, kCell);
-        icon(cv, gfx, e.words, x, y, e.owned);
-        if (e.count > 1 or (e.count == 1 and i >= 30)) number(cv, x + 13, y + 12, e.count, kText);
+        const x = x0 + (i % 8) * pitch;
+        const y = y0 + (i / 8) * 20;
+        cv.rect(x, y, 20, 19, if (e.owned) pal.cell_on else pal.cell);
+        if (e.owned or ctx.opts.missing == .dim) icon(cv, ctx.gfx, e.words, x + 2, y + 1, e.owned);
+        if (e.count > 1 or (e.count == 1 and i >= kPendantsAt)) {
+            var buf: [4]u8 = undefined;
+            shadowText(cv, x + 15, y + 13, fmt(&buf, "{d}", .{e.count}), kText);
+        }
     }
-    // Half or quarter magic.
+    // Half or quarter magic, in the armor's corner.
     const magic = st.at(0x37b);
-    if (magic != 0) text(cv, 4 + 7 * 24 - 2, 2 + 3 * 20 + 14, if (magic == 1) "1/2" else "1/4", kGold);
+    if (magic != 0) shadowText(cv, x0 + 5 * pitch + 1, y0 + 3 * 20 + 13, if (magic == 1) "1/2" else "1/4", kGold);
+
+    // Which medallion each of the two medallion dungeons wants, under it.
+    if (ctx.opts.medallions) if (ctx.info) |info| {
+        for ([_]seed_info.Medallion{ .bombos, .ether, .quake }, 0..) |m, k| {
+            const mm = info.misery_mire == m;
+            const tr = info.turtle_rock == m;
+            if (!mm and !tr) continue;
+            const label: []const u8 = if (mm and tr) "BOTH" else if (mm) "MM" else "TR";
+            shadowText(cv, x0 + (1 + k) * pitch + 1, y0 + 20 + 13, label, kGold);
+        }
+    };
 }
 
-fn drawDungeons(cv: Canvas, st: State, top: usize) void {
+/// The dungeons as a table, one to a row, for the large layout.
+fn drawDungeonTable(cv: Canvas, ctx: Context, pal: Palette, x0: usize, y0: usize) void {
+    const o = ctx.opts;
+    const st = ctx.st;
+    const name_w: usize = if (o.names == .full) 72 else 16;
+    // Column positions, leaving out the ones switched off.
+    const left_x = x0 + 4 + name_w + 2;
+    var cur = left_x + 14;
+    const keys_x = cur;
+    if (o.keys) cur += 10;
+    const items_x = cur;
+    if (o.dungeon_items) cur += 26;
+    const boss_x = cur;
+    if (o.bosses) cur += 10;
+    const prize_x = cur;
+    if (o.prizes != .off) cur += 10;
+    const right = cur;
+
+    // The headings: words where there's room, pictures where there isn't.
+    if (o.names == .full) text(cv, x0 + 4, y0 + 1, "DUNGEON", kHeading);
+    text(cv, left_x - 2, y0 + 1, "LEFT", kHeading);
+    if (o.keys) glyph(cv, keys_x, y0, kKeyGlyph, kHeading);
+    if (o.dungeon_items) {
+        glyph(cv, items_x, y0, kBigKeyGlyph, kHeading);
+        glyph(cv, items_x + 8, y0, kMapGlyph, kHeading);
+        glyph(cv, items_x + 16, y0, kCompassGlyph, kHeading);
+    }
+    if (o.bosses) glyph(cv, boss_x, y0, kSkullGlyph, kHeading);
+    if (o.prizes != .off) glyph(cv, prize_x, y0, kCrystalGlyph, kHeading);
+
+    var buf: [8]u8 = undefined;
     for (data.kDungeons, 0..) |d, i| {
+        const y = y0 + 9 + i * 9;
+        const status = dungeonColor(st, d);
+        cv.rect(x0, y, right - x0, 8, pal.cell);
+        // A stripe in the dungeon's state: red with its boss alive, green
+        // beaten with checks left, grey when there's nothing left at all.
+        cv.rect(x0, y, 2, 8, status);
+        text(cv, x0 + 4, y + 2, if (o.names == .full) d.name else d.short, if (status == kDone) kDim else kText);
+        const left = d.checks.len - st.done(d.checks);
+        const n = fmt(&buf, "{d}", .{left});
+        text(cv, left_x + 10 - n.len * 4, y + 2, n, if (left == 0) kGood else kGold);
+        if (o.keys) {
+            const keys = st.at(d.keys_found);
+            text(cv, keys_x + 2, y + 2, if (keys == 0) "-" else fmt(&buf, "{d}", .{keys}), if (keys == 0) kFaint else kText);
+        }
+        if (o.dungeon_items) {
+            glyph(cv, items_x, y, kBigKeyGlyph, if (st.has(d.big_key)) kGold else kFaint);
+            glyph(cv, items_x + 8, y, kMapGlyph, if (st.has(d.map)) kMapColor else kFaint);
+            glyph(cv, items_x + 16, y, kCompassGlyph, if (st.has(d.compass)) kCompassColor else kFaint);
+        }
+        if (o.bosses) if (d.boss) |b| glyph(cv, boss_x, y, kSkullGlyph, if (st.has(b)) kGood else kBad);
+        if (o.prizes != .off and i < seed_info.kPrizeDungeons.len) {
+            if (prizeLook(ctx, i)) |p| glyph(cv, prize_x, y, p.g, p.color) else text(cv, prize_x + 2, y + 2, "?", kFaint);
+        }
+    }
+}
+
+/// The dungeons three across, for the compact layout. The two spare cells
+/// at the end hold the item count.
+fn drawDungeonGrid(cv: Canvas, ctx: Context, pal: Palette, top: usize) void {
+    const o = ctx.opts;
+    const st = ctx.st;
+    var buf: [16]u8 = undefined;
+    if (o.dungeons) for (data.kDungeons, 0..) |d, i| {
         const x = (i % 3) * 64;
         const y = top + (i / 3) * 10;
-        cv.rect(x + 1, y, 62, 9, kCell);
-        const total = d.checks.len;
-        const left = total - st.done(d.checks);
-        text(cv, x + 3, y + 2, d.short, kText);
-        // What's left to find, green once it's all been found.
-        number(cv, x + 17, y + 2, left, if (left == 0) kGood else kText);
-        // Small keys found here so far.
-        const keys = st.at(d.keys_found);
-        if (keys != 0) {
-            text(cv, x + 29, y + 2, "K", kDim);
-            number(cv, x + 33, y + 2, keys, kDim);
+        cv.rect(x + 1, y, 62, 9, pal.cell);
+        const status = dungeonColor(st, d);
+        cv.rect(x + 1, y, 1, 9, status);
+        // The name takes the prize's color once it's known.
+        const name_color = if (prizeLook(ctx, i)) |p| p.color else if (status == kDone) kDim else kText;
+        text(cv, x + 3, y + 2, d.short, name_color);
+        const left = d.checks.len - st.done(d.checks);
+        text(cv, x + 16, y + 2, fmt(&buf, "{d}", .{left}), if (left == 0) kGood else kGold);
+        if (o.keys) {
+            const keys = st.at(d.keys_found);
+            if (keys != 0) text(cv, x + 25, y + 2, fmt(&buf, "{d}", .{keys}), kDim);
         }
-        // Big key, map, compass, boss.
-        if (st.has(d.big_key)) cv.rect(x + 42, y + 3, 3, 3, kGold);
-        if (st.has(d.map)) cv.rect(x + 47, y + 3, 3, 3, 0x70a0e0);
-        if (st.has(d.compass)) cv.rect(x + 52, y + 3, 3, 3, 0xe08040);
-        if (d.boss) |b| cv.rect(x + 57, y + 2, 4, 5, if (st.has(b)) kGood else kBad);
+        if (o.dungeon_items) {
+            glyph(cv, x + 31, y + 1, kBigKeyGlyph, if (st.has(d.big_key)) kGold else kFaint);
+            glyph(cv, x + 39, y + 1, kMapGlyph, if (st.has(d.map)) kMapColor else kFaint);
+            glyph(cv, x + 47, y + 1, kCompassGlyph, if (st.has(d.compass)) kCompassColor else kFaint);
+        }
+        if (o.bosses) if (d.boss) |b| glyph(cv, x + 55, y + 1, kSkullGlyph, if (st.has(b)) kGood else kBad);
+    };
+    if (o.counter) {
+        const y = top + 4 * 10 + 2;
+        const found = @as(u16, st.at(0x423)) | @as(u16, st.at(0x424)) << 8;
+        const total: u16 = if (ctx.info) |i| i.total_items else 0;
+        text(cv, 68, y, "ITEMS", kHeading);
+        text(cv, 92, y, if (total != 0) fmt(&buf, "{d}/{d}", .{ found, total }) else fmt(&buf, "{d}", .{found}), kText);
+        text(cv, 140, y, "HEARTS", kHeading);
+        text(cv, 168, y, fmt(&buf, "{d}", .{st.at(0x36c) / 8}), kText);
     }
 }
 
-fn drawMaps(cv: Canvas, gfx: *Gfx, st: State, top: usize) void {
-    const size = 84;
-    const n = @min(size * cv.scale, 256);
+fn drawCompactMaps(cv: Canvas, ctx: Context, pal: Palette, top: usize) void {
+    const kSize = 84;
+    if (ctx.opts.maps == .current) {
+        const world: data.World = if (ctx.st.inWorldDark()) .dark else .light;
+        drawMap(cv, ctx, pal, world, (kCompactWidth - kSize) / 2, top, kSize, false);
+        return;
+    }
+    drawMap(cv, ctx, pal, .light, 8, top, kSize, true);
+    drawMap(cv, ctx, pal, .dark, 8 + kSize + 8, top, kSize, true);
+}
+
+fn drawLargeMaps(cv: Canvas, ctx: Context, pal: Palette, x0: usize) void {
+    const o = ctx.opts;
+    if (o.maps == .current) {
+        const world: data.World = if (ctx.st.inWorldDark()) .dark else .light;
+        const s = 104;
+        text(cv, x0 + 3, 2, if (world == .light) "LIGHT WORLD" else "DARK WORLD", kHeading);
+        drawMap(cv, ctx, pal, world, x0 + 3, 9, s, false);
+        if (o.legend) drawLegend(cv, o, x0 + 3, 9 + s + 4);
+        return;
+    }
+    const s: usize = if (o.legend) 98 else 101;
+    text(cv, x0 + 6, 1, "LIGHT WORLD", kHeading);
+    drawMap(cv, ctx, pal, .light, x0 + 6, 8, s, true);
+    text(cv, x0 + 6, 8 + s + 3, "DARK WORLD", kHeading);
+    drawMap(cv, ctx, pal, .dark, x0 + 6, 8 + s + 10, s, true);
+    if (o.legend) drawLegend(cv, o, x0 + 6, 8 + s + 10 + s + 3);
+}
+
+/// What the marker colors mean.
+fn drawLegend(cv: Canvas, o: Options, x: usize, y: usize) void {
+    cv.rect(x, y, 4, 4, kTodo);
+    text(cv, x + 6, y, "NEW", kDim);
+    cv.rect(x + 22, y, 4, 4, kGold);
+    text(cv, x + 28, y, "SOME", kDim);
+    cv.rect(x + 48, y, 4, 4, kBad);
+    text(cv, x + 54, y, "BOSS", kDim);
+    if (o.cleared == .grey) {
+        cv.rect(x + 74, y, 4, 4, kDone);
+        text(cv, x + 80, y, "DONE", kDim);
+    }
+}
+
+fn drawMap(cv: Canvas, ctx: Context, pal: Palette, world: data.World, x0: usize, top: usize, size_u: usize, show_here: bool) void {
+    const gfx = ctx.gfx;
+    const st = ctx.st;
+    const o = ctx.opts;
+    const wi: usize = @intFromEnum(world);
+    const n = @min(size_u * cv.scale, 256);
     if (gfx.have_maps) scaleMaps(gfx, n);
-    const dark_now = st.inWorldDark();
-    for ([2]data.World{ .light, .dark }, 0..) |world, wi| {
-        const x0 = 8 + wi * (size + 8);
-        const here = dark_now == (world == .dark);
-        cv.rect(x0 - 1, top - 1, size + 2, size + 2, if (here) kGold else kCell);
-        const px0 = x0 * cv.scale;
-        const py0 = top * cv.scale;
-        if (gfx.have_maps) {
-            for (0..n) |py| {
-                for (0..n) |px| cv.put(px0 + px, py0 + py, gfx.scaled[wi][py * n + px]);
-            }
-        } else {
-            cv.rect(x0, top, size, size, if (world == .light) 0x305830 else 0x403050);
+    const here = st.inWorldDark() == (world == .dark);
+    cv.rect(x0 - 1, top - 1, size_u + 2, size_u + 2, if (here and show_here) kGold else pal.cell);
+    const px0 = x0 * cv.scale;
+    const py0 = top * cv.scale;
+    if (gfx.have_maps) {
+        // Drawn at the size it was shrunk to, centered in its box.
+        const off = (size_u * cv.scale - n) / 2;
+        for (0..n) |py| {
+            for (0..n) |px| cv.put(px0 + off + px, py0 + off + py, gfx.scaled[wi][py * n + px]);
         }
-        // Checks: bright until found, grey once they have been.
-        for (data.kLocations) |loc| {
-            if (loc.world != world) continue;
-            const done = st.done(loc.checks);
-            const color: u32 = if (done == loc.checks.len) 0x505860 else if (done == 0) 0x60e0ff else 0xf0c040;
-            marker(cv, x0, top, size, loc.x, loc.y, 2, color);
-        }
-        for (data.kDungeons) |d| {
-            if (d.world != world) continue;
-            const left = d.checks.len - st.done(d.checks);
-            const beaten = if (d.boss) |b| st.has(b) else left == 0;
-            const color: u32 = if (left == 0 and beaten) 0x505860 else if (beaten) kGood else kBad;
-            marker(cv, x0, top, size, d.x, d.y, 3, color);
-        }
+    } else {
+        cv.rect(x0, top, size_u, size_u, if (world == .light) 0x305830 else 0x403050);
+    }
+    const small: usize = if (o.markers == .large) 3 else 2;
+    // Checks: bright until found, gold when some are, grey once all are.
+    for (data.kLocations) |loc| {
+        if (loc.world != world) continue;
+        const done = st.done(loc.checks);
+        if (done == loc.checks.len and o.cleared == .hide) continue;
+        const color: u32 = if (done == loc.checks.len) kDone else if (done == 0) kTodo else kGold;
+        marker(cv, x0, top, size_u, loc.x, loc.y, small, color);
+    }
+    for (data.kDungeons) |d| {
+        if (d.world != world) continue;
+        const color = dungeonColor(st, d);
+        if (color == kDone and o.cleared == .hide) continue;
+        marker(cv, x0, top, size_u, d.x, d.y, small + 2, color);
     }
 }
 
 /// A square marker centered on a map position given in percent.
-fn marker(cv: Canvas, x0: usize, y0: usize, size: usize, px: f32, py: f32, r: usize, color: u32) void {
-    const cx: usize = @intFromFloat(@as(f32, @floatFromInt(size)) * px / 100.0);
-    const cy: usize = @intFromFloat(@as(f32, @floatFromInt(size)) * py / 100.0);
-    const x = x0 + @min(cx, size - 1);
-    const y = y0 + @min(cy, size - 1);
+fn marker(cv: Canvas, x0: usize, y0: usize, size_u: usize, px: f32, py: f32, r: usize, color: u32) void {
+    const cx: usize = @intFromFloat(@as(f32, @floatFromInt(size_u)) * px / 100.0);
+    const cy: usize = @intFromFloat(@as(f32, @floatFromInt(size_u)) * py / 100.0);
+    const x = x0 + @min(cx, size_u - 1);
+    const y = y0 + @min(cy, size_u - 1);
     const lx = x -| r / 2;
     const ly = y -| r / 2;
     cv.rect(lx, ly, r + 1, r + 1, 0x000000);
@@ -541,4 +940,31 @@ test "modes cycle through all four and back" {
 
 test "the font has a glyph for every character it claims" {
     try std.testing.expectEqual(kGlyphs.len, kFont.len);
+}
+
+test "options read the way zelda3.ini writes them" {
+    var o = Options{};
+    try std.testing.expect(o.set("TrackerSize", "compact"));
+    try std.testing.expect(o.set("TrackerCorner", "top-left"));
+    try std.testing.expect(o.set("TrackerOpacity", "60%"));
+    try std.testing.expect(o.set("TrackerLegend", "0"));
+    try std.testing.expect(!o.set("TrackerSize", "enormous"));
+    try std.testing.expect(!o.set("Tracker", "panel"));
+    try std.testing.expectEqual(Options.Size.compact, o.size);
+    try std.testing.expectEqual(Options.Corner.top_left, o.corner);
+    try std.testing.expectEqual(@as(u8, 60), o.opacity);
+    try std.testing.expect(!o.legend);
+}
+
+test "every layout fits beside the game" {
+    inline for (.{ Options.Size.large, Options.Size.compact }) |sz| {
+        for ([_]bool{ false, true }) |legend| {
+            const o = Options{ .size = sz, .legend = legend };
+            const s = size(o, true);
+            try std.testing.expect(s.w <= kMaxWidth and s.h <= kHeight);
+            try std.testing.expect(size(o, false).h <= kHeight);
+        }
+    }
+    // The large left column, everything on, fits the game's height.
+    try std.testing.expect(leftHeight(.{}) <= kHeight);
 }

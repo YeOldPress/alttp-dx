@@ -155,33 +155,53 @@ deluxe pack. MSU needs `AudioChannels = 2`, and it sets the audio rate itself.
 
 ## Randomizer
 
-Generate a seed on [alttpr.com](https://alttpr.com) from the Japanese 1.0 ROM
-(MD5 `03a63945398191337e896e5771f77173`), then drop the seed on the start menu
-or run `zelda3 seed.sfc`. A seed changes the game's own code, so it isn't
-played by the port: it runs in the SNES emulator the port is verified
-against, exactly as the randomizer built it. Snapshots and cheats are off,
-and the save goes next to the seed as a `.srm` file.
+**Randomizer** on the start menu, under Play, leads to two choices. The
+built-in randomizer is coming soon. **ALTTPR.COM Randomizer** opens the page
+that seeds are dropped on: generate a seed on [alttpr.com](https://alttpr.com)
+from the Japanese 1.0 ROM (MD5 `03a63945398191337e896e5771f77173`) and drag
+the `.sfc` onto the window, or run `zelda3 seed.sfc` to open straight on it.
+Drops on the main menu are still only for the US ROM that builds the assets.
 
-Some of the port's extras still come along, because they only watch the game:
+The page reads the seed and shows its hash icons (the same five alttpr.com
+shows), its link, logic, mode, goal and crystal requirements. **Seed Details**
+lists everything the ROM says about itself: item pool, key and map shuffles,
+swords, quickswap, silver arrows, menu speed, heart beep and color, the clock,
+tournament flag, starting items, and whether a save or MSU-1 pack sits beside
+it. The medallions and each dungeon's prize are there too, hidden until you
+ask.
 
-- **Rumble**, the same as in the port.
-- **Widescreen**. Rooms and areas show as far as
-  they go; outdoors the edges can briefly show stale tiles while scrolling,
-  and enemies still vanish at the original screen edge.
+A seed changes the game's own code, so it isn't played by the port: it runs
+in the SNES emulator the port is verified against, exactly as the randomizer
+built it. Snapshots, cheats and Turbo are off, and the save goes next to the seed as
+a `.srm` file. Some of the port's extras still come along, because they only
+watch the game:
+
+- **Rumble**, on by default, the same as in the port.
+- **Widescreen**, off by default and experimental: rooms and areas show as far
+  as they go, but outdoors the edges can briefly show stale tiles while
+  scrolling, and enemies still vanish at the original screen edge.
 - **MSU-1**: put `seed-1.pcm`, `seed-2.pcm` and so on (or `.opuz`) next to
   `seed.sfc`, the usual way randomizer packs are named, or it uses `MSUPath`
   when `EnableMSU` is on. The seed's own code picks the tracks.
 
-Before a seed starts, a short options screen asks about widescreen, rumble,
-MSU-1 and the tracker. Those are kept in `[Randomizer]` in `zelda3.ini`, apart
+The item tracker follows along by itself, reading the save data every frame,
+and draws its icons and maps from the seed. The large layout has the items
+with a counter (items found out of the seed's total, hearts, and crystals
+against what Ganon's Tower and Ganon need), a dungeon table (checks left,
+small keys, big key, map, compass, boss and prize), and both world maps with
+every check on them and a legend. The compact layout fits the same into less
+room. It goes beside the game (either side), over it, in its own window, or
+nowhere, and T switches between those while playing.
+
+Nearly every part of it can be changed on the page: layout, which sections
+show, the current world's map only, full or short dungeon names, prizes once
+you have the map or always, the MM and TR medallions, dimmed or hidden missing
+items, greyed or hidden cleared checks, marker size, a dark, black, green or
+magenta background for keying out on a stream, and the overlay's opacity,
+corner and size. All of it is kept in `[Randomizer]` in `zelda3.ini`, apart
 from the normal game's settings.
 
-The item tracker follows along by itself, reading the save data every frame:
-items, all 13 dungeons (checks left, keys, big key, map, compass, boss) and
-both world maps with every check on them. Its icons and maps come from the
-seed. It goes beside the game, over it, in its own window, or nowhere, and T
-switches between those while playing.
-
+## zelda3-tools
 
 Everything to do with the assets besides playing: building them, exporting
 them to edit, building them back, and adding languages. Run it with no

@@ -333,6 +333,16 @@ fn emuRenderToFile(rom: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u8
     // WIDE=n adds n widescreen pixels a side.
     const mode = if (std.c.getenv("TRACKER")) |t| tracker.Mode.fromName(std.mem.span(t)) orelse .panel else .panel;
     if (std.c.getenv("WIDE")) |w| config.g_rando_margin = std.fmt.parseInt(u8, std.mem.span(w), 10) catch 0;
+    // TRACKER_OPTS="Size=compact;Maps=current" sets the tracker's options.
+    if (std.c.getenv("TRACKER_OPTS")) |t| {
+        var opts = std.mem.tokenizeScalar(u8, std.mem.span(t), ';');
+        while (opts.next()) |kv| {
+            const eq = std.mem.indexOfScalar(u8, kv, '=') orelse continue;
+            var key: [64]u8 = undefined;
+            const k = std.fmt.bufPrint(&key, "Tracker{s}", .{kv[0..eq]}) catch continue;
+            if (!config.g_tracker_opts.set(k, kv[eq + 1 ..])) std.debug.print("TRACKER_OPTS: {s}?\n", .{kv});
+        }
+    }
     rando.start(alloc, std.mem.span(rom), mode) catch |err| {
         std.debug.print("--emu-render: could not load {s}: {s}\n", .{ rom, @errorName(err) });
         return 1;
@@ -523,7 +533,7 @@ fn SdlRenderer_Init(window: ?*c.SDL_Window) callconv(.c) bool {
 
     const tex_mult: c_int = if (g_ppu_render_flags & kPpuRenderFlags_4x4Mode7 != 0) 4 else 1;
     // A randomizer seed draws at double size, with room for the tracker.
-    const tex_w = if (rando.g_active) rando.kMaxGameW + rando.kPanelW else g_snes_width * tex_mult;
+    const tex_w = if (rando.g_active) rando.kMaxGameW + rando.kMaxPanelW else g_snes_width * tex_mult;
     const tex_h = if (rando.g_active) rando.kGameH else g_snes_height * tex_mult;
     g_texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_ARGB8888, c.SDL_TEXTUREACCESS_STREAMING, tex_w, tex_h);
     if (g_texture == null) {
@@ -634,10 +644,28 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     // A randomizer seed to play in the emulator instead of the port.
     var rando_rom: ?[:0]const u8 = null;
 
-    // `--menu-shot <out.bmp>` draws the seed options screen, for working on it.
-    if (argc == 2 and strcmp(argv[0], "--menu-shot") == 0) {
+    // `--seed-info <rom>` prints what a randomizer seed says about itself.
+    if (argc == 2 and strcmp(argv[0], "--seed-info") == 0) {
+        const data = @import("fileio.zig").readWholeFile(alloc, argv[1]) catch return 1;
+        defer alloc.free(data);
+        const si = @import("seed_info.zig");
+        const info = si.read(data);
+        std.debug.print("{s}\nhash:", .{info.titleText()});
+        for (info.hash) |h| std.debug.print(" {s}", .{si.kHashIcons[h]});
+        std.debug.print("\nlogic {s} | {s} | mode {s} | goal {s} ({d})\ncrystals: tower {d} ganon {d} | swordless {} | maps/compasses {} keys {} big keys {} retro {}\nquickswap {} pseudoboots {} silvers {s} menu {s} beep {s} hearts {s} timer {s} items {d} tournament {}\nlimits sword {d} shield {d} armor {d} bottles {d} bow {d}\n", .{ info.logic, info.game_type, info.mode, info.goal, info.goal_count, info.tower_crystals, info.ganon_crystals, info.swordless, info.shuffled_maps_compasses, info.shuffled_keys, info.shuffled_big_keys, info.retro_keys, info.quickswap, info.pseudo_boots, info.silvers, info.menu_speed, info.heart_beep, info.heart_color, info.timer, info.total_items, info.tournament, info.limits.sword, info.limits.shield, info.limits.armor, info.limits.bottles, info.limits.bow });
+        var buf: [32][]const u8 = undefined;
+        std.debug.print("start:", .{});
+        for (si.startingItems(&info, &buf)) |n| std.debug.print(" {s},", .{n});
+        std.debug.print("\nMM {s} TR {s}\n", .{ si.medallionName(info.misery_mire), si.medallionName(info.turtle_rock) });
+        for (si.kPrizeDungeons, 0..) |d, i| std.debug.print("  {s}: {s}\n", .{ d.name, si.prizeName(info.prizes[i]) });
+        return 0;
+    }
+
+    // `--menu-shot <screen> <out.bmp> [seed]` draws a menu screen with no
+    // window, for working on it. Paths should be absolute.
+    if ((argc == 3 or argc == 4) and strcmp(argv[0], "--menu-shot") == 0) {
         menu.enterDataDirectory();
-        menu.screenshot(alloc, argv[1]) catch |err| {
+        menu.screenshot(alloc, std.mem.span(argv[1]), argv[2], if (argc == 4) std.mem.span(argv[3]) else null) catch |err| {
             std.debug.print("--menu-shot: {s}\n", .{@errorName(err)});
             return 1;
         };
@@ -1109,7 +1137,8 @@ fn HandleCommand(j: u32, pressed: bool) void {
     }
 
     if (j == kKeys_Turbo) {
-        g_turbo = pressed;
+        // A seed is a race: no fast-forwarding through it.
+        g_turbo = pressed and !rando.g_active;
         return;
     }
 

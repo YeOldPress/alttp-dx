@@ -633,6 +633,8 @@ pub var g_tracker: []const u8 = "panel";
 pub var g_rando_margin: u8 = 0;
 pub var g_rando_rumble: u8 = 100;
 pub var g_rando_msu: bool = true;
+/// Everything else about the tracker: TrackerSize, TrackerMaps and the rest.
+pub var g_tracker_opts: @import("tracker.zig").Options = .{};
 
 fn handleRandomizer(key: [*:0]const u8, value: [*:0]u8) bool {
     if (util.StringEqualsNoCase(key, "Tracker")) {
@@ -656,7 +658,7 @@ fn handleRandomizer(key: [*:0]const u8, value: [*:0]u8) bool {
     } else if (util.StringEqualsNoCase(key, "MSU")) {
         return ParseBool(value, &g_rando_msu);
     }
-    return false;
+    return g_tracker_opts.set(std.mem.span(key), std.mem.span(value));
 }
 
 pub fn applySetting(section: []const u8, key: []const u8, value: []const u8) bool {

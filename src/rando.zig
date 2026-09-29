@@ -12,6 +12,7 @@ const config = @import("config.zig");
 const vars = @import("variables.zig");
 const rtl = @import("zelda_rtl.zig");
 const Msu1 = @import("msu1.zig").Msu1;
+const seed_info = @import("seed_info.zig");
 
 pub var g_active: bool = false;
 var g_console: emu.Console = undefined;
@@ -25,7 +26,8 @@ var g_frames: u32 = 0;
 /// sharp beside it.
 pub const kScale = 2;
 pub const kGameH = emu.kHeight * kScale;
-pub const kPanelW = tracker.kWidth * kScale;
+/// The widest the tracker panel gets; the options decide how wide it is.
+pub const kMaxPanelW = tracker.kMaxWidth * kScale;
 /// The widest the game gets: 18:9 adds 96 pixels a side.
 pub const kMaxMargin = 96;
 pub const kMaxGameW = (emu.kWidth + 2 * kMaxMargin) * kScale;
@@ -33,6 +35,9 @@ pub const kMaxGameW = (emu.kWidth + 2 * kMaxMargin) * kScale;
 var g_frame: [(emu.kWidth + 2 * kMaxMargin) * emu.kHeight]u32 = @splat(0);
 /// Widescreen pixels a side, from ExtendedAspectRatio.
 var g_margin: u8 = 0;
+
+/// What the seed says about itself, for the tracker's counts and prizes.
+var g_info: seed_info.Info = .{};
 
 var g_msu: Msu1 = .{};
 var g_have_msu = false;
@@ -43,6 +48,7 @@ pub fn start(alloc: std.mem.Allocator, path: [:0]const u8, mode: tracker.Mode) !
     errdefer g_console.deinit();
     g_gfx = try alloc.create(tracker.Gfx);
     tracker.loadGfx(g_gfx, g_console.rom());
+    g_info = seed_info.read(g_console.rom());
     g_mode = mode;
     // A seed's own choices, from the options it opened on.
     g_margin = @min(config.g_rando_margin, kMaxMargin);
@@ -100,10 +106,15 @@ fn gameW() usize {
     return (emu.kWidth + 2 * @as(usize, g_margin)) * kScale;
 }
 
+/// The panel's width in pixels, from the tracker's options.
+fn panelW() usize {
+    return tracker.size(config.g_tracker_opts, true).w * kScale;
+}
+
 /// The size the game's window draws: the game, plus the panel when it's on.
 pub fn canvasWidth() c_int {
     const w: c_int = @intCast(gameW());
-    return if (g_mode == .panel) w + kPanelW else w;
+    return if (g_mode == .panel) w + @as(c_int, @intCast(panelW())) else w;
 }
 
 pub fn canvasHeight() c_int {
@@ -203,8 +214,13 @@ fn toast(msg: []const u8) void {
     g_toast_frames = 120;
 }
 
-fn state() tracker.State {
-    return tracker.stateFrom(g_console.workRam());
+fn context() tracker.Context {
+    return .{
+        .gfx = g_gfx,
+        .st = tracker.stateFrom(g_console.workRam()),
+        .opts = config.g_tracker_opts,
+        .info = &g_info,
+    };
 }
 
 /// Draws the frame: the game at double size, and the tracker as the mode
@@ -214,26 +230,42 @@ pub fn draw(pixels: [*]u8, pitch_bytes: usize) void {
     const px: [*]u32 = @ptrCast(@alignCast(pixels));
     const gw = gameW();
     const src_w = gw / kScale;
+    const opts = config.g_tracker_opts;
+    // The panel goes on whichever side the options say; the game moves over.
+    const pw = if (g_mode == .panel) panelW() else 0;
+    const game_x: usize = if (opts.side == .left) pw else 0;
     for (0..kGameH) |y| {
         const src = g_frame[(y / kScale) * src_w ..][0..src_w];
-        const dst = px[y * pitch ..];
+        const dst = px[y * pitch + game_x ..];
         for (0..gw) |x| dst[x] = src[x / kScale];
     }
     switch (g_mode) {
-        .panel => tracker.draw(.{ .px = px + gw, .pitch = pitch, .w = kPanelW, .h = kGameH, .scale = kScale }, g_gfx, state(), true),
+        .panel => {
+            const panel_x: usize = if (opts.side == .left) 0 else gw;
+            tracker.draw(.{ .px = px + panel_x, .pitch = pitch, .w = pw, .h = kGameH, .scale = kScale }, context(), true);
+        },
         .overlay => {
-            // Bottom right, at the game's own pixel size, mostly opaque.
-            const w = tracker.kWidth;
-            const h = tracker.kOverlayHeight;
-            const x = gw - w - 4;
-            const y = kGameH - h - 4;
-            tracker.draw(.{ .px = px + y * pitch + x, .pitch = pitch, .w = w, .h = h, .scale = 1, .alpha = 200 }, g_gfx, state(), false);
+            // At the game's own pixel size, in the corner the options say.
+            const sz = tracker.size(opts, false);
+            const scale: usize = if (opts.overlay_size == .large) kScale else 1;
+            const w = @min(sz.w * scale, gw - 8);
+            const h = @min(sz.h * scale, kGameH - 8);
+            const x = switch (opts.corner) {
+                .bottom_right, .top_right => gw - w - 4,
+                .bottom_left, .top_left => 4,
+            };
+            const y = switch (opts.corner) {
+                .bottom_right, .bottom_left => kGameH - h - 4,
+                .top_right, .top_left => 4,
+            };
+            const alpha: u32 = @as(u32, @max(opts.opacity, 10)) * 256 / 100;
+            tracker.draw(.{ .px = px + y * pitch + x, .pitch = pitch, .w = w, .h = h, .scale = scale, .alpha = alpha }, context(), false);
         },
         .off, .window => {},
     }
     if (g_toast_frames > 0) {
         g_toast_frames -= 1;
-        const cv = tracker.Canvas{ .px = px, .pitch = pitch, .w = gw, .h = kGameH, .scale = kScale, .alpha = 220 };
+        const cv = tracker.Canvas{ .px = px + game_x, .pitch = pitch, .w = gw, .h = kGameH, .scale = kScale, .alpha = 220 };
         const w = g_toast.len * 4 + 4;
         for (2..9) |yy| {
             for (2..2 + w) |xx| cv.put2(xx, yy, 0x000000);
@@ -247,7 +279,9 @@ pub fn draw(pixels: [*]u8, pitch_bytes: usize) void {
 var g_window: ?*c.SDL_Window = null;
 var g_renderer: ?*c.SDL_Renderer = null;
 var g_texture: ?*c.SDL_Texture = null;
-var g_window_px: [kPanelW * kGameH]u32 = @splat(0);
+var g_window_px: [kMaxPanelW * kGameH]u32 = @splat(0);
+/// The width the window was opened at, which the options fix for the run.
+var g_window_w: c_int = 0;
 
 fn closeWindow() void {
     if (g_texture) |t| c.SDL_DestroyTexture(t);
@@ -260,13 +294,14 @@ fn closeWindow() void {
 
 fn openWindow() bool {
     if (g_window != null) return true;
-    const w = c.SDL_CreateWindow("alttp-zig tracker", kPanelW, kGameH, c.SDL_WINDOW_RESIZABLE) orelse return false;
+    g_window_w = @intCast(panelW());
+    const w = c.SDL_CreateWindow("alttp-zig tracker", g_window_w, kGameH, c.SDL_WINDOW_RESIZABLE) orelse return false;
     const r = c.SDL_CreateRenderer(w, null) orelse {
         c.SDL_DestroyWindow(w);
         return false;
     };
-    _ = c.SDL_SetRenderLogicalPresentation(r, kPanelW, kGameH, c.SDL_LOGICAL_PRESENTATION_LETTERBOX);
-    g_texture = c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_XRGB8888, c.SDL_TEXTUREACCESS_STREAMING, kPanelW, kGameH);
+    _ = c.SDL_SetRenderLogicalPresentation(r, g_window_w, kGameH, c.SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    g_texture = c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_XRGB8888, c.SDL_TEXTUREACCESS_STREAMING, g_window_w, kGameH);
     _ = c.SDL_SetTextureScaleMode(g_texture, c.SDL_SCALEMODE_NEAREST);
     g_window = w;
     g_renderer = r;
@@ -280,8 +315,9 @@ pub fn presentWindow() void {
         setMode(.panel);
         return;
     }
-    tracker.draw(.{ .px = &g_window_px, .pitch = kPanelW, .w = kPanelW, .h = kGameH, .scale = kScale }, g_gfx, state(), true);
-    _ = c.SDL_UpdateTexture(g_texture, null, &g_window_px, kPanelW * 4);
+    const w: usize = @intCast(g_window_w);
+    tracker.draw(.{ .px = &g_window_px, .pitch = w, .w = w, .h = kGameH, .scale = kScale }, context(), true);
+    _ = c.SDL_UpdateTexture(g_texture, null, &g_window_px, g_window_w * 4);
     _ = c.SDL_RenderClear(g_renderer);
     _ = c.SDL_RenderTexture(g_renderer, g_texture, null, null);
     _ = c.SDL_RenderPresent(g_renderer);
