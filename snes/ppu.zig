@@ -171,19 +171,7 @@ pub export fn PpuBeginDrawing(ppu: *Ppu, pixels: [*]u8, pitch: usize, render_fla
     ppu.renderPitch = @truncate(pitch);
     ppu.renderBuffer = pixels;
 
-    // Cache the brightness computation
-    if (ppu.brightness != ppu.lastBrightnessMult) {
-        const ppu_brightness: u32 = ppu.brightness;
-        ppu.lastBrightnessMult = ppu.brightness;
-        for (0..32) |i| {
-            const v: u8 = @intCast(((i << 3) | (i >> 2)) * ppu_brightness / 15);
-            ppu.brightnessMult[i] = v;
-            ppu.brightnessMultHalf[i * 2] = v;
-            ppu.brightnessMultHalf[i * 2 + 1] = v;
-        }
-        // Store 31 extra entries to remove the need for clamping to 31.
-        @memset(ppu.brightnessMult[32..63], ppu.brightnessMult[31]);
-    }
+    updateBrightness(ppu);
 
     if (PpuGetCurrentRenderScale(ppu, ppu.renderFlags) == 4) {
         for (0..256) |i| {
@@ -217,8 +205,28 @@ fn mosaicBlockStart(ppu: *const Ppu, x: i32) i32 {
     return @divFloor(x, m) * m;
 }
 
+/// Caches the brightness computation, when it has changed.
+fn updateBrightness(ppu: *Ppu) void {
+    if (ppu.brightness == ppu.lastBrightnessMult) return;
+    const ppu_brightness: u32 = ppu.brightness;
+    ppu.lastBrightnessMult = ppu.brightness;
+    for (0..32) |i| {
+        const v: u8 = @intCast(((i << 3) | (i >> 2)) * ppu_brightness / 15);
+        ppu.brightnessMult[i] = v;
+        ppu.brightnessMultHalf[i * 2] = v;
+        ppu.brightnessMultHalf[i * 2 + 1] = v;
+    }
+    // Store 31 extra entries to remove the need for clamping to 31.
+    @memset(ppu.brightnessMult[32..63], ppu.brightnessMult[31]);
+}
+
 pub export fn ppu_runLine(ppu: *Ppu, line: c_int) callconv(.c) void {
     if (line != 0) {
+        // Brightness can change partway down the screen - a game whose vblank
+        // code runs past the end of vblank turns the screen on a few lines in,
+        // as randomizer seeds do on an empty file select - and the lines after
+        // that have to use it, not what it was when the frame began.
+        updateBrightness(ppu);
         if (ppu.mosaicSize != ppu.lastMosaicModulo) {
             const mod = ppu.mosaicSize;
             ppu.lastMosaicModulo = mod;
@@ -1915,6 +1923,21 @@ test "brightness tables are built once per brightness level" {
     ppu.brightness = 0;
     PpuBeginDrawing(ppu, &buffer, 4, 0);
     try testing.expectEqual(@as(u8, 0), ppu.brightnessMult[31]);
+}
+
+test "brightness set partway down the frame applies to the lines after it" {
+    // A seed's empty file select turns the screen on a few lines into the
+    // frame; drawn with the brightness the frame began with, it was all black.
+    const ppu = try testPpu();
+    defer testing.allocator.destroy(ppu);
+    var buffer: [256 * 4 * 2]u8 = undefined;
+
+    ppu_write(ppu, 0x00, 0x80);
+    PpuBeginDrawing(ppu, &buffer, 256 * 4, kPpuRenderFlags_NewRenderer);
+    try testing.expectEqual(@as(u8, 0), ppu.brightnessMult[31]);
+    ppu_write(ppu, 0x00, 0x0f);
+    ppu_runLine(ppu, 1);
+    try testing.expectEqual(@as(u8, 255), ppu.brightnessMult[31]);
 }
 
 test "the render scale is 4x only for upsampled mode 7" {
