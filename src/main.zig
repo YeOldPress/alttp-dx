@@ -902,7 +902,11 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
 
     while (running) {
         while (c.SDL_PollEvent(&event)) {
-            if (rando.handleEvent(&event)) continue;
+            // Closing the tracker's window puts it back beside the game.
+            if (rando.handleEvent(&event)) {
+                RandoLayoutChanged();
+                continue;
+            }
             switch (event.type) {
                 c.SDL_EVENT_GAMEPAD_ADDED => OpenOneGamepad(event.gdevice.which),
                 c.SDL_EVENT_GAMEPAD_AXIS_MOTION => HandleGamepadAxisInput(event.gaxis.which, event.gaxis.axis, event.gaxis.value),
@@ -929,6 +933,10 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
                 c.SDL_EVENT_KEY_DOWN => HandleInput(event.key.key, event.key.mod, true),
                 c.SDL_EVENT_KEY_UP => HandleInput(event.key.key, event.key.mod, false),
                 c.SDL_EVENT_QUIT => running = false,
+                // With the tracker in a window of its own, closing the game's
+                // window isn't the last window closing, so SDL sends no QUIT.
+                // The tracker's own close was taken above; any other is ours.
+                c.SDL_EVENT_WINDOW_CLOSE_REQUESTED => running = false,
                 else => {},
             }
         }
@@ -1157,6 +1165,17 @@ pub export fn ZeldaApuUnlock() callconv(.c) void {
     c.SDL_UnlockMutex(g_audio_mutex);
 }
 
+/// The tracker moved in or out of the game's window, which changes the
+/// picture's shape: resize to fit it rather than squash it.
+fn RandoLayoutChanged() void {
+    g_snes_width = @divExact(rando.canvasWidth(), rando.kScale);
+    if (g_renderer) |r| {
+        if (!config.g_config.ignore_aspect_ratio)
+            _ = c.SDL_SetRenderLogicalPresentation(r, g_snes_width, g_snes_height, c.SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    }
+    ChangeWindowScale(0);
+}
+
 fn HandleCommand_Locked(j: u32, pressed: bool) void {
     if (!pressed)
         return;
@@ -1168,13 +1187,7 @@ fn HandleCommand_Locked(j: u32, pressed: bool) void {
             kKeys_Reset => return rando.reset(),
             kKeys_ReplayTurbo => {
                 rando.cycleMode();
-                // The panel changes the picture's shape.
-                g_snes_width = @divExact(rando.canvasWidth(), rando.kScale);
-                if (g_renderer) |r| {
-                    if (!config.g_config.ignore_aspect_ratio)
-                        _ = c.SDL_SetRenderLogicalPresentation(r, g_snes_width, g_snes_height, c.SDL_LOGICAL_PRESENTATION_LETTERBOX);
-                }
-                ChangeWindowScale(0);
+                RandoLayoutChanged();
                 return;
             },
             else => return,
