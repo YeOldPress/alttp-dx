@@ -53,30 +53,35 @@ pub fn start(alloc: std.mem.Allocator, path: [:0]const u8, mode: tracker.Mode) !
     // A seed's own choices, from the options it opened on.
     g_margin = @min(config.g_rando_margin, kMaxMargin);
     config.g_config.rumble = config.g_rando_rumble;
-    if (config.g_rando_msu) startMsu(path);
+    startMsu();
     g_active = true;
     toast(mode.label());
 }
 
-/// Finds an MSU-1 pack: seed-1.pcm (or .opuz) and so on beside the seed,
-/// which is how packs for randomizer seeds are usually named, or failing
-/// that, MSUPath from the ini when EnableMSU is on.
-fn startMsu(rom_path: []const u8) void {
-    const ext = std.fs.path.extension(rom_path);
-    var buf: [1024]u8 = undefined;
-    const beside = std.fmt.bufPrint(&buf, "{s}-", .{rom_path[0 .. rom_path.len - ext.len]}) catch return;
+/// Plays the game's own MSU-1 pack (MSUPath), when the options say to.
+///
+/// Only its tracks 1 to 34 are offered to the seed. Seeds also ask for
+/// extended tracks - 35 to 46 one per dungeon, 47 to 58 per boss, 59 to 61
+/// for Ganon's Tower upstairs and the two worlds late in the game - and fall
+/// back to the normal track when the pack says it has none. A pack made for
+/// the normal game numbers its own extras from 35, so without the limit its
+/// track 35 would play in Eastern Palace.
+fn startMsu() void {
+    const Format = @import("msu1.zig").Format;
+    const kLastNormalTrack = 34;
+    if (!config.g_rando_msu) return;
+    const path = config.g_config.msu_path orelse return;
+    // The pack's own format, whichever EnableMSU says, or either.
+    const kOpuz = 4;
+    const first: Format = if (config.g_config.enable_msu & kOpuz != 0) .opuz else .pcm;
     found: {
-        for ([_]@import("msu1.zig").Format{ .pcm, .opuz }) |format| {
-            g_msu.configure(beside, format);
+        for ([_]Format{ first, if (first == .pcm) .opuz else .pcm }) |format| {
+            g_msu.configure(std.mem.span(path), format);
             if (g_msu.hasTracks()) break :found;
         }
-        const enable = config.g_config.enable_msu;
-        if (enable == 0) return;
-        const path = config.g_config.msu_path orelse return;
-        const kOpuz = 4;
-        g_msu.configure(std.mem.span(path), if (enable & kOpuz != 0) .opuz else .pcm);
-        if (!g_msu.hasTracks()) return;
+        return;
     }
+    g_msu.max_track = kLastNormalTrack;
     g_have_msu = true;
     snes_pkg.snes.g_io_hooks = .{ .ctx = &g_msu, .read = msuRead, .write = msuWrite };
     var track: [1100]u8 = undefined;

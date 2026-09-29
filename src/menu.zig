@@ -169,7 +169,7 @@ pub const kSettings = [_]Setting{
         .labels = &.{ "Off", "16:9", "16:10", "18:9" },
     } } },
     .{ .section = "Randomizer", .key = "Rumble", .label = "Rumble", .kind = .{ .number = .{ .min = 0, .max = 100, .step = 10, .suffix = "%" } } },
-    .{ .section = "Randomizer", .key = "MSU", .label = "MSU-1 Audio", .note = "SEED-1.PCM BESIDE THE SEED, OR MSUPATH", .kind = .toggle },
+    .{ .section = "Randomizer", .key = "MSUGamePath", .label = "MSU-1 Audio", .note = "PLAYS THE GAME'S MSU PACK (MSUPATH)", .kind = .toggle },
 
     .{ .section = kSectionMark, .key = "", .label = "TRACKER", .kind = .text },
     .{ .section = "Randomizer", .key = "Tracker", .label = "Placement", .note = "T SWITCHES THIS WHILE PLAYING", .kind = .{ .choice = .{
@@ -990,7 +990,10 @@ fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     switch (v.screen) {
         .main => drawMain(renderer, v),
         .hub => drawHub(renderer, v),
-        .details => drawDetails(renderer, v),
+        .details => {
+            setMsuGamePath(ini);
+            drawDetails(renderer, v);
+        },
         .alttpr => {
             drawSeedBox(renderer);
             drawList(renderer, ini, v);
@@ -1312,7 +1315,7 @@ fn detailLines(out: []DetailLine, bufs: [][40]u8) []DetailLine {
         break :blk r;
     } else "?" });
     add(out, &n, .{ .label = "Save File", .value = if (g_seed_has_save) "FOUND BESIDE THE SEED" else "NONE YET" });
-    add(out, &n, .{ .label = "MSU-1 Tracks", .value = if (g_seed_has_msu) "FOUND BESIDE THE SEED" else "NONE BESIDE IT" });
+    add(out, &n, .{ .label = "MSU-1 Pack", .value = g_msu_game_path });
     add(out, &n, .{ .label = "HASH", .color = kColorSection, .heading = true });
     for (info.hash, 0..) |h, i| {
         const labels = [_][]const u8{ "Icon 1", "Icon 2", "Icon 3", "Icon 4", "Icon 5" };
@@ -1365,6 +1368,21 @@ fn detailCount() usize {
     var lines: [96]DetailLine = undefined;
     var bufs: [64][40]u8 = undefined;
     return detailLines(&lines, &bufs).len;
+}
+
+/// The game's MSUPath as the details show it, from the ini being edited.
+var g_msu_game_path: []const u8 = "NOT SET";
+var g_msu_game_path_buf: [40]u8 = undefined;
+
+fn setMsuGamePath(ini: *const Ini) void {
+    const i = settingIndex("Sound", "MSUPath") orelse return;
+    const path = std.mem.trim(u8, ini.values[i] orelse "", " ");
+    g_msu_game_path = if (path.len == 0) "NOT SET" else blk: {
+        // The end of a long path says more than its start.
+        const tail = path[path.len -| g_msu_game_path_buf.len..];
+        @memcpy(g_msu_game_path_buf[0..tail.len], tail);
+        break :blk g_msu_game_path_buf[0..tail.len];
+    };
 }
 
 fn drawDetails(renderer: *c.SDL_Renderer, v: View) void {
@@ -1824,7 +1842,6 @@ var g_seed_info: seed_info.Info = .{};
 var g_seed_name: []const u8 = "";
 var g_seed_size: usize = 0;
 var g_seed_has_save = false;
-var g_seed_has_msu = false;
 var g_spoilers = false;
 var g_details_top: usize = 0;
 var g_hub_cursor: usize = kHubAlttpr;
@@ -1859,13 +1876,11 @@ fn loadSeed(path: []const u8) bool {
     g_seed_size = data.len;
     g_spoilers = false;
     g_details_top = 0;
-    // What rando.zig will find beside it: the save, and MSU-1 tracks.
+    // Whether it has been played before.
     const ext = std.fs.path.extension(g_randomizer_rom);
     const stem = g_randomizer_rom[0 .. g_randomizer_rom.len - ext.len];
     var buf: [4200]u8 = undefined;
     g_seed_has_save = fileExists(std.fmt.bufPrint(&buf, "{s}.srm", .{stem}) catch "");
-    g_seed_has_msu = fileExists(std.fmt.bufPrint(&buf, "{s}-1.pcm", .{stem}) catch "") or
-        fileExists(std.fmt.bufPrint(&buf, "{s}-1.opuz", .{stem}) catch "");
     return true;
 }
 

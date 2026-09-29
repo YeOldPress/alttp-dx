@@ -632,6 +632,7 @@ fn parseBoolBit(value: [*:0]const u8, data: *u32, mask: u32) bool {
 pub var g_tracker: []const u8 = "panel";
 pub var g_rando_margin: u8 = 0;
 pub var g_rando_rumble: u8 = 100;
+/// Whether a seed plays the game's own MSU-1 pack, from MSUPath.
 pub var g_rando_msu: bool = true;
 /// Everything else about the tracker: TrackerSize, TrackerMaps and the rest.
 pub var g_tracker_opts: @import("tracker.zig").Options = .{};
@@ -656,6 +657,11 @@ fn handleRandomizer(key: [*:0]const u8, value: [*:0]u8) bool {
         g_rando_rumble = @intCast(std.math.clamp(atoi(value), 0, 100));
         return true;
     } else if (util.StringEqualsNoCase(key, "MSU")) {
+        // An earlier switch, replaced by MSUGamePath; read and left alone.
+        return true;
+    } else if (util.StringEqualsNoCase(key, "MSUSeedTracks")) {
+        return true; // gone: seeds play the game's pack
+    } else if (util.StringEqualsNoCase(key, "MSUGamePath")) {
         return ParseBool(value, &g_rando_msu);
     }
     return g_tracker_opts.set(std.mem.span(key), std.mem.span(value));

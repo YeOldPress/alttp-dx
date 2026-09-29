@@ -44,6 +44,11 @@ pub const Msu1 = struct {
     prefix: [1024]u8 = undefined,
     prefix_len: usize = 0,
     format: Format = .pcm,
+    /// Tracks above this are reported missing even when a file is there.
+    /// A pack made for the normal game numbers its extras its own way, and a
+    /// seed would take them for its extended tracks (35 on, one per
+    /// dungeon); reported missing, the seed falls back to its normal music.
+    max_track: u16 = 0xffff,
 
     track: u16 = 0,
     file: ?*FILE = null,
@@ -115,6 +120,7 @@ pub const Msu1 = struct {
         self.close();
         self.playing = false;
         self.missing = true;
+        if (self.track > self.max_track) return;
         var path: [1100]u8 = undefined;
         const p = self.trackPath(&path, self.track) orelse return;
         const f = fopen(p, "rb") orelse return;
@@ -277,6 +283,16 @@ pub const Msu1 = struct {
         }
     }
 };
+
+test "tracks past the limit are missing even when their file is there" {
+    var m = Msu1{};
+    defer m.deinit();
+    m.configure("/nonexistent/should-not-be-opened-", .pcm);
+    m.max_track = 34;
+    m.track = 35;
+    m.load();
+    try std.testing.expect(m.missing);
+}
 
 test "the chip identifies itself and reports a missing track" {
     var m = Msu1{};
