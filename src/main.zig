@@ -727,7 +727,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     // pinned down first.
     var seed_path_buf: [4096]u8 = undefined;
     if (render_request == null and verify_request == null and argc == 1 and menu.isRandomizerRom(std.mem.span(argv[0]))) {
-        rando_rom = if (std.c.realpath(argv[0], &seed_path_buf)) |p| std.mem.span(@as([*:0]u8, @ptrCast(p))) else std.mem.span(argv[0]);
+        rando_rom = absolutePath(argv[0], &seed_path_buf) orelse std.mem.span(argv[0]);
         argc = 0;
     }
     if (render_request != null or verify_request != null or config_file != null) {
@@ -1163,6 +1163,18 @@ pub export fn ZeldaApuLock() callconv(.c) void {
 
 pub export fn ZeldaApuUnlock() callconv(.c) void {
     c.SDL_UnlockMutex(g_audio_mutex);
+}
+
+extern fn _fullpath(abs: [*]u8, rel: [*:0]const u8, max: usize) ?[*:0]u8;
+
+/// A path made absolute, so it still points at the same file after the game
+/// moves into its data directory. Windows has no realpath; _fullpath is its
+/// equivalent.
+fn absolutePath(path: [*:0]const u8, buf: *[4096]u8) ?[:0]const u8 {
+    const p: ?[*:0]u8 = if (builtin.os.tag == .windows)
+        _fullpath(buf, path, buf.len)
+    else if (std.c.realpath(path, buf)) |r| @ptrCast(r) else null;
+    return if (p) |r| std.mem.span(r) else null;
 }
 
 /// The tracker moved in or out of the game's window, which changes the
