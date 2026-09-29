@@ -1735,6 +1735,7 @@ pub fn reportPads() void {
 /// base path; an AppImage's runtime sets APPIMAGE.
 pub fn isPackaged(base: []const u8) bool {
     if (builtin.os.tag == .macos) return std.mem.endsWith(u8, base, ".app/Contents/Resources/");
+    if (std.mem.startsWith(u8, base, "/nix/store/")) return true;
     if (builtin.os.tag == .linux) return c.SDL_getenv("APPIMAGE") != null;
     return false;
 }

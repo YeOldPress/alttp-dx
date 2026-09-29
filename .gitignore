@@ -32,6 +32,9 @@
 /glsl-shaders
 /token.txt
 
+# nix build link
+result
+
 # Zig build artifacts
 .zig-cache/
 zig-out/
