@@ -4,8 +4,10 @@ A Link to the Past, reimplemented from scratch and ported to Zig.
 
 This is a fork of [snesrev/zelda3](https://github.com/snesrev/zelda3), the C
 reimplementation of the whole game. I ported it to Zig and added a start menu,
-a settings screen inside the game, controller rumble, and `zelda3-tools`, an
-asset toolbox with a window and a command line.
+a settings screen inside the game, controller rumble, `zelda3-tools` (an asset
+toolbox with a window and a command line), and a way to play
+[alttpr.com](https://alttpr.com) randomizer seeds with a built-in item
+tracker.
 
 You bring your own US ROM. No game data ships here, and once the assets are
 built the ROM isn't needed again.
@@ -138,6 +140,15 @@ the debug keys.
 - `zelda3 --data-dir` prints where the ini, assets and saves live.
 - `zelda3 --render <chapter> <script> <out.bmp>` plays a button script from a
   snapshot in `saves/ref` with no window and saves the last frame.
+- `zelda3 seed.sfc` opens a randomizer seed on its page in the start menu.
+- `zelda3 --seed-info seed.sfc` prints what a seed says about itself,
+  spoilers included, without starting anything.
+- `zelda3 --emu-render <seed> <script> <out.bmp>` plays a script in the
+  emulator and saves the last frame with the tracker. `TRACKER=overlay` (or
+  `window`, `off`), `WIDE=96` and `TRACKER_OPTS="Size=compact;Maps=current"`
+  change what's drawn.
+- `zelda3 --menu-shot <main|hub|alttpr|details> <out.bmp> [seed]` draws a
+  start menu screen with no window.
 
 ## MSU audio
 
@@ -152,54 +163,145 @@ Point `MSUPath` at a pack and set `EnableMSU`:
 
 Deluxe packs have a track per place rather than per song; only use it with a
 deluxe pack. MSU needs `AudioChannels = 2`, and it sets the audio rate itself.
+Randomizer seeds play the same pack; see [MSU-1 for seeds](#msu-1-for-seeds).
 
 ## Randomizer
 
-**Randomizer** on the start menu, under Play, leads to two choices. The
-built-in randomizer is coming soon. **ALTTPR.COM Randomizer** opens the page
-that seeds are dropped on: generate a seed on [alttpr.com](https://alttpr.com)
-from the Japanese 1.0 ROM (MD5 `03a63945398191337e896e5771f77173`) and drag
-the `.sfc` onto the window, or run `zelda3 seed.sfc` to open straight on it.
-Drops on the main menu are still only for the US ROM that builds the assets.
+Play seeds from [alttpr.com](https://alttpr.com), the A Link to the Past
+randomizer, with an item tracker that follows along by itself.
 
-The page reads the seed and shows its hash icons (the same five alttpr.com
-shows), its link, logic, mode, goal and crystal requirements. **Seed Details**
-lists everything the ROM says about itself: item pool, key and map shuffles,
-swords, quickswap, silver arrows, menu speed, heart beep and color, the clock,
-tournament flag, starting items, and whether a save or MSU-1 pack sits beside
-it. The medallions and each dungeon's prize are there too, hidden until you
-ask.
+### Getting a seed going
 
-A seed changes the game's own code, so it isn't played by the port: it runs
-in the SNES emulator the port is verified against, exactly as the randomizer
-built it. Snapshots, cheats and Turbo are off, and the save goes next to the seed as
-a `.srm` file. Some of the port's extras still come along, because they only
-watch the game:
+1. On alttpr.com, generate a seed from the **Japanese 1.0 ROM** (MD5
+   `03a63945398191337e896e5771f77173`), the one the randomizer is built on,
+   and save the `.sfc` it gives you.
+2. Start `zelda3`, press **Randomizer** (under Play), then **ALTTPR.COM
+   Randomizer**. **Built-In Randomizer** beside it is greyed out: that one is
+   coming soon.
+3. Drag the seed onto the window. Or skip steps 2 and 3 with `zelda3 seed.sfc`,
+   which opens straight on the seed.
+4. Press **Play This Seed**, or Start.
+
+The main menu's drag-and-drop is only for the US ROM that builds the port's
+assets. A seed dropped there gets pointed at the Randomizer page instead.
+
+### The ALTTPR.COM page
+
+The top of the page is the seed: its name and alttpr.com link, the five hash
+icons (the same ones alttpr.com shows, to check you've got the right seed),
+logic, mode, goal, how many crystals Ganon's Tower and Ganon want, and how many
+item locations there are. Under it are the options for the run.
+
+**Seed Details** lists everything the ROM says about itself: file, size,
+whether it has a save yet, which MSU pack will play, the hash, logic, game
+type, mode, goal, crystal requirements, item count, swords, map and compass,
+small key and big key shuffles, tournament flag, quickswap, pseudo boots,
+silver arrows, menu speed, heart beep, heart color, the clock, and starting
+items. At the bottom are the spoilers, hidden until you press A: which
+medallion Misery Mire and Turtle Rock want, and every dungeon's pendant or
+crystal.
+
+### How a seed plays
+
+A seed rewrites too much of the game's code for the port to play it, so it
+runs in a SNES emulator instead: the one the port is verified against
+(LakeSnes, by way of upstream), put back together as a whole console. It plays
+the ROM exactly as the randomizer built it, and the page says so up front.
+
+- **Saves** go next to the seed as `seed.srm`, written as the game saves.
+- **Off for seeds:** snapshots, cheats and Turbo. It's a race.
+- **Still there:** fullscreen, pause, window size, volume, and Ctrl+R to
+  reset. T moves the tracker between its places.
+
+A few of the port's extras come along, because they only watch the game:
 
 - **Rumble**, on by default, the same as in the port.
-- **Widescreen**, off by default and experimental: rooms and areas show as far
-  as they go, but outdoors the edges can briefly show stale tiles while
+- **Widescreen**, off by default and marked experimental. Rooms and areas show
+  as far as they go, but outdoors the edges can briefly show stale tiles while
   scrolling, and enemies still vanish at the original screen edge.
-- **MSU-1**: put `seed-1.pcm`, `seed-2.pcm` and so on (or `.opuz`) next to
-  `seed.sfc`, the usual way randomizer packs are named, or it uses `MSUPath`
-  when `EnableMSU` is on. The seed's own code picks the tracks.
+- **MSU-1 audio**, below.
 
-The item tracker follows along by itself, reading the save data every frame,
-and draws its icons and maps from the seed. The large layout has the items
-with a counter (items found out of the seed's total, hearts, and crystals
-against what Ganon's Tower and Ganon need), a dungeon table (checks left,
-small keys, big key, map, compass, boss and prize), and both world maps with
-every check on them and a legend. The compact layout fits the same into less
-room. It goes beside the game (either side), over it, in its own window, or
-nowhere, and T switches between those while playing.
+### MSU-1 for seeds
 
-Nearly every part of it can be changed on the page: layout, which sections
-show, the current world's map only, full or short dungeon names, prizes once
-you have the map or always, the MM and TR medallions, dimmed or hidden missing
-items, greyed or hidden cleared checks, marker size, a dark, black, green or
-magenta background for keying out on a stream, and the overlay's opacity,
-corner and size. All of it is kept in `[Randomizer]` in `zelda3.ini`, apart
-from the normal game's settings.
+Seeds play the same MSU pack as the normal game: whatever `MSUPath` in
+`[Sound]` points at, `.pcm` or `.opuz`. There's nothing to copy or rename.
+Turn it on or off with **MSU-1 Audio** on the page.
+
+The randomizer has MSU-1 support built into every seed, so the seed's own
+code picks the tracks, just like on a real SNES. It uses the normal game's
+numbering, 1 to 34, plus extras a normal pack doesn't have:
+
+| Tracks | What they are | Without them |
+| --- | --- | --- |
+| 35 to 46 | One per dungeon | the normal dungeon music |
+| 47 to 58 | One per boss | the normal boss music |
+| 59 | Ganon's Tower upstairs | the normal music |
+| 60 | Light World after the Master Sword | the normal Light World |
+| 61 | Dark World with all seven crystals | the normal Dark World |
+
+Normal game packs often have their own track 35 and up, meaning something
+else, and a seed would take those for its extras: Eastern Palace plays the
+wrong song. So only tracks 1 to 34 are offered, and the seed falls back to the
+normal music for everything past that.
+
+### The tracker
+
+It reads the game's save data every frame, so there's nothing to click, and it
+draws its icons and maps from the seed, so it looks like the game. It goes
+beside the game (either side), over it, in a window of its own, or nowhere.
+T switches between those while playing, and closing the tracker's window puts
+it back beside the game.
+
+The **large** layout, the default:
+
+- **Counter:** items found out of the seed's total, hearts, and crystals
+  against what Ganon's Tower and Ganon need (green once you have enough).
+- **Items:** everything in the inventory, dim until found, with counts for
+  bottles, pendants and crystals, and half or quarter magic.
+- **Dungeons**, one row each, with a stripe for how it stands: red while its
+  boss is alive, green once beaten with checks left, grey when there's nothing
+  left. Then checks left, small keys found, big key, map, compass, the boss,
+  and the prize once you know it.
+- **Both world maps**, with a marker on every check: cyan for not yet looked
+  at, gold for partly done, grey for done, and bigger ones for dungeons in
+  their stripe's colors. The map you're in has a gold frame, and a legend
+  underneath says what the colors mean.
+
+The **compact** layout fits the same into less room: the dungeons three
+across, with the name in the prize's color once it's known, and the maps side
+by side.
+
+### Tracker options
+
+All on the page, and kept in `[Randomizer]` in `zelda3.ini`, apart from the
+normal game's settings.
+
+| Option | Key | Values (first is the default) |
+| --- | --- | --- |
+| Widescreen | `Widescreen` | `4:3` (off), `16:9`, `16:10`, `18:9` |
+| Rumble | `Rumble` | `100%`, down to `0%` |
+| MSU-1 Audio | `MSUGamePath` | `1`, `0` |
+| Placement | `Tracker` | `panel`, `overlay`, `window`, `off` |
+| Layout | `TrackerSize` | `large`, `compact` |
+| Panel Side | `TrackerSide` | `right`, `left` |
+| Show Items | `TrackerItems` | `1`, `0` |
+| Show Dungeons | `TrackerDungeons` | `1`, `0` |
+| Show Maps | `TrackerMaps` | `both`, `current`, `off` |
+| Dungeon Names | `TrackerNames` | `full`, `short` |
+| Small Keys | `TrackerKeys` | `1`, `0` |
+| Big Key/Map/Compass | `TrackerDungeonItems` | `1`, `0` |
+| Bosses | `TrackerBosses` | `1`, `0` |
+| Dungeon Prizes | `TrackerPrizes` | `map` (once you have its map), `always` (a spoiler), `off` |
+| MM/TR Medallions | `TrackerMedallions` | `0`, `1` (a spoiler) |
+| Item Counter | `TrackerCounter` | `1`, `0` |
+| Missing Items | `TrackerMissing` | `dim`, `hide` |
+| Cleared Checks | `TrackerCleared` | `grey`, `hide` |
+| Map Markers | `TrackerMarkers` | `large`, `small` |
+| Background | `TrackerBackground` | `dark`, `black`, `green`, `magenta` (the last two key out on a stream) |
+| Overlay Opacity | `TrackerOpacity` | `80%`, `10%` to `100%` |
+| Overlay Corner | `TrackerCorner` | `bottom-right`, `bottom-left`, `top-right`, `top-left` |
+| Overlay Size | `TrackerOverlaySize` | `small`, `large` |
+| Map Legend | `TrackerLegend` | `1`, `0` |
 
 ## zelda3-tools
 
@@ -252,7 +354,8 @@ switching with L and R and a second item on X, and optional gameplay tweaks
 and bug fixes under `[Features]` in `zelda3.ini`.
 
 Added here: the start menu, the in-game settings, rumble, a quit option on the
-player select screen, and `zelda3-tools`.
+player select screen, `zelda3-tools`, and randomizer seeds, played in the
+emulator the port is checked against, with the item tracker.
 
 ## Questions nobody asked
 
@@ -274,8 +377,18 @@ No.
   liffy, makolyte and vanfanel.
 - **spannerism**, for the Zelda 3 JP disassembly, and the authors of the other
   disassemblies that named the game's functions and variables.
-- **elzo_d**, for the SNES PPU and DSP from
-  [LakeSnes](https://github.com/elzo-d/LakeSnes), which upstream optimized.
+- **elzo_d**, for [LakeSnes](https://github.com/elzo-d/LakeSnes): the PPU and
+  DSP upstream optimized, and the rest of the console that plays randomizer
+  seeds.
+- The [ALttP Randomizer](https://alttpr.com) team: **sporchia** and the
+  [generator](https://github.com/sporchia/alttp_vt_randomizer), whose code says
+  where a seed keeps its settings, and **KatDevsGames** and the
+  [z3randomizer](https://github.com/KatDevsGames/z3randomizer) contributors,
+  whose code says where it keeps what you've found and how its MSU-1 tracks
+  work.
+- **kattothepast** and the [alttptracker](https://github.com/kattothepast/alttptracker)
+  contributors, for which save data flag is which check and where each one
+  sits on the map.
 - The fan translators behind the
   [Spanish](https://www.romhacking.net/translations/2195/),
   [Polish](https://www.romhacking.net/translations/5760/),
