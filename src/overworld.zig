@@ -16,6 +16,7 @@ const messaging = @import("messaging.zig");
 const tagalong = @import("tagalong.zig");
 const audio = @import("audio.zig");
 const player_oam = @import("player_oam.zig");
+const config = @import("config.zig");
 
 const MemBlk = util.MemBlk;
 const OamEnt = vars.OamEnt;
@@ -1211,8 +1212,21 @@ pub export fn Module09_LoadNewMapAndGFX() callconv(.c) void {
 pub export fn Overworld_RunScrollTransition() callconv(.c) void {
     Link_HandleMovingAnimation_FullLongEntry();
     load_gfx.Graphics_IncrementalVRAMUpload();
+    // A new column of map loads each time the scroll moves 16 pixels. The
+    // original checks for the camera landing on a multiple of 16, which it
+    // always does, starting from an area's edge; the widescreen camera starts
+    // a margin in, and never lands on one, so there it's crossing one.
+    const sideways = vars.overworld_screen_transition.* >= 2;
+    const before = vars.BG2HOFS_copy2.*;
     const rv: u8 = @truncate(@as(u32, @bitCast(OverworldScrollTransition())));
-    if (rv & 0xf == 0) {
+    const wide = sideways and wideCameraOn();
+    g_wide_sideways_scroll = wide;
+    const load = if (wide)
+        before >> 4 != vars.BG2HOFS_copy2.* >> 4 and wideColumnDue(before)
+    else
+        rv & 0xf == 0;
+    if (wide and load) g_wide_stripes += 1;
+    if (load) {
         loPtr(vars.overworld_screen_trans_dir_bits2).* = loPtr(vars.overworld_screen_trans_dir_bits).*;
         OverworldTransitionScrollAndLoadMap();
         loPtr(vars.overworld_screen_trans_dir_bits2).* = 0;
@@ -1240,8 +1254,43 @@ pub export fn Overworld_StartScrollTransition() callconv(.c) void {
     }
 }
 
+/// Whether the widescreen scroll loads a column at this 16-pixel crossing.
+/// The load that follows each column along the map is one column further
+/// on, not the one the camera's reached: a scroll loads as many as it
+/// crosses, and after that walking loads one per 16 pixels, each a set
+/// distance ahead of where the last one went. So a scroll that stops a
+/// margin in should have loaded as far as the camera got, a margin's worth of
+/// columns past the original's 16 and no more. The longer scroll crosses
+/// more, and loading at every one runs ahead of the camera: the map's only
+/// 32 columns wide and wraps, so the column that gets furthest ahead lands
+/// on the one at the screen's other edge, and stays there as walking keeps
+/// it ahead. The crossings that don't load are the first, while the old area
+/// is still on screen and the columns loaded as the scroll started are ahead.
+fn wideColumnDue(before: u16) bool {
+    const y: usize = vars.overworld_screen_transition.*;
+    const target = wideScrollTarget(y);
+    const left: u16 = if (tables.kOverworld_Func6B_Tab1[y] > 0)
+        (target >> 4) -% (before >> 4)
+    else
+        (before >> 4) -% (target >> 4);
+    return left <= kScrollStripes + (wideScrollMargin() >> 4) + g_wide_held_columns;
+}
+
+/// Columns held back from what loads before a scroll, for the scroll to load.
+var g_wide_held_columns: u32 = 0;
+
+/// Map columns the widescreen camera's longer scroll loaded, counted so the
+/// columns a small area loads once the scroll's over can leave out as many:
+/// they've been loaded, and loading on past the area would wrap round the
+/// 512-pixel map onto what's on screen.
+var g_wide_stripes: u32 = 0;
+/// Columns the original scroll loads: one each 16 pixels of 256.
+const kScrollStripes = 16;
+
 pub export fn Overworld_EaseOffScrollTransition() callconv(.c) void {
-    if (kOverworldMapIsSmall()[loPtr(vars.overworld_screen_index).*] != 0) {
+    const skip = g_wide_stripes > kScrollStripes + g_wide_held_columns;
+    if (skip) g_wide_stripes -= 1;
+    if (!skip and kOverworldMapIsSmall()[loPtr(vars.overworld_screen_index).*] != 0) {
         loPtr(vars.overworld_screen_trans_dir_bits2).* = loPtr(vars.overworld_screen_trans_dir_bits).*;
         OverworldTransitionScrollAndLoadMap();
         loPtr(vars.overworld_screen_trans_dir_bits2).* = 0;
@@ -1251,13 +1300,33 @@ pub export fn Overworld_EaseOffScrollTransition() callconv(.c) void {
     const d = loPtr(vars.overworld_screen_trans_dir_bits).*;
     if ((d == 8 or d == 2) and vars.subsubmodule_index.* < 9) return;
 
+    const wide_side = g_wide_sideways_scroll;
     vars.subsubmodule_index.* = 0;
     loPtr(vars.overworld_screen_trans_dir_bits).* = 0;
+    g_wide_stripes = 0;
+    g_wide_held_columns = 0;
+    g_wide_sideways_scroll = false;
 
     if (kOverworldMapIsSmall()[loPtr(vars.overworld_screen_index).*] != 0) {
         vars.map16_load_src_off.* = vars.orange_blue_barrier_state.*;
         vars.map16_load_dst_off.* = vars.word_7EC174.*;
         vars.map16_load_var2.* = vars.word_7EC176.*;
+        // Those are where the column loads stand with the camera at the 4:3
+        // landing, and the widescreen camera's a margin further on. A small
+        // area never loads while walking, so here it wouldn't show, but a
+        // scroll up or down keeps the column, and a big area there would
+        // load its columns that far off the camera: far enough to wrap round
+        // the map onto the other edge of the screen.
+        if (wide_side) {
+            const k: u16 = wideScrollMargin() >> 4;
+            if (d == 1) {
+                vars.map16_load_src_off.* +%= 2 * k;
+                vars.map16_load_dst_off.* = (vars.map16_load_dst_off.* +% k) & 0x1f;
+            } else {
+                vars.map16_load_src_off.* -%= 2 * k;
+                vars.map16_load_dst_off.* = (vars.map16_load_dst_off.* -% k) & 0x1f;
+            }
+        }
     }
     vars.submodule_index.* +%= 1;
     tagalong.Follower_Disable();
@@ -1860,6 +1929,122 @@ inline fn scrollTarget(i: usize) *align(1) u16 {
     return u16at(0x610 + i * 2);
 }
 
+// ------------------------------------------------------ the widescreen camera
+//
+// The game keeps the camera between an area's left and right limits, which
+// line the area's edges up with the edges of a 256-pixel screen. Widescreen
+// was added long after, so in a wider frame those same limits leave the
+// extra width at the sides looking past the area's edge, at nothing. With
+// the widescreen camera on, the camera keeps the width of a margin further
+// in, so the whole wide picture stays inside the area; scroll transitions
+// carry it to the same spot in the next area, and after an entrance or a
+// vertical transition it settles into range a couple of pixels a frame.
+//
+// Off, or at 4:3 where the margin is 0, every one of these takes the
+// original's path, so the game plays and compares exactly as before.
+
+/// How far in from an area's edges the camera stays: the widescreen margin,
+/// or half the area's range for one too narrow to allow that. 0 is the
+/// original behavior.
+pub fn wideCameraMargin(range: u16) u16 {
+    if (!config.g_widescreen_camera) return 0;
+    const m: u16 = config.g_config.extended_aspect_ratio;
+    return @min(m, range / 2);
+}
+
+/// The margin a sideways scroll's camera stops past the 4:3 landing.
+fn wideScrollMargin() u16 {
+    return wideCameraMargin(tables.kOverworld_Size2[@intFromBool(vars.overworld_area_is_big.* != 0)]);
+}
+
+/// Where a widescreen sideways scroll stops: the 4:3 landing, a margin on.
+fn wideScrollTarget(y: usize) u16 {
+    const m = wideScrollMargin();
+    return if (tables.kOverworld_Func6B_Tab1[y] > 0) scrollTarget(y).* +% m else scrollTarget(y).* -% m;
+}
+
+pub fn wideCameraOn() bool {
+    return config.g_widescreen_camera and config.g_config.extended_aspect_ratio != 0;
+}
+
+/// Set while a sideways scroll transition runs with the widescreen camera: the
+/// picture's margins show in full then, as they do when the original's
+/// transition starts right at the area's edge, rather than shrinking to
+/// black for the first few steps and then coming back.
+pub var g_wide_sideways_scroll: bool = false;
+
+/// Moves BG1 - the overlay: fog, woods, the castle - along with a sideways
+/// camera move of `r4` pixels, at its own rate, the way the game does as the
+/// camera follows Link.
+fn addOverlayScrollX(r4: u16) void {
+    const oi = loPtr(vars.overlay_index).*;
+    if (oi == 0x97 or oi == 0x9d or r4 == 0) return;
+    var subp: u16 = undefined;
+    var v = r4;
+    if (oi == 0x95 or oi == 0x9e) {
+        subp = (v & 3) << 14;
+        v >>= 2;
+        if (v >= 0x3000) v |= 0xf000;
+    } else {
+        subp = (v & 1) << 15;
+        v >>= 1;
+        if (v >= 0x7000) v |= 0xf000;
+    }
+    var tmp = @as(u32, vars.BG1HOFS_subpixel.*) | @as(u32, vars.BG1HOFS_copy2.*) << 16;
+    tmp +%= @as(u32, subp) | @as(u32, v) << 16;
+    vars.BG1HOFS_subpixel.* = @truncate(tmp);
+    vars.BG1HOFS_copy2.* = @truncate(tmp >> 16);
+}
+
+/// Moves the camera one pixel toward the widescreen range when it's outside,
+/// the way the camera moves when following Link, so the map loads and the
+/// thresholds move along with it. Returns the step, for the overlays.
+/// Puts the camera straight at the widescreen camera's range, for coming
+/// out of a door whose exit has the camera where the 4:3 one goes (Link's
+/// house and the Sanctuary, and the other exits the game keeps a table of),
+/// before the map's drawn. Left to settle, it slides over as the circle opens.
+/// The column loads go along: the map's drawn from them, and each 16 pixels
+/// the camera moves right they're a column further on.
+fn snapCameraX() void {
+    if (!wideCameraOn()) return;
+    const xs = vars.ow_scroll_vars0.xstart;
+    const xe = vars.ow_scroll_vars0.xend;
+    const m = wideCameraMargin(xe -% xs);
+    if (m == 0) return;
+    const cam = vars.BG2HOFS_copy2.*;
+    const to = if (cam < xs +% m) xs +% m else if (cam > xe -% m) xe -% m else return;
+    const delta: i16 = @bitCast(to -% cam);
+    const du: u16 = @bitCast(delta);
+    vars.BG2HOFS_copy2.* = to;
+    vars.BG2HOFS_copy.* = to;
+    vars.BG1HOFS_copy2.* +%= du;
+    vars.BG1HOFS_copy.* +%= du;
+    vars.camera_x_coord_scroll_low.* +%= du;
+    vars.camera_x_coord_scroll_hi.* +%= du;
+    // overworld_unk3_neg counts the pixels moved right since the last column.
+    const moved: i32 = @as(i16, @bitCast(vars.overworld_unk3_neg.*)) + @as(i32, delta);
+    const cols: i32 = @divFloor(moved, 16);
+    vars.overworld_unk3_neg.* = @intCast(moved - cols * 16);
+    vars.overworld_unk3.* = 0 -% vars.overworld_unk3_neg.*;
+    const cu: u16 = @bitCast(@as(i16, @intCast(cols)));
+    vars.map16_load_src_off.* +%= 2 *% cu;
+    vars.map16_load_dst_off.* = (vars.map16_load_dst_off.* +% cu) & 0x1f;
+}
+
+fn settleCameraX() u16 {
+    if (!wideCameraOn()) return 0;
+    const xs = vars.ow_scroll_vars0.xstart;
+    const xe = vars.ow_scroll_vars0.xend;
+    const m = wideCameraMargin(xe -% xs);
+    if (m == 0) return 0;
+    const cam = vars.BG2HOFS_copy2.*;
+    if (cam < xs +% m)
+        return @truncate(@as(u32, @bitCast(OverworldCameraBoundaryCheck(0, 6, 1, 4))));
+    if (cam > xe -% m)
+        return @truncate(@as(u32, @bitCast(OverworldCameraBoundaryCheck(0, 4, -1, 4))));
+    return 0;
+}
+
 pub export fn Overworld_OperateCameraScroll() callconv(.c) void {
     const z: u16 = if (vars.allow_scroll_z.* != 0 and vars.link_z_coord.* != 0xffff)
         vars.link_z_coord.*
@@ -1912,12 +2097,16 @@ pub export fn Overworld_OperateCameraScroll() callconv(.c) void {
     }
 
     const x = vars.link_x_coord.* +% 8;
-    if (vars.link_x_vel.* != 0) {
+    // Widescreen: a couple of pixels a frame toward the range, while outside.
+    var settle: u16 = 0;
+    settle +%= settleCameraX();
+    settle +%= settleCameraX();
+    if (vars.link_x_vel.* != 0 or settle != 0) {
         const neg = sign8(vars.link_x_vel.*);
         const vx: c_int = if (neg) -1 else 1;
         var ax: u32 = if (neg) (vars.link_x_vel.* ^ 0xff) +% 1 else vars.link_x_vel.*;
-        var r4: u16 = 0;
-        while (true) {
+        var r4: u16 = settle;
+        while (ax != 0) {
             if (neg) {
                 if (x <= vars.camera_x_coord_scroll_low.*)
                     r4 +%= @truncate(@as(u32, @bitCast(OverworldCameraBoundaryCheck(0, 4, vx, 4))));
@@ -1926,7 +2115,6 @@ pub export fn Overworld_OperateCameraScroll() callconv(.c) void {
                     r4 +%= @truncate(@as(u32, @bitCast(OverworldCameraBoundaryCheck(0, 6, vx, 4))));
             }
             ax -%= 1;
-            if (ax == 0) break;
         }
         std.mem.writeInt(u16, g_ram[0x69f..0x6a1], r4, .little);
         const oi = loPtr(vars.overlay_index).*;
@@ -1982,7 +2170,13 @@ pub export fn OverworldCameraBoundaryCheck(xa: c_int, ya_in: c_int, vd: c_int, r
 
     const xp = if (xa != 0) vars.BG2VOFS_copy2 else vars.BG2HOFS_copy2;
     const yp = scrollVar(ya);
-    if (xp.* == yp.*) {
+    const stop = if (xa == 0 and wideCameraOn()) blk: {
+        // Widescreen: the limit is a margin in from the edge, and the camera
+        // can start out past it, so it's a bound rather than a mark.
+        const m = wideCameraMargin(scrollVar(3).* -% scrollVar(2).*);
+        break :blk if (ya == 2) xp.* <= scrollVar(2).* +% m else xp.* >= scrollVar(3).* -% m;
+    } else xp.* == yp.*;
+    if (stop) {
         owUnk(ya).* = 0;
         owUnk(ya ^ 1).* = 0;
         return 0;
@@ -2030,17 +2224,45 @@ pub export fn OverworldScrollTransition() callconv(.c) c_int {
         vars.overworld_unk1_neg.* = 0;
     } else {
         vars.byte_7E069E[1] = @truncate(du);
+        // Widescreen: on to the new area's widescreen position instead, a
+        // margin further, the last step cut short to land on it exactly.
+        const wide = wideCameraOn();
+        const target = if (wide) wideScrollTarget(y) else scrollTarget(y).*;
         vars.BG2HOFS_copy2.* +%= du;
+        if (wide) {
+            const past: i16 = @bitCast(vars.BG2HOFS_copy2.* -% target);
+            if ((d > 0 and past > 0) or (d < 0 and past < 0)) vars.BG2HOFS_copy2.* = target;
+        }
         rv = vars.BG2HOFS_copy2.*;
         const si = loPtr(vars.overworld_screen_index).*;
         if (si != 0x1b and si != 0x5b)
             vars.BG1HOFS_copy2.* = vars.BG2HOFS_copy2.*;
-        if (vars.transition_counter.* >= @as(u16, @bitCast(tables.kOverworld_Func6B_Tab2[y])))
-            vars.link_x_coord.* +%= du;
-        if (rv != scrollTarget(y).*) return rv;
+        if (!wide) {
+            if (vars.transition_counter.* >= @as(u16, @bitCast(tables.kOverworld_Func6B_Tab2[y])))
+                vars.link_x_coord.* +%= du;
+        } else {
+            // Link walks in over the scroll's last stretch, the same
+            // distance as the original's: its last 256 - 30 * 8 = 16 pixels,
+            // however long the scroll turned out to be.
+            const left: i32 = @intCast(@abs(@as(i32, @as(i16, @bitCast(target -% rv)))));
+            const step: i32 = @intCast(@abs(@as(i32, d)));
+            const walk_in: i32 = 256 - @as(i32, tables.kOverworld_Func6B_Tab2[y]) * step;
+            if (left <= walk_in) vars.link_x_coord.* +%= du;
+        }
+        if (rv != target) return rv;
+        // The castle and the pyramid hold their overlay still through the
+        // scroll and set it for where the original's camera lands. This one
+        // lands a margin further in, so the overlay moves on by as much, at
+        // its own rate, as it would have if the camera had got there by
+        // following Link.
+        if (wide and (si == 0x1b or si == 0x5b))
+            addOverlayScrollX(target -% scrollTarget(y).*);
         vars.link_x_coord.* &= ~@as(u16, 7);
         vars.camera_x_coord_scroll_hi.* = vars.link_x_coord.* +%
             @as(u16, @bitCast(tables.kOverworld_Func6B_Tab3[y])) +% 11;
+        // Where Link has to get to for the camera to follow is set for the
+        // original's camera; this one's a margin on, and so is that.
+        if (wide) vars.camera_x_coord_scroll_hi.* +%= target -% scrollTarget(y).*;
         vars.camera_x_coord_scroll_low.* = vars.camera_x_coord_scroll_hi.* +% 2;
         vars.overworld_unk3.* = 0;
         vars.overworld_unk3_neg.* = 0;
@@ -2187,6 +2409,7 @@ pub export fn LoadOverworldFromDungeon() callconv(.c) void {
         vars.overworld_unk3_neg.* = 0 -% vars.overworld_unk3.*;
     }
     Overworld_LoadNewScreenProperties();
+    snapCameraX();
 }
 
 pub export fn Overworld_LoadNewScreenProperties() callconv(.c) void {
@@ -2596,9 +2819,23 @@ pub export fn CreateInitialOWScreenView_Big_West() callconv(.c) void {
 pub export fn CreateInitialOWScreenView_Big_East() callconv(.c) void {
     vars.map16_load_src_off.* = vars.map16_load_src_off.* -% 0x60 +% 0x1e;
     vars.map16_load_dst_off.* = 7;
-    TriggerAndFinishMapLoadStripe_X(8);
-    vars.map16_load_dst_off.* = (vars.map16_load_dst_off.* +% 9) & 0x1f;
-    vars.map16_load_src_off.* -%= 0x2e;
+    loadInitialEastColumns();
+}
+
+/// The 8 columns an eastward scroll loads before it starts, rightmost first,
+/// leaving the next load at the column after them. They come in 512 pixels
+/// after the same columns of the area being left, and the widescreen camera
+/// starts that area a margin later, so the last of them is on screen, at the
+/// left edge, until the scroll's moved past it. Widescreen holds that one
+/// back for the scroll to load with its first column instead.
+fn loadInitialEastColumns() void {
+    const hold: u16 = @intFromBool(wideCameraOn() and wideScrollMargin() != 0);
+    g_wide_held_columns = hold;
+    vars.map16_load_src_off.* -%= 2 * hold;
+    vars.map16_load_dst_off.* = (vars.map16_load_dst_off.* -% hold) & 0x1f;
+    TriggerAndFinishMapLoadStripe_X(8 - @as(c_int, hold));
+    vars.map16_load_dst_off.* = (vars.map16_load_dst_off.* +% 9 -% hold) & 0x1f;
+    vars.map16_load_src_off.* -%= 0x2e +% 2 * hold;
 }
 
 pub export fn CreateInitialOWScreenView_Small_North() callconv(.c) void {
@@ -2640,9 +2877,7 @@ pub export fn CreateInitialOWScreenView_Small_East() callconv(.c) void {
     vars.map16_load_src_off.* = 0x41e;
     vars.map16_load_var2.* = 0;
     vars.map16_load_dst_off.* = 7;
-    TriggerAndFinishMapLoadStripe_X(8);
-    vars.map16_load_dst_off.* = (vars.map16_load_dst_off.* +% 9) & 0x1f;
-    vars.map16_load_src_off.* -%= 0x2e;
+    loadInitialEastColumns();
 }
 
 pub export fn OverworldTransitionScrollAndLoadMap() callconv(.c) void {

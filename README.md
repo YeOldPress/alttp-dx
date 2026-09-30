@@ -155,7 +155,8 @@ the debug keys.
 - `zelda3 --build-assets` builds the asset file and exits.
 - `zelda3 --data-dir` prints where the ini, assets and saves live.
 - `zelda3 --render <chapter> <script> <out.bmp>` plays a button script from a
-  snapshot in `saves/ref` with no window and saves the last frame.
+  snapshot in `saves/ref` with no window and saves the last frame. `s<n>` in
+  place of the chapter starts from your own quick-save slot n instead.
 - `zelda3 seed.sfc` opens a randomizer seed on its page in the start menu.
 - `zelda3 --seed-info seed.sfc` prints what a seed says about itself,
   spoilers included, without starting anything.
@@ -377,7 +378,12 @@ save menu. A second box in the HUD shows it: under the item box, or
 beside it when the HUD is spread out for widescreen.
 
 Added here: the start menu, the in-game settings, rumble, a widescreen HUD
-that moves out to the screen's edges (`WidescreenHud` in `[General]`), a quit
+that moves out to the screen's edges (`WidescreenHud` in `[General]`), a
+widescreen camera that keeps the whole wide picture inside the area you're in
+instead of stopping where a 4:3 screen would and showing black past its edge,
+scroll transitions, Zora's Domain and wide dungeon rooms included, with the
+door circle drawn out to the full width (`WidescreenCamera` in `[General]`;
+both do nothing at 4:3, where the game plays exactly as the original), a quit
 option on the player select screen, `zelda3-tools`, and randomizer seeds, played in the
 emulator the port is checked against, with the item tracker.
 

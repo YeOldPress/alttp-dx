@@ -987,10 +987,15 @@ fn handleSound(key: [*:0]const u8, value: [*:0]u8) bool {
 /// The HUD spread to the edges of a widescreen frame. Kept apart from
 /// g_config, whose layout follows the old C struct.
 pub var g_widescreen_hud: bool = true;
+/// The camera keeping the widescreen picture inside an area, rather than
+/// stopping where a 4:3 screen would. See overworld.zig.
+pub var g_widescreen_camera: bool = true;
 
 fn handleGeneral(key: [*:0]const u8, value: [*:0]u8) bool {
     if (util.StringEqualsNoCase(key, "WidescreenHud")) {
         return ParseBool(value, &g_widescreen_hud);
+    } else if (util.StringEqualsNoCase(key, "WidescreenCamera")) {
+        return ParseBool(value, &g_widescreen_camera);
     } else if (util.StringEqualsNoCase(key, "Autosave")) {
         g_config.autosave = strtol(value, null, 10) != 0;
         return true;

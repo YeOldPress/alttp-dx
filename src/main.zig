@@ -375,8 +375,16 @@ fn emuRenderToFile(rom: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u8
 /// The --render path: load a chapter snapshot, play the script, and write the
 /// frame it ends on. Runs before SDL is started, so no window ever opens.
 fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u8) c_int {
-    // "-" starts from power-on instead of a snapshot.
-    if (!std.mem.eql(u8, std.mem.span(ref_arg), "-")) {
+    // "-" starts from power-on instead of a snapshot, and "s<n>" from one of
+    // your own quick-save slots (F1 to F10) instead of a chapter.
+    const ref_str = std.mem.span(ref_arg);
+    if (ref_str.len >= 2 and ref_str[0] == 's') {
+        const slot = std.fmt.parseInt(c_int, ref_str[1..], 10) catch {
+            std.debug.print("--render: s<n> is a quick-save slot, 0 to 9\n", .{});
+            return 1;
+        };
+        SaveLoadSlot(kSaveLoad_Load, slot);
+    } else if (!std.mem.eql(u8, ref_str, "-")) {
         const ref = std.fmt.parseInt(c_int, std.mem.span(ref_arg), 10) catch {
             std.debug.print("--render: the snapshot is a number from 0 to 12, or -\n", .{});
             return 1;

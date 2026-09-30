@@ -6,6 +6,8 @@
 const std = @import("std");
 const vars = @import("variables.zig");
 const config = @import("config.zig");
+const overworld = @import("overworld.zig");
+const load_gfx = @import("load_gfx.zig");
 const hud_second_item = @import("hud_second_item.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const features = @import("features.zig");
@@ -292,12 +294,29 @@ pub fn widescreenSideSpace(max: c_int) struct { left: c_int, right: c_int, botto
     var mod: c_int = vars.main_module_index.*;
     if (mod == 14)
         mod = vars.saved_module_for_menu.*;
+    // The closing and opening circle through a door: whichever side of it is
+    // on screen, a room or the overworld, gets its margins as it would
+    // without the circle, which the circle then cuts round.
+    const spotlight = mod == 15 or mod == 16;
+    if (spotlight)
+        mod = if (vars.player_is_indoors.* != 0) 7 else 9;
+    // The special overworld areas (Zora's Domain, the Master Sword's grove
+    // and the rest) are the overworld, run by a module of their own.
+    if (mod == 11)
+        mod = 9;
     if (mod == 9) {
         if (vars.main_module_index.* == 14 and vars.submodule_index.* == 7 and vars.overworld_map_state.* >= 4) {
             // World map
             extra_left = max;
             extra_right = max;
             extra_bottom = 16;
+        } else if (!spotlight and vars.main_module_index.* == 9 and overworld.g_wide_sideways_scroll) {
+            // Scrolling sideways to the next area with the widescreen
+            // camera, which starts a margin in from the edge: the margins in
+            // full, as they are when the scroll starts right at it.
+            extra_left = max;
+            extra_right = max;
+            extra_bottom = @as(c_int, vars.ow_scroll_vars0.yend) - vars.BG2VOFS_copy2.*;
         } else {
             // outdoors
             extra_left = @as(c_int, vars.BG2HOFS_copy2.*) - vars.ow_scroll_vars0.xstart;
@@ -314,12 +333,40 @@ pub fn widescreenSideSpace(max: c_int) struct { left: c_int, right: c_int, botto
 
         const qy = vars.quadrant_fullsize_y.* >> 1;
         extra_bottom = intMax(@as(c_int, vars.room_bounds_y.v[qy + 2]) - vars.BG2VOFS_copy2.*, 0);
+
+        // Scrolling sideways from one room into the next, from when the next
+        // starts loading until the rest of it has, after the scroll: the map
+        // holds only the half of each on either side of the doorway, 512
+        // pixels between them, and whatever's beyond is the other halves'
+        // leftovers.
+        if (vars.main_module_index.* == 7 and vars.submodule_index.* == 2 and
+            vars.overworld_screen_transition.* >= 2 and
+            vars.subsubmodule_index.* >= 1 and vars.subsubmodule_index.* <= 11)
+        {
+            const cam: c_int = vars.BG2HOFS_copy2.*;
+            const door = (cam + 256 + max) & ~@as(c_int, 511);
+            extra_left = @min(extra_left, intMax(cam - (door - 256), 0));
+            extra_right = @min(extra_right, intMax(door - cam, 0));
+        }
     } else if (mod == 20 or mod == 0 or mod == 1) {
         extra_left = max;
         extra_right = max;
         extra_bottom = 16;
     }
     return .{ .left = extra_left, .right = extra_right, .bottom = extra_bottom };
+}
+
+/// The circle's real edges for the line the spotlight's HDMA last set the
+/// window for, which the PPU can draw into the widescreen margins.
+fn spotlightWideWindow(c: *const SimpleHdma) ?ppu_mod.WideWindow {
+    const base = @intFromPtr(vars.hdma_table_dynamic);
+    const at = @intFromPtr(c.indir_ptr);
+    if (at < base + 2) return null;
+    const idx = (at - base) / 2 - 1;
+    if (idx >= load_gfx.g_spotlight_wide.len) return null;
+    const w = load_gfx.g_spotlight_wide[idx];
+    if (w.narrow != vars.hdma_table_dynamic[idx]) return null;
+    return .{ .left = w.left, .right = w.right };
 }
 
 pub export fn ZeldaDrawPpuFrame(pixel_buffer: [*]u8, pitch: usize, render_flags: u32) callconv(.c) void {
@@ -353,8 +400,17 @@ pub export fn ZeldaDrawPpuFrame(pixel_buffer: [*]u8, pitch: usize, render_flags:
 
     const height: c_int = if (render_flags & kPpuRenderFlags_Height240 != 0) 240 else 224;
 
+    // The circle's HDMA goes on whichever channel the game switched on.
+    const spot_chan: ?*const SimpleHdma = if (ppu.extraLeftRight == 0)
+        null
+    else for (&hdma_chans) |*c| {
+        if (c.table == @as([*]const u8, &kSpotlightIndirectHdma)) break c;
+    } else null;
+    defer ppu_mod.g_wide_window1 = null;
+
     var i: c_int = 0;
     while (i <= height) : (i += 1) {
+        ppu_mod.g_wide_window1 = if (spot_chan != null and i > 0) spotlightWideWindow(spot_chan.?) else null;
         if (i == 128 and vars.irq_flag.* != 0) {
             zelda_ppu_write(BG3HOFS, @truncate(vars.selectfile_var8.*));
             zelda_ppu_write(BG3HOFS, @truncate(vars.selectfile_var8.* >> 8));

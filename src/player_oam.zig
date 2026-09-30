@@ -3,6 +3,7 @@
 //!
 //! The data tables live in player_oam_tables.zig, generated from the C.
 const std = @import("std");
+const config = @import("config.zig");
 const vars = @import("variables.zig");
 const features = @import("features.zig");
 const t = @import("player_oam_tables.zig");
@@ -107,7 +108,39 @@ pub export fn CalculateSwordHitBox() callconv(.c) void { // 879e63
     vars.player_oam_x_offset.* = i8at(t.kSwordOamXOffs, i);
 }
 
+/// Link's sprites past the edges of the original 256-pixel screen.
+///
+/// The drawing below keeps Link's screen position in eight bits and works out
+/// each piece's ninth bit - which side of the screen it's on - from that,
+/// which only works while Link's on the original screen: the body guesses
+/// from its eight bits, the legs don't set it at all. It never mattered, since
+/// the camera always kept Link on it. The widescreen camera lets him walk into
+/// the margins at an area's edge, and there his body and legs wrapped round
+/// to the far side while his shield (which works it out properly) stayed put.
+/// So afterwards, each of his pieces gets the ninth bit that puts it nearest
+/// Link. Only with the widescreen camera on: the original screen never needs
+/// it, and the bits there stay the original's.
+fn widescreenLinkOam() void {
+    if (!config.g_widescreen_camera or config.g_config.extended_aspect_ratio == 0) return;
+    // Hidden pieces are marked by their y then, not these bits.
+    if (features.enhanced_features0.* & features.kFeatures0_WidescreenVisualFixes == 0) return;
+    const center: i32 = @as(i32, @as(i16, @bitCast(vars.link_x_coord.* -% vars.BG2HOFS_copy2.*))) + 8;
+    const base: usize = vars.sort_sprites_offset_into_oam_buffer.* >> 2;
+    for (0..12) |i| {
+        const e = &oam_buf[base + i];
+        if (e.y == 0xf0) continue;
+        const x8: i32 = e.x;
+        var best = x8;
+        for ([_]i32{ x8 - 256, x8 + 256 }) |c| {
+            if (@abs(c - center) < @abs(best - center)) best = c;
+        }
+        const hi: u8 = @intCast((best >> 8) & 1);
+        bytewise_extended_oam[base + i] = (bytewise_extended_oam[base + i] & ~@as(u8, 1)) | hi;
+    }
+}
+
 pub export fn LinkOam_Main() callconv(.c) void { // 8da18e
+    defer widescreenLinkOam();
     const y_coord_backup = vars.link_y_coord.*;
 
     if (vars.submodule_index.* == 18 or vars.submodule_index.* == 19) {

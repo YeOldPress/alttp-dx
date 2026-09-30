@@ -1440,13 +1440,21 @@ pub export fn IrisSpotlight_ConfigureTable() callconv(.c) void {
     var r4 = r14 *% 2 -% r6;
     while (true) {
         var r8: u16 = 0xff;
+        var wide: SpotlightWide = .{ .narrow = 0xff, .left = 255, .right = 0 };
         if (r6 < vars.spotlight_y_upper.*) {
             const t: u8 = @truncate(vars.spotlight_var4.*);
             if (vars.spotlight_var4.* != 0) vars.spotlight_var4.* -%= 1;
             r8 = IrisSpotlight_CalculateCircleValue(t);
+            wide = spotlightWideValue(t, r8);
         }
-        if (r4 < 240) vars.hdma_table_dynamic[r4] = r8;
-        if (r6 < 240) vars.hdma_table_dynamic[r6] = r8;
+        if (r4 < 240) {
+            vars.hdma_table_dynamic[r4] = r8;
+            g_spotlight_wide[r4] = wide;
+        }
+        if (r6 < 240) {
+            vars.hdma_table_dynamic[r6] = r8;
+            g_spotlight_wide[r6] = wide;
+        }
         if (r4 == r14) break;
         r4 +%= 1;
         r6 -%= 1;
@@ -1484,16 +1492,37 @@ pub export fn IrisSpotlight_ConfigureTable() callconv(.c) void {
 
 pub export fn IrisSpotlight_ResetTable() callconv(.c) void {
     var i: usize = 0;
-    while (i < 240) : (i += 1)
+    while (i < 240) : (i += 1) {
         vars.hdma_table_dynamic[i] = 0xff00;
+        g_spotlight_wide[i] = .{ .narrow = 0xff00, .left = -1000, .right = 1000 };
+    }
+}
+
+/// The circle's edges on one line without the byte clamp, next to the table
+/// entry they were worked out with, for a widescreen screen: its margins are
+/// past 0 and 255, and the circle can reach them. `narrow` is the table entry,
+/// so a line the table's since been rewritten for (by the water, say) isn't
+/// taken for the circle's.
+pub const SpotlightWide = struct { narrow: u16, left: i16, right: i16 };
+pub var g_spotlight_wide = [_]SpotlightWide{.{ .narrow = 0xff, .left = 255, .right = 0 }} ** 240;
+
+/// The circle's half-width on one line, or null for a line it misses.
+fn spotlightHalfWidth(a: u8) ?u16 {
+    const t: u8 = @truncate(snes_divide(@as(u16, a) << 8, @truncate(vars.spotlight_var1.*)) >> 1);
+    const r10 = tables.kConfigureSpotlightTable_Helper_Tab[t];
+    if (r10 == 0) return null;
+    const prod: u8 = @truncate((@as(u32, r10) * @as(u8, @truncate(vars.spotlight_var1.*))) >> 8);
+    return 2 * @as(u16, prod);
+}
+
+fn spotlightWideValue(a: u8, narrow: u16) SpotlightWide {
+    const p = spotlightHalfWidth(a) orelse return .{ .narrow = narrow, .left = 255, .right = 0 };
+    const cx: i16 = @bitCast(vars.spotlight_var3.*);
+    return .{ .narrow = narrow, .left = cx -| @as(i16, @intCast(p)), .right = cx +| @as(i16, @intCast(p)) };
 }
 
 pub export fn IrisSpotlight_CalculateCircleValue(a: u8) callconv(.c) u16 {
-    const t: u8 = @truncate(snes_divide(@as(u16, a) << 8, @truncate(vars.spotlight_var1.*)) >> 1);
-    const r10 = tables.kConfigureSpotlightTable_Helper_Tab[t];
-    const prod: u8 = @truncate((@as(u32, r10) * @as(u8, @truncate(vars.spotlight_var1.*))) >> 8);
-    const p: u16 = 2 * @as(u16, prod);
-    if (r10 == 0) return 0xff;
+    const p = spotlightHalfWidth(a) orelse return 0xff;
     var r2 = vars.spotlight_var3.* +% p;
     var r0 = vars.spotlight_var3.* -% p;
     r0 = if (sign16(r0)) 0 else if (r0 < 255) r0 else 255;

@@ -48,6 +48,34 @@ fn getWindowFlags(ppu: *Ppu, layer: u32) u32 {
     return ppu.windowsel >> @intCast(layer * 4);
 }
 
+/// Window 1's edges past the 4:3 screen, for the line being drawn. The
+/// registers are 8 bits, so a window the game means to run off the screen's
+/// edge stops at 0 or 255, and in widescreen the margins beyond get the
+/// outside's treatment: the closing circle leaves them black while it's still
+/// wide open. The game can say where it really meant the edges to go here.
+/// It only counts while the registers still hold what these clamp to, so a
+/// line whose window was changed since is drawn as the registers say.
+pub const WideWindow = struct { left: i16, right: i16 };
+pub var g_wide_window1: ?WideWindow = null;
+
+/// Window 1's edges for `layer`, from `g_wide_window1` where it applies.
+fn window1Edges(ppu: *const Ppu, layer: u32) WideWindow {
+    // BG3 is the HUD, and stays 4:3, apart from a split HUD's moved pieces.
+    return window1EdgesWide(ppu, layer != 2);
+}
+
+fn window1EdgesWide(ppu: *const Ppu, wide: bool) WideWindow {
+    const narrow: WideWindow = .{ .left = ppu.window1left, .right = ppu.window1right };
+    if (!wide) return narrow;
+    const w = g_wide_window1 orelse return narrow;
+    if (std.math.clamp(w.left, 0, 255) != narrow.left or
+        std.math.clamp(w.right, 0, 255) != narrow.right) return narrow;
+    return .{
+        .left = @max(w.left, -@as(i16, ppu.extraLeftCur)),
+        .right = @min(w.right, 255 + @as(i16, ppu.extraRightCur)),
+    };
+}
+
 /// level6 should be set if it's from palette 0xc0 which means color math is not applied
 fn spritePrioToPrio(prio: u32, level6: bool) u32 {
     return ((prio * 4 + 2) * 16 + 4 + (if (level6) @as(u32, 2) else 0));
@@ -290,15 +318,16 @@ fn PpuWindows_Calc(win: *PpuWindows, ppu: *Ppu, layer: u32) void {
     win.edges[0] = -@as(i16, if (layer != 2) ppu.extraLeftCur else 0);
     win.edges[1] = window_right;
 
-    const w1_ena = (winflags & kWindow1Enabled) != 0 and ppu.window1left <= ppu.window1right;
+    const w1 = window1Edges(ppu, layer);
+    const w1_ena = (winflags & kWindow1Enabled) != 0 and w1.left <= w1.right;
     if (w1_ena) {
-        if (@as(i16, ppu.window1left) > win.edges[0]) {
-            win.edges[nr] = ppu.window1left;
+        if (w1.left > win.edges[0]) {
+            win.edges[nr] = w1.left;
             nr += 1;
             win.edges[nr] = window_right;
         }
-        if (@as(i16, ppu.window1right) + 1 < window_right) {
-            win.edges[nr] = @as(i16, ppu.window1right) + 1;
+        if (w1.right + 1 < window_right) {
+            win.edges[nr] = w1.right + 1;
             nr += 1;
             win.edges[nr] = window_right;
         }
@@ -339,9 +368,9 @@ fn PpuWindows_Calc(win: *PpuWindows, ppu: *Ppu, layer: u32) void {
     var w2_bits: u8 = 0;
     if (w1_ena) {
         var a: u32 = 0;
-        while (win.edges[a] != ppu.window1left) a += 1;
+        while (win.edges[a] != @max(w1.left, win.edges[0])) a += 1;
         var b: u32 = a;
-        while (win.edges[b] != @as(i16, ppu.window1right) + 1) b += 1;
+        while (win.edges[b] != @min(w1.right + 1, window_right)) b += 1;
         w1_bits = @truncate(((@as(u32, 1) << @intCast(b - a)) - 1) << @intCast(a));
     }
     if ((winflags & (kWindow1Enabled | kWindow1Inversed)) == (kWindow1Enabled | kWindow1Inversed))
@@ -1087,15 +1116,13 @@ fn drawHudExtra(ppu: *Ppu, line: u32, sub: u1, win: *const PpuWindows, zhi: PpuZ
 fn drawHudExtraBeside(ppu: *Ppu, line: u32, dst_org: [*]u8) void {
     const e = &g_hud_extra;
     if (e.ppu != ppu or e.n == 0 or !isScreenEnabled(ppu, 0, 2)) return;
-    var win: PpuWindows = undefined;
-    if (isScreenWindowed(ppu, 0, 2)) PpuWindows_Calc(&win, ppu, 2) else PpuWindows_Clear(&win, ppu, 2);
     const bg_line = hudBgLine(ppu, line);
     const width: i32 = 256 + 2 * @as(i32, ppu.extraLeftRight);
     for (e.tiles[0..e.n]) |t| {
         if (!t.beside) continue;
         for (0..8) |c| {
             const x: i32 = t.x + @as(i32, @intCast(c));
-            if (x < 0 or x >= width or !bg3WindowAllows(&win, std.math.clamp(x, 0, 255))) continue;
+            if (x < 0 or x >= width or hudSplitHidden(ppu, x - @as(i32, ppu.extraLeftRight))) continue;
             const v = hudTilePixel(ppu, t, bg_line, @intCast(c), 0xf200, 0x1200) orelse continue;
             const color: u32 = ppu.cgram[v & 0xff];
             writePixel32(dst_org + @as(usize, @intCast(x)) * 4, @as(u32, ppu.brightnessMult[color & 0x1f]) << 16 |
@@ -1122,7 +1149,11 @@ fn hudSplitLine(ppu: *const Ppu, line: u32) bool {
 fn drawHudSplit(ppu: *Ppu, y: u32, dst_org: [*]u8) void {
     const s = g_hud_split;
     clearBackdrop(&ppu.bgBuffers[0]);
+    // Drawn without BG3's windows, which are tested where each piece lands.
+    const windowed = ppu.screenWindowed[0];
+    ppu.screenWindowed[0] &= ~@as(u8, 1 << 2);
     PpuDrawBackground_2bpp(ppu, y, 0, 2, 0xf200, 0x1200);
+    ppu.screenWindowed[0] = windowed;
     const width: i32 = 256 + 2 * @as(i32, ppu.extraLeftRight);
     var x: i32 = 0;
     while (x < 256) : (x += 1) {
@@ -1131,7 +1162,7 @@ fn drawHudSplit(ppu: *Ppu, y: u32, dst_org: [*]u8) void {
         const color: u32 = ppu.cgram[v & 0xff];
         const move = if (x >= s.split) s.shift else if (x >= s.gap_at) s.gap - s.shift else -s.shift;
         const out = x + @as(i32, ppu.extraLeftRight) + move;
-        if (out < 0 or out >= width) continue;
+        if (out < 0 or out >= width or hudSplitHidden(ppu, x + move)) continue;
         writePixel32(dst_org + @as(usize, @intCast(out)) * 4, @as(u32, ppu.brightnessMult[color & 0x1f]) << 16 |
             @as(u32, ppu.brightnessMult[(color >> 5) & 0x1f]) << 8 |
             ppu.brightnessMult[(color >> 10) & 0x1f]);
@@ -1557,19 +1588,31 @@ fn ppu_getPixelForMode7(ppu: *Ppu, x_in: c_int, layer: u32, priority: bool) i32 
 }
 
 fn ppu_getWindowState(ppu: *Ppu, layer: c_int, x: c_int) bool {
+    return windowStateAt(ppu, layer, x, layer != 2);
+}
+
+/// Whether a split HUD's pixel, moved to screen x `x` (0 the 4:3 screen's
+/// left edge), is hidden by BG3's windows there: the closing circle hides the
+/// moved pieces by where they are, not by where the HUD had them.
+fn hudSplitHidden(ppu: *Ppu, x: c_int) bool {
+    return isScreenWindowed(ppu, 0, 2) and windowStateAt(ppu, 2, x, true);
+}
+
+fn windowStateAt(ppu: *Ppu, layer: c_int, x: c_int, wide: bool) bool {
     const winflags = getWindowFlags(ppu, @intCast(layer));
     if ((winflags & kWindow1Enabled) == 0 and (winflags & kWindow2Enabled) == 0) {
         return false;
     }
+    const w1 = window1EdgesWide(ppu, wide);
     if ((winflags & kWindow1Enabled) != 0 and (winflags & kWindow2Enabled) == 0) {
-        const t = x >= ppu.window1left and x <= ppu.window1right;
+        const t = x >= w1.left and x <= w1.right;
         return if (winflags & kWindow1Inversed != 0) !t else t;
     }
     if ((winflags & kWindow1Enabled) == 0 and (winflags & kWindow2Enabled) != 0) {
         const t = x >= ppu.window2left and x <= ppu.window2right;
         return if (winflags & kWindow2Inversed != 0) !t else t;
     }
-    var test1 = x >= ppu.window1left and x <= ppu.window1right;
+    var test1 = x >= w1.left and x <= w1.right;
     var test2 = x >= ppu.window2left and x <= ppu.window2right;
     if (winflags & kWindow1Inversed != 0) test1 = !test1;
     if (winflags & kWindow2Inversed != 0) test2 = !test2;
