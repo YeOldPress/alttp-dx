@@ -5392,7 +5392,9 @@ pub export fn Ancilla31_ByrnaSpark(k: c_int) callconv(.c) void { // 88dc70
     const i: usize = @intCast(k);
     var flags: u8 = 2;
     if (vars.submodule_index.* == 0) {
-        if (vars.current_item_y.* != 13) {
+        // Byrna has to still be on the button that swung it: Y, or X, L
+        // or R with a second item.
+        if (!hud.itemStillHeld(13)) {
             ByrnaSpark_Kill(i);
             return;
         }
@@ -5415,7 +5417,8 @@ pub export fn Ancilla31_ByrnaSpark(k: c_int) callconv(.c) void { // 88dc70
                 vars.ancilla_G[i] = 0x17;
                 vars.link_magic_power.* = r0;
             }
-            if (vars.filtered_joypad_H.* & 0x40 != 0) {
+            // Y, or the button that swung it, pressed again ends it.
+            if (hud.itemButtonPressed()) {
                 ByrnaSpark_Kill(i);
                 return;
             }

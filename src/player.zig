@@ -2449,6 +2449,12 @@ pub export fn Link_HandleYItem() callconv(.c) void {
     const old_down = vars.joypad1H_last.*;
     const old_pressed = vars.filtered_joypad_H.*;
     const old_bottle = vars.link_item_bottle_index.*;
+    // The cape's cooldown ticks every frame on Y, since its code runs every
+    // frame there. On X, L or R it'd only tick while the button's held; tick
+    // it here the rest of the time, so it's ready when it would be on Y.
+    if (vars.link_cape_mode.* == 0 and vars.current_item_active.* != 19 and
+        !sign8(vars.link_bunny_transform_timer.*) and hud.capeOnItemButton())
+        vars.link_bunny_transform_timer.* -%= 1;
     if ((vars.link_item_in_hand.* | vars.link_position_mode.*) == 0 and
         (old_down & kJoypadH_Y) == 0)
     {
@@ -2460,6 +2466,7 @@ pub export fn Link_HandleYItem() callconv(.c) void {
                 if (cur_item_ptr.* >= kHudItem_Bottle1)
                     vars.link_item_bottle_index.* = cur_item_ptr.* - kHudItem_Bottle1 + 1;
                 item = hud.Hud_LookupInventoryItem(cur_item_ptr.*);
+                hud.g_item_source = btn_index;
                 // Pretend it's actually Y that's down
                 vars.joypad1H_last.* = old_down | kJoypadH_Y;
                 vars.filtered_joypad_H.* = old_pressed |
@@ -2468,7 +2475,24 @@ pub export fn Link_HandleYItem() callconv(.c) void {
                     else
                         @as(u8, 0));
             }
+        } else if (hud.lastingItemFromButton()) |lasting| {
+            // The cape or Byrna, started from X, L or R, keeps going with its
+            // button let go; pressing that button again works like Y would,
+            // and takes it off.
+            item = lasting;
+            if (hud.sourceButtonPressed()) {
+                vars.joypad1H_last.* = old_down | kJoypadH_Y;
+                vars.filtered_joypad_H.* = old_pressed | kJoypadH_Y;
+            }
+        } else {
+            hud.g_item_source = 0;
         }
+    } else if (hud.g_item_source != 0) {
+        // Mid-animation, an item from X, L or R is still the one in use.
+        // The original fell back to Y here, which was the same item when Y
+        // was the only item button; now it would take the cape straight back
+        // off as it went on.
+        item = vars.current_item_active.*;
     }
 
     if (item != vars.current_item_active.*) {
@@ -3896,7 +3920,8 @@ pub export fn Link_HandleCape_passive_LiftCheck() callconv(.c) void {
 
 pub export fn Player_CheckHandleCapeStuff() callconv(.c) void {
     if (vars.link_cape_mode.* != 0 and vars.current_item_active.* == 19) {
-        if (vars.current_item_active.* == vars.current_item_y.*) {
+        // Still the cape on whichever button put it on, not just Y.
+        if (hud.itemStillHeld(vars.current_item_active.*)) {
             vars.cape_decrement_counter.* -%= 1;
             if (vars.cape_decrement_counter.* != 0)
                 return;

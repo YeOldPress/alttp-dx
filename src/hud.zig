@@ -486,6 +486,75 @@ pub export fn GetCurrentItemButtonIndex() callconv(.c) c_int {
     return 0;
 }
 
+// ------------------------------------------------ items used from X, L and R
+//
+// The game only ever had a Y item, so a few items that keep going after the
+// button's let go - the Cane of Byrna's spark, the Magic Cape - check each
+// frame that they're still the Y item, and stop when they aren't. Used from
+// X, they'd stop on the first frame. So the player code remembers which
+// button started the item that's running, and those checks ask about that
+// button instead. With only Y in play it's always Y, and they behave exactly
+// as the original.
+
+/// The button that started the running item: 0 for Y, 1 to 3 for X, L, R.
+pub var g_item_source: c_int = 0;
+
+const kSourceButtons = [4]u8{ 0, kJoypadL_X, kJoypadL_L, kJoypadL_R };
+
+/// What the item's button holds, numbered the way the player code numbers
+/// items (current_item_y and friends).
+fn sourceItem() u8 {
+    if (g_item_source == 0) return vars.current_item_y.*;
+    const hud_item = GetCurrentItemButtonPtr(g_item_source).*;
+    return if (hud_item == 0) 0 else Hud_LookupInventoryItem(hud_item);
+}
+
+/// Whether `item` is still on the button that used it.
+pub fn itemStillHeld(item: u8) bool {
+    return vars.current_item_y.* == item or (g_item_source != 0 and sourceItem() == item);
+}
+
+/// Whether the button that started the running item was just pressed again,
+/// which turns a lasting item off, or Y, which always has.
+pub fn itemButtonPressed() bool {
+    if (vars.filtered_joypad_H.* & kJoypadH_Y != 0) return true;
+    return g_item_source != 0 and vars.filtered_joypad_L.* & kSourceButtons[@intCast(g_item_source)] != 0;
+}
+
+/// A lasting item started from X, L or R that's still going - the cape still
+/// on, Byrna's spark still out - which the player code keeps running after the
+/// button's let go, instead of going back to the Y item.
+pub fn lastingItemFromButton() ?u8 {
+    if (g_item_source == 0) return null;
+    const item = sourceItem();
+    if (item == 19 and vars.current_item_active.* == 19 and vars.link_cape_mode.* != 0) return 19;
+    if (item == 13) {
+        for (0..5) |i| {
+            if (vars.ancilla_type[i] == 0x31) return 13; // the spark
+        }
+    }
+    return null;
+}
+
+/// Whether the cape is on X, L or R and not on Y. Its cooldown only counts
+/// down while its code runs, which on Y is every frame and on the others only
+/// while the button's held, so a quick press after a while would be eaten.
+pub fn capeOnItemButton() bool {
+    if (vars.current_item_y.* == 19) return false;
+    for (1..4) |b| {
+        const f = features.enhanced_features0.*;
+        const on = if (b == 1) f & features.kFeatures0_ItemOnX != 0 else f & features.kFeatures0_SwitchLR != 0;
+        const hud_item = GetCurrentItemButtonPtr(@intCast(b)).*;
+        if (on and hud_item != 0 and Hud_LookupInventoryItem(hud_item) == 19) return true;
+    }
+    return false;
+}
+
+/// The button that started the running item was pressed again.
+pub fn sourceButtonPressed() bool {
+    return g_item_source != 0 and vars.filtered_joypad_L.* & kSourceButtons[@intCast(g_item_source)] != 0;
+}
+
 fn holdingLAndR() bool {
     return vars.joypad1L_last.* & (kJoypadL_L | kJoypadL_R) == kJoypadL_L | kJoypadL_R;
 }
@@ -1530,4 +1599,40 @@ test "with a second item on X, the map is L and R together" {
     features.enhanced_features0.* = features.kFeatures0_SwitchLR;
     try testing.expectEqual(@as(c_int, 0), GetCurrentItemButtonIndex());
     try testing.expect(!hasItemOnX());
+}
+
+test "items used from X keep going the way they would on Y" {
+    defer @memset(g_ram[0..0x20000], 0);
+    @memset(g_ram[0..0x20000], 0);
+    defer g_item_source = 0;
+    features.enhanced_features0.* = features.kFeatures0_ItemOnX;
+    defer features.enhanced_features0.* = 0;
+
+    // Only Y in play: exactly the original's question, "is it the Y item?"
+    g_item_source = 0;
+    vars.current_item_y.* = 13;
+    try testing.expect(itemStillHeld(13));
+    vars.current_item_y.* = 18;
+    try testing.expect(!itemStillHeld(13));
+
+    // Byrna on X, Somaria on Y: Byrna swung from X is still held.
+    features.hud_cur_item_x.* = 18; // the hud's number for the Cane of Byrna
+    g_item_source = 1;
+    try testing.expectEqual(@as(u8, 13), Hud_LookupInventoryItem(18));
+    try testing.expect(itemStillHeld(13));
+    try testing.expect(itemStillHeld(18)); // and Somaria, on Y, still is too
+
+    // Pressing X again stops it, and so does Y.
+    vars.filtered_joypad_L.* = kJoypadL_X;
+    try testing.expect(itemButtonPressed());
+    vars.filtered_joypad_L.* = 0;
+    try testing.expect(!itemButtonPressed());
+    vars.filtered_joypad_H.* = kJoypadH_Y;
+    try testing.expect(itemButtonPressed());
+    vars.filtered_joypad_H.* = 0;
+
+    // The spark out keeps Byrna running with X let go.
+    try testing.expect(lastingItemFromButton() == null);
+    vars.ancilla_type[2] = 0x31;
+    try testing.expectEqual(@as(?u8, 13), lastingItemFromButton());
 }

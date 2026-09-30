@@ -380,7 +380,10 @@ pub export fn LinkOam_Main() callconv(.c) void { // 8da18e
             std.debug.assert(vars.link_state_bits.* == 0);
             oam_pal = @as(u16, @bitCast(@as(i16, t.kPlayerOam_Rod[vars.eq_selected_rod.* - 1]))) << 8;
         }
-        if (vars.link_position_mode.* & 8 != 0 and vars.current_item_y.* == 13)
+        // The cane of byrna is blue, whichever button swung it. The original
+        // asked what Y held, which was the same thing when Y was the only
+        // item button.
+        if (vars.link_position_mode.* & 8 != 0 and vars.current_item_active.* == 13)
             oam_pal = 0x400; // cane of byrna
 
         const tab = if (scratch_0_var) &t.kSwordStuff_oam_index_ptrs_1 else &t.kSwordStuff_oam_index_ptrs_0;
