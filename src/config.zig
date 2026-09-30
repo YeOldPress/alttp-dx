@@ -554,6 +554,178 @@ fn parseGamepadArray(value_in: [*:0]u8, cmd_in: c_int, size: c_int) void {
     }
 }
 
+// ------------------------------------------------------ rebinding in the game
+
+/// The key a [KeyMap] name stands for, modifiers included, as the table keys
+/// it. Null when SDL doesn't know the name.
+fn keyFromName(name: []const u8) ?u16 {
+    var buf: [64:0]u8 = undefined;
+    if (name.len >= buf.len) return null;
+    @memcpy(buf[0..name.len], name);
+    buf[name.len] = 0;
+    var str: [*:0]const u8 = &buf;
+    var key_with_mod: u16 = 0;
+    while (true) {
+        if (util.StringStartsWithNoCase(str, "Shift+") != null) {
+            key_with_mod |= kKeyMod_Shift;
+            str += 6;
+        } else if (util.StringStartsWithNoCase(str, "Ctrl+") != null) {
+            key_with_mod |= kKeyMod_Ctrl;
+            str += 5;
+        } else if (util.StringStartsWithNoCase(str, "Alt+") != null) {
+            key_with_mod |= kKeyMod_Alt;
+            str += 4;
+        } else break;
+    }
+    const key = c.SDL_GetKeyFromName(str);
+    if (key == c.SDLK_UNKNOWN) return null;
+    return key_with_mod | remapSdlKeycode(key);
+}
+
+/// The one gamepad button a [GamepadMap] name stands for. Combinations
+/// ("L1+A") aren't a single button, so they come back invalid.
+fn gamepadButtonFromName(name: []const u8) c_int {
+    var buf: [32:0]u8 = undefined;
+    if (name.len >= buf.len) return kGamepadBtn_Invalid;
+    @memcpy(buf[0..name.len], name);
+    buf[name.len] = 0;
+    var p: [*:0]const u8 = &buf;
+    const button = parseGamepadButtonName(&p);
+    return if (p[0] == 0) button else kGamepadBtn_Invalid;
+}
+
+/// The name [GamepadMap] uses for a button, the spelling the stock file has.
+pub fn gamepadButtonName(button: c_int) []const u8 {
+    return switch (button) {
+        kGamepadBtn.A => "A",
+        kGamepadBtn.B => "B",
+        kGamepadBtn.X => "X",
+        kGamepadBtn.Y => "Y",
+        kGamepadBtn.Back => "Back",
+        kGamepadBtn.Guide => "Guide",
+        kGamepadBtn.Start => "Start",
+        kGamepadBtn.L3 => "L3",
+        kGamepadBtn.R3 => "R3",
+        kGamepadBtn.L1 => "Lb",
+        kGamepadBtn.R1 => "Rb",
+        kGamepadBtn.DpadUp => "DpadUp",
+        kGamepadBtn.DpadDown => "DpadDown",
+        kGamepadBtn.DpadLeft => "DpadLeft",
+        kGamepadBtn.DpadRight => "DpadRight",
+        kGamepadBtn.L2 => "L2",
+        kGamepadBtn.R2 => "R2",
+        else => "",
+    };
+}
+
+/// SDL's gamepad button, as the bindings number it. SDL3 names the face
+/// buttons by position - south, east, west, north - and the bindings' A, B,
+/// X and Y mean those positions, Xbox style. -1 for anything else.
+pub fn gamepadButtonFromSdl(button: u8) c_int {
+    return switch (button) {
+        c.SDL_GAMEPAD_BUTTON_SOUTH => kGamepadBtn.A,
+        c.SDL_GAMEPAD_BUTTON_EAST => kGamepadBtn.B,
+        c.SDL_GAMEPAD_BUTTON_WEST => kGamepadBtn.X,
+        c.SDL_GAMEPAD_BUTTON_NORTH => kGamepadBtn.Y,
+        c.SDL_GAMEPAD_BUTTON_BACK => kGamepadBtn.Back,
+        c.SDL_GAMEPAD_BUTTON_GUIDE => kGamepadBtn.Guide,
+        c.SDL_GAMEPAD_BUTTON_START => kGamepadBtn.Start,
+        c.SDL_GAMEPAD_BUTTON_LEFT_STICK => kGamepadBtn.L3,
+        c.SDL_GAMEPAD_BUTTON_RIGHT_STICK => kGamepadBtn.R3,
+        c.SDL_GAMEPAD_BUTTON_LEFT_SHOULDER => kGamepadBtn.L1,
+        c.SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER => kGamepadBtn.R1,
+        c.SDL_GAMEPAD_BUTTON_DPAD_UP => kGamepadBtn.DpadUp,
+        c.SDL_GAMEPAD_BUTTON_DPAD_DOWN => kGamepadBtn.DpadDown,
+        c.SDL_GAMEPAD_BUTTON_DPAD_LEFT => kGamepadBtn.DpadLeft,
+        c.SDL_GAMEPAD_BUTTON_DPAD_RIGHT => kGamepadBtn.DpadRight,
+        else => -1,
+    };
+}
+
+/// The triggers are axes to SDL; pressed most of the way, they're L2 and R2.
+pub fn gamepadTriggerFromSdl(axis: u8, value: i16) c_int {
+    if (value < 16000) return -1;
+    return switch (axis) {
+        c.SDL_GAMEPAD_AXIS_LEFT_TRIGGER => kGamepadBtn.L2,
+        c.SDL_GAMEPAD_AXIS_RIGHT_TRIGGER => kGamepadBtn.R2,
+        else => -1,
+    };
+}
+
+/// Whether two [KeyMap] names mean the same key, however they're spelled.
+pub fn sameKey(a: []const u8, b: []const u8) bool {
+    const ka = keyFromName(a) orelse return false;
+    const kb = keyFromName(b) orelse return false;
+    return ka == kb;
+}
+
+/// Whether two [GamepadMap] names mean the same button ("Lb" and "L1" do).
+pub fn sameGamepadButton(a: []const u8, b: []const u8) bool {
+    const ba = gamepadButtonFromName(a);
+    return ba != kGamepadBtn_Invalid and ba == gamepadButtonFromName(b);
+}
+
+fn isControl(cmd: c_int) bool {
+    return cmd >= kKeys.Controls and cmd <= kKeys.Controls_Last;
+}
+
+/// Whether a key already does something other than one of the twelve SNES
+/// buttons: fullscreen, a snapshot, a cheat. Taking it would quietly break
+/// that, so the settings screen refuses it.
+pub fn keyTakenByOther(name: []const u8) bool {
+    const key = keyFromName(name) orelse return false;
+    const cmd = keyMapHashFind(key);
+    return cmd != 0 and !isControl(cmd);
+}
+
+/// Binds SNES button `control` (0 to 11, in Controls order: Up, Down, Left,
+/// Right, Select, Start, A, B, X, Y, L, R) to a keyboard key while the game
+/// runs. Whatever key it had stops doing anything, and the new key stops
+/// doing whatever it did. False when the name isn't a key.
+pub fn bindKey(control: usize, name: []const u8) bool {
+    const key = keyFromName(name) orelse return false;
+    const cmd: u16 = @intCast(kKeys.Controls + control);
+    const table = keymap_hash orelse {
+        _ = keyMapHashAdd(key, cmd);
+        return true;
+    };
+    for (table[0..@intCast(keymap_hash_size)]) |*ent| {
+        if (ent.cmd == cmd) ent.cmd = 0;
+    }
+    for (table[0..@intCast(keymap_hash_size)]) |*ent| {
+        if (ent.key == key) {
+            ent.cmd = cmd;
+            return true;
+        }
+    }
+    _ = keyMapHashAdd(key, cmd);
+    return true;
+}
+
+/// The same for a gamepad button. Combinations with other buttons held are
+/// left alone; only the plain press is rebound.
+pub fn bindGamepadButton(control: usize, name: []const u8) bool {
+    const button = gamepadButtonFromName(name);
+    if (button == kGamepadBtn_Invalid) return false;
+    const cmd: u16 = @intCast(kKeys.Controls + control);
+    if (joymap_ents) |ents| {
+        for (ents[0..@intCast(joymap_size)]) |*ent| {
+            if (ent.cmd == cmd and ent.modifiers == 0) ent.cmd = 0;
+        }
+        var e = joymap_first[@intCast(button)];
+        while (e != 0) {
+            const ent = &ents[e - 1];
+            if (ent.modifiers == 0) {
+                ent.cmd = cmd;
+                return true;
+            }
+            e = ent.next;
+        }
+    }
+    gamepadMapAdd(button, 0, cmd);
+    return true;
+}
+
 fn registerDefaultKeys() void {
     for (kKeyNameId[1..], 1..) |ent, i| {
         if (!has_keynameid[i]) {
@@ -1015,4 +1187,28 @@ test "Config layout is what the C headers expect" {
     try testing.expectEqual(0, @offsetOf(Config, "window_width"));
     try testing.expectEqual(0, @offsetOf(Config, "link_graphics") % @sizeOf(*anyopaque));
     try testing.expectEqual(@sizeOf(Config), @offsetOf(Config, "language") + @sizeOf(*anyopaque));
+}
+
+test "a gamepad button rebinds while the game runs, and gives up its old job" {
+    // A of the SNES pad (control 6) moves from gamepad B to gamepad Y.
+    try testing.expect(bindGamepadButton(6, "B"));
+    try testing.expectEqual(@as(c_int, kKeys.Controls + 6), FindCmdForGamepadButton(kGamepadBtn.B, 0));
+    try testing.expect(bindGamepadButton(6, "Y"));
+    try testing.expectEqual(@as(c_int, kKeys.Controls + 6), FindCmdForGamepadButton(kGamepadBtn.Y, 0));
+    try testing.expectEqual(@as(c_int, 0), FindCmdForGamepadButton(kGamepadBtn.B, 0));
+    // Names that mean the same button are the same button.
+    try testing.expect(sameGamepadButton("Lb", "L1"));
+    try testing.expect(!sameGamepadButton("L1", "L2"));
+    try testing.expect(!bindGamepadButton(0, "L1+A"));
+    try testing.expectEqualStrings("Lb", gamepadButtonName(kGamepadBtn.L1));
+}
+
+test "a key rebinds while the game runs, and gives up its old job" {
+    try testing.expect(bindKey(7, "z"));
+    try testing.expectEqual(@as(c_int, kKeys.Controls + 7), keyMapHashFind(keyFromName("z").?));
+    try testing.expect(bindKey(7, "k"));
+    try testing.expectEqual(@as(c_int, kKeys.Controls + 7), keyMapHashFind(keyFromName("k").?));
+    try testing.expectEqual(@as(c_int, 0), keyMapHashFind(keyFromName("z").?));
+    try testing.expect(sameKey("x", "X"));
+    try testing.expect(!bindKey(0, "NotAKeyAtAll"));
 }

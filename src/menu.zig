@@ -15,6 +15,9 @@ const rom_mod = @import("rom.zig");
 const asset_all = @import("asset_all.zig");
 const c = @import("sdl.zig").c;
 const seed_info = @import("seed_info.zig");
+const config = @import("config.zig");
+const controls = @import("controls.zig");
+const pad_art = @import("pad_art.zig");
 
 /// The zelda3.ini this build shipped with, written out whenever there is no
 /// ini to be found, so a fresh folder or data directory still starts.
@@ -229,6 +232,13 @@ pub const kSettings = [_]Setting{
         .labels = &.{ "Small", "Large" },
     } } },
     .{ .section = "Randomizer", .key = "TrackerLegend", .label = "Map Legend", .kind = .toggle },
+
+    // The button mapping, edited on the in-game settings' Controls tab: each
+    // is the twelve SNES buttons' keys in one line, Up, Down, Left, Right,
+    // Select, Start, A, B, X, Y, L, R.
+    .{ .section = kSectionMark, .key = "", .label = "CONTROLS", .kind = .text },
+    .{ .section = "KeyMap", .key = "Controls", .label = "Keyboard", .kind = .text },
+    .{ .section = "GamepadMap", .key = "Controls", .label = "Controller", .kind = .text },
 };
 
 // ------------------------------------------------------------- ini editing
@@ -264,6 +274,12 @@ fn defaultEntry(section: []const u8, key: []const u8) ?DefaultEntry {
         }
     }
     return null;
+}
+
+/// A setting's value in the zelda3.ini built into the game, for putting
+/// things back the way they came.
+pub fn defaultValue(section: []const u8, key: []const u8) ?[]const u8 {
+    return if (defaultEntry(section, key)) |d| d.value else null;
 }
 
 fn defaultIniLine(n: usize) []const u8 {
@@ -594,7 +610,7 @@ const kQuitStay = 1;
 /// The launcher is a short menu and the screens it opens: the two lists of
 /// settings, and the randomizer's pages (a choice of randomizer, then the
 /// ALTTPR.COM page seeds are dropped on, and what a seed says about itself).
-const Screen = enum { main, settings, features, hub, alttpr, details };
+const Screen = enum { main, settings, features, controls, hub, alttpr, details };
 
 /// Where the FEATURES heading sits, so the two lists are slices of the one
 /// schema instead of separate tables that could drift out of step with it.
@@ -614,6 +630,15 @@ pub const kRandomizerStart = blk: {
     @compileError("the settings schema has no RANDOMIZER section");
 };
 
+/// Where the CONTROLS heading sits: the button mapping, which only the
+/// in-game settings' Controls tab edits, row by row.
+pub const kControlsStart = blk: {
+    for (kSettings, 0..) |s, i| {
+        if (isSection(s) and std.mem.eql(u8, s.label, "CONTROLS")) break :blk i;
+    }
+    @compileError("the settings schema has no CONTROLS section");
+};
+
 /// The ALTTPR.COM page's first two rows aren't settings: one starts the
 /// seed, the other shows what it says about itself.
 const kPlayRow = kSettings.len;
@@ -624,8 +649,8 @@ fn screenRange(screen: Screen) struct { from: usize, to: usize } {
     return switch (screen) {
         .settings => .{ .from = 0, .to = kFeaturesStart },
         .features => .{ .from = kFeaturesStart, .to = kRandomizerStart },
-        .alttpr => .{ .from = kRandomizerStart, .to = kSettings.len },
-        .main, .hub, .details => .{ .from = 0, .to = 0 },
+        .alttpr => .{ .from = kRandomizerStart, .to = kControlsStart },
+        .main, .controls, .hub, .details => .{ .from = 0, .to = 0 },
     };
 }
 
@@ -664,11 +689,12 @@ fn visibleRows(screen: Screen) usize {
     return if (screen == .alttpr) 9 else kVisibleRows;
 }
 
-const kMainItems = [_][]const u8{ "Settings", "Features", "Save Settings", "Build Assets", "Play", "Randomizer" };
-const kMainSave = 2;
-const kMainBuild = 3;
-const kMainLaunch = 4;
-const kMainRandomizer = 5;
+const kMainItems = [_][]const u8{ "Settings", "Features", "Controls", "Save Settings", "Build Assets", "Play", "Randomizer" };
+const kMainControls = 2;
+const kMainSave = 3;
+const kMainBuild = 4;
+const kMainLaunch = 5;
+const kMainRandomizer = 6;
 
 /// The randomizer page's two choices. Only one exists yet.
 const kHubItems = [_][]const u8{ "BUILT-IN RANDOMIZER", "ALTTPR.COM RANDOMIZER" };
@@ -926,7 +952,7 @@ const View = struct {
 
 fn listIndex(sc: Screen) usize {
     return switch (sc) {
-        .main, .settings, .hub, .details => 0,
+        .main, .settings, .controls, .hub, .details => 0,
         .features => 1,
         .alttpr => 2,
     };
@@ -952,6 +978,7 @@ fn viewOf(
         .cursor = switch (screen) {
             .main => main_cursor,
             .hub => g_hub_cursor,
+            .controls => g_ctl_row,
             else => list_cursor[li],
         },
         .details_top = g_details_top,
@@ -975,9 +1002,13 @@ pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const 
     const screen = std.meta.stringToEnum(Screen, which) orelse .alttpr;
     g_spoilers = std.c.getenv("SPOILERS") != null;
     if (std.c.getenv("DETAILS_TOP")) |t| g_details_top = std.fmt.parseInt(usize, std.mem.span(t), 10) catch 0;
+    // CTL_ROW=n picks a row on the Controls screen; CAPTURE=1 has it waiting.
+    if (std.c.getenv("CTL_ROW")) |t| g_ctl_row = std.fmt.parseInt(usize, std.mem.span(t), 10) catch 0;
+    if (g_ctl_row >= kCtlVisible) g_ctl_top = g_ctl_row + 1 - kCtlVisible;
+    if (std.c.getenv("CAPTURE") != null) g_ctl_capture = g_ctl_row;
     const cursor = [_]usize{ 0, 0, 0 };
     const top = [_]usize{ 0, 0, 0 };
-    drawScreen(renderer, &ini, viewOf(screen, kMainRandomizer, cursor, top, "", false, .verified, .none, kQuitStay));
+    drawScreen(renderer, &ini, viewOf(screen, if (screen == .main) kMainControls else kMainRandomizer, cursor, top, "", false, .verified, .none, kQuitStay));
     if (!c.SDL_SaveBMP(surface, path)) return error.SaveFailed;
 }
 
@@ -990,6 +1021,7 @@ fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     switch (v.screen) {
         .main => drawMain(renderer, v),
         .hub => drawHub(renderer, v),
+        .controls => drawControls(renderer, ini, v),
         .details => {
             setMsuGamePath(ini);
             drawDetails(renderer, v);
@@ -1024,6 +1056,7 @@ fn drawHeader(renderer: *c.SDL_Renderer, screen: Screen) void {
         .settings => "SETTINGS",
         .features => "FEATURES",
         .hub => "RANDOMIZER",
+        .controls => "CONTROLS",
         .alttpr => "ALTTPR.COM",
         .details => "SEED DETAILS",
         .main => unreachable,
@@ -1049,11 +1082,11 @@ const Rect = struct {
 
 // The menu's group of entries, then the Launch button below them, and the
 // Randomizer button under that.
-const kEntryY: f32 = 112;
-const kEntryGap: f32 = 28;
-const kLaunchY: f32 = 222;
+const kEntryY: f32 = 114;
+const kEntryGap: f32 = 26;
+const kLaunchY: f32 = 242;
 const kLaunchScale: f32 = kScale * 2;
-const kRandoY: f32 = 334;
+const kRandoY: f32 = 346;
 const kListStartY: f32 = 36 + kRowH + 14;
 const kSeedBoxY: f32 = kListStartY - 4;
 const kSeedBoxH: f32 = kRowH * 4 + 12;
@@ -1143,7 +1176,7 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     // enough - a .dat left over from another build loads and then misbehaves
     // in ways that look like game bugs, so it is checked against the digest
     // the asset builder produces and reported as its own state.
-    const state_y = box_y + box_h + 8;
+    const state_y = box_y + box_h + 6;
 
     drawTextCentered(renderer, cx, state_y, v.assets.color(), v.assets.line(), kScale);
     if (v.assets == .missing)
@@ -1155,6 +1188,125 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     fillRect(renderer, r.x, r.y, r.w, r.h, kColorRandoBg);
     if (v.cursor == kMainRandomizer) drawOutline(renderer, r.x - 6, r.y - 6, r.w + 12, r.h + 12, 3, kColorFrameHi);
     drawTextCentered(renderer, cx, r.y + 10, kColorText, "RANDOMIZER", kScale);
+}
+
+// ---------------------------------------------------------------- controls
+
+/// The Controls screen's row, its scroll, and the row waiting for a key or
+/// button when one is.
+var g_ctl_row: usize = 0;
+var g_ctl_top: usize = 0;
+var g_ctl_capture: ?usize = null;
+var g_ctl_capture_at: u64 = 0;
+
+const kCtlResetRow = controls.kButtonNames.len;
+const kCtlRows = kCtlResetRow + 1;
+const kCtlVisible = 6;
+/// The pad drawn three times the size it is in the game's own menu.
+const kCtlArtScale = 3;
+const kCtlArtX: f32 = (kWindowW - pad_art.kWidth * kCtlArtScale) / 2;
+const kCtlArtY: f32 = kListStartY + pad_art.kShoulderRise * kCtlArtScale;
+const kCtlHeadY: f32 = kCtlArtY + pad_art.kHeight * kCtlArtScale + 8;
+const kCtlRowsY: f32 = kCtlHeadY + kRowH + 4;
+const kCtlColKey: f32 = 250;
+const kCtlColPad: f32 = 430;
+/// Five seconds to press something before the question goes away.
+const kCtlCaptureMs = 5000;
+
+fn ctlRowRect(slot: usize) Rect {
+    return .{ .x = 32, .y = kCtlRowsY + kRowH * @as(f32, @floatFromInt(slot)) - 3, .w = kWindowW - 64, .h = kRowH };
+}
+
+/// Draws the pad a pixel at a time into a small image, then fills the
+/// renderer a run of same-colored pixels at a time, which is a few hundred
+/// rectangles rather than thousands.
+fn drawPadArt(renderer: *c.SDL_Renderer, lit: ?usize) void {
+    const kW = pad_art.kWidth;
+    const kH = pad_art.kHeight + pad_art.kShoulderRise;
+    const kClear: u32 = 0xff000000;
+    const Img = struct {
+        px: [kW * kH]u32 = @splat(kClear),
+        fn put(p: *const anyopaque, x: i32, y: i32, rgb: u32) void {
+            const self: *@This() = @ptrCast(@alignCast(@constCast(p)));
+            const yy = y + pad_art.kShoulderRise;
+            if (x < 0 or yy < 0 or x >= kW or yy >= kH) return;
+            self.px[@as(usize, @intCast(yy)) * kW + @as(usize, @intCast(x))] = rgb;
+        }
+    };
+    var img = Img{};
+    const lit_color = @as(u32, kColorSelect.r) << 16 | @as(u32, kColorSelect.g) << 8 | kColorSelect.b;
+    pad_art.draw(.{ .ctx = &img, .putFn = Img.put }, lit, lit_color);
+    const s: f32 = kCtlArtScale;
+    const top = kCtlArtY - pad_art.kShoulderRise * s;
+    for (0..kH) |y| {
+        var x: usize = 0;
+        while (x < kW) {
+            const col = img.px[y * kW + x];
+            var end = x + 1;
+            while (end < kW and img.px[y * kW + end] == col) end += 1;
+            if (col != kClear) {
+                const rgb = Rgb{ .r = @truncate(col >> 16), .g = @truncate(col >> 8), .b = @truncate(col) };
+                fillRect(renderer, kCtlArtX + @as(f32, @floatFromInt(x)) * s, top + @as(f32, @floatFromInt(y)) * s, @as(f32, @floatFromInt(end - x)) * s, s, rgb);
+            }
+            x = end;
+        }
+    }
+}
+
+/// The SNES pad's twelve buttons with their keys and gamepad buttons, under
+/// a drawing of the pad that lights up the one picked.
+fn drawControls(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
+    const blink = (c.SDL_GetTicks() / 267) % 2 == 0;
+    const lit: ?usize = if (v.cursor < 12 and (blink or g_ctl_capture != null)) v.cursor else null;
+    drawPadArt(renderer, lit);
+
+    drawText(renderer, kCtlColKey, kCtlHeadY, kColorSection, "KEYBOARD");
+    drawText(renderer, kCtlColPad, kCtlHeadY, kColorSection, "CONTROLLER");
+
+    const keys = controls.current(ini, .keyboard);
+    const pads = controls.current(ini, .gamepad);
+    var row = g_ctl_top;
+    while (row < @min(kCtlRows, g_ctl_top + kCtlVisible)) : (row += 1) {
+        const r = ctlRowRect(row - g_ctl_top);
+        const y = r.y + 3;
+        const selected = row == v.cursor;
+        if (selected) {
+            fillRect(renderer, r.x, r.y, r.w, r.h, kColorRowHi);
+            drawText(renderer, 36, y, kColorSelect, ">");
+        }
+        const col = if (selected) kColorSelect else kColorText;
+        if (row == kCtlResetRow) {
+            drawTextCentered(renderer, kWindowW / 2, y, col, "RESET ALL TO DEFAULTS", kScale);
+            continue;
+        }
+        drawText(renderer, 56, y, col, controls.kButtonNames[row]);
+        if (selected and g_ctl_capture != null) {
+            drawText(renderer, kCtlColKey, y, kColorSelect, "PRESS KEY OR BUTTON");
+            continue;
+        }
+        var kb: [8]u8 = undefined;
+        drawFit(renderer, kCtlColKey, y, kColorValue, controls.keyLabel(&kb, keys.get(row)), kCtlColPad - kCtlColKey - 12);
+        drawFit(renderer, kCtlColPad, y, kColorValue, controls.padLabel(pads.get(row)), kWindowW - 32 - kCtlColPad);
+    }
+
+    // A scrollbar, since there are more rows than fit.
+    const track_y = kCtlRowsY - 3;
+    const track_h = kRowH * kCtlVisible;
+    const bar_h = track_h * kCtlVisible / @as(f32, kCtlRows);
+    const bar_y = track_y + track_h * @as(f32, @floatFromInt(g_ctl_top)) / @as(f32, kCtlRows);
+    fillRect(renderer, kWindowW - 30, track_y, 4, track_h, kColorFrameLo);
+    fillRect(renderer, kWindowW - 30, bar_y, 4, bar_h, kColorFrameHi);
+}
+
+/// Takes the key or button pressed while a row waits. Returns the status
+/// line, and says whether the ini changed.
+fn ctlFinish(ini: *Ini, device: controls.Device, name: []const u8, dirty: *bool) []const u8 {
+    const row = g_ctl_capture orelse return "";
+    g_ctl_capture = null;
+    if (device == .keyboard and controls.keyTaken(ini, name, false)) return "THAT KEY DOES SOMETHING ELSE";
+    controls.assign(ini, device, row, name, false) catch return "COULD NOT CHANGE IT";
+    dirty.* = true;
+    return "";
 }
 
 /// The choice of randomizer: the built-in one, still to come, and seeds
@@ -1539,6 +1691,13 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
             drawText(renderer, 40, footer_y, kColorTextDim, "SELECT A/ENTER");
             drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "BACK B/ESC");
         },
+        .controls => if (g_ctl_capture != null) {
+            drawText(renderer, 40, footer_y, kColorTextDim, "PRESS ANY KEY OR PAD BUTTON");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "ESC OR WAIT TO CANCEL");
+        } else {
+            drawText(renderer, 40, footer_y, kColorTextDim, "CHANGE A/ENTER");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "SAVE X/S   BACK B/ESC");
+        },
         .alttpr => {
             drawText(renderer, 40, footer_y, kColorTextDim, "CHANGE  LEFT/RIGHT OR A");
             drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "PLAY START  SAVE X/S  BACK B");
@@ -1803,7 +1962,7 @@ pub fn wantsStartMenu(alloc: std.mem.Allocator) bool {
     return !std.mem.eql(u8, std.mem.trim(u8, value, " \t"), "0");
 }
 
-fn settingIndex(section: []const u8, key: []const u8) ?usize {
+pub fn settingIndex(section: []const u8, key: []const u8) ?usize {
     for (kSettings, 0..) |st, i| {
         if (std.mem.eql(u8, st.section, section) and std.mem.eql(u8, st.key, key)) return i;
     }
@@ -1970,6 +2129,34 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
         var wheel: f32 = 0;
 
         while (c.SDL_PollEvent(&event)) {
+            // The Controls screen waiting for a key or button takes the next
+            // press whole, before it can move the cursor or back out.
+            if (g_ctl_capture != null and screen == .controls and modal == .none) {
+                switch (event.type) {
+                    c.SDL_EVENT_KEY_DOWN => {
+                        if (event.key.repeat) continue;
+                        if (event.key.key == c.SDLK_ESCAPE) {
+                            g_ctl_capture = null;
+                            status = "NOTHING CHANGED";
+                        } else {
+                            status = ctlFinish(&ini, .keyboard, std.mem.span(c.SDL_GetKeyName(event.key.key)), &dirty);
+                        }
+                        continue;
+                    },
+                    c.SDL_EVENT_GAMEPAD_BUTTON_DOWN => {
+                        _ = held.setButton(event.gbutton.button, true);
+                        const b = config.gamepadButtonFromSdl(event.gbutton.button);
+                        if (b >= 0) status = ctlFinish(&ini, .gamepad, config.gamepadButtonName(b), &dirty);
+                        continue;
+                    },
+                    c.SDL_EVENT_GAMEPAD_AXIS_MOTION => {
+                        const b = config.gamepadTriggerFromSdl(event.gaxis.axis, event.gaxis.value);
+                        if (b >= 0) status = ctlFinish(&ini, .gamepad, config.gamepadButtonName(b), &dirty);
+                        continue;
+                    },
+                    else => {},
+                }
+            }
             switch (event.type) {
                 c.SDL_EVENT_QUIT => running = false,
                 c.SDL_EVENT_GAMEPAD_ADDED => pads.open(event.gdevice.which),
@@ -2202,6 +2389,10 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         screen = .features;
                         status = "";
                     },
+                    kMainControls => {
+                        screen = .controls;
+                        status = "";
+                    },
                     kMainSave => save = true,
                     kMainBuild => {
                         modal = .rom;
@@ -2230,6 +2421,45 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         }
                     },
                 }
+            }
+        } else if (screen == .controls) {
+            if (g_ctl_capture != null) {
+                // Waiting: only time passes here; the press is taken above.
+                if (now - g_ctl_capture_at > kCtlCaptureMs) {
+                    g_ctl_capture = null;
+                    status = "NOTHING CHANGED";
+                }
+            } else {
+                if (back) {
+                    screen = .main;
+                    status = "";
+                }
+                for (0..kCtlVisible) |slot| {
+                    const row = g_ctl_top + slot;
+                    if (row >= kCtlRows) break;
+                    if ((hovered or clicked) and ctlRowRect(slot).contains(hover_x, hover_y)) {
+                        g_ctl_row = row;
+                        if (clicked) confirm = true;
+                    }
+                }
+                if (wheel != 0) move = if (wheel > 0) -1 else 1;
+                if (move != 0) {
+                    g_ctl_row = @intCast(@mod(@as(i32, @intCast(g_ctl_row)) + move, @as(i32, kCtlRows)));
+                    status = "";
+                }
+                if (confirm and !back) {
+                    if (g_ctl_row == kCtlResetRow) {
+                        controls.reset(&ini, false) catch {};
+                        dirty = true;
+                        status = "BACK TO THE DEFAULTS";
+                    } else {
+                        g_ctl_capture = g_ctl_row;
+                        g_ctl_capture_at = now;
+                        status = "";
+                    }
+                }
+                if (g_ctl_row < g_ctl_top) g_ctl_top = g_ctl_row;
+                if (g_ctl_row >= g_ctl_top + kCtlVisible) g_ctl_top = g_ctl_row + 1 - kCtlVisible;
             }
         } else if (screen == .hub) {
             if (back) {
@@ -2504,7 +2734,7 @@ test "the schema splits cleanly into the three menus" {
     try testing.expect(randomizer.to > randomizer.from);
     try testing.expectEqual(settings.to, features.from);
     try testing.expectEqual(features.to, randomizer.from);
-    try testing.expectEqual(kSettings.len, randomizer.to);
+    try testing.expectEqual(kControlsStart, randomizer.to);
     for (kSettings[randomizer.from..randomizer.to]) |s| {
         if (isSection(s)) continue;
         try testing.expectEqualStrings("Randomizer", s.section);
@@ -2581,6 +2811,17 @@ test "the on-screen strings fit the window" {
         "ASSETS VERIFIED",
         "ASSETS PRESENT - CHECKSUM DIFFERS",
         "DRAG A .SFC ROM ONTO THIS WINDOW",
+        // The Controls screen.
+        "KEYBOARD",
+        "CONTROLLER",
+        "RESET ALL TO DEFAULTS",
+        "PRESS ANY KEY OR PAD BUTTON",
+        "ESC OR WAIT TO CANCEL",
+        "CHANGE A/ENTER",
+        "NOTHING CHANGED",
+        "THAT KEY DOES SOMETHING ELSE",
+        "COULD NOT CHANGE IT",
+        "BACK TO THE DEFAULTS",
         // The randomizer's pages.
         "DROP AN ALTTPR.COM SEED HERE",
         "GENERATE ONE AT ALTTPR.COM FROM",
@@ -2840,4 +3081,23 @@ test "a setting the file lacks shows its default and is added when changed" {
     defer again.deinit();
     try testing.expectEqualStrings("0", again.values[start_menu].?);
     try testing.expect(again.line_of[start_menu] != null);
+}
+
+test "the Controls screen fits between the header and the footer" {
+    try testing.expect(kCtlArtX >= 32 and kCtlArtX + pad_art.kWidth * kCtlArtScale <= kWindowW - 32);
+    try testing.expect(kCtlArtY - pad_art.kShoulderRise * kCtlArtScale >= kListStartY - 4);
+    // The last row ends above the status line over the footer.
+    const footer_y: f32 = kWindowH - 32 - kRowH * 2 - 6;
+    const last = ctlRowRect(kCtlVisible - 1);
+    try testing.expect(last.y + last.h <= footer_y - kRowH);
+    // "PRESS KEY OR BUTTON" fits from the key column to the frame.
+    try testing.expect(kCtlColKey + textWidth("PRESS KEY OR BUTTON", kScale) <= kWindowW - 16);
+}
+
+test "the Randomizer button clears the missing-assets hint and the status line" {
+    // Mirrors drawMain: the asset state under Play, then the hint under it.
+    const hint_bottom = launchRect().y + launchRect().h + 6 + kRowH + kCell;
+    try testing.expect(randoRect().y >= hint_bottom);
+    const footer_y: f32 = kWindowH - 32 - kRowH * 2 - 6;
+    try testing.expect(randoRect().y + randoRect().h <= footer_y - kRowH);
 }

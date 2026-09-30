@@ -902,6 +902,29 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
 
     while (running) {
         while (c.SDL_PollEvent(&event)) {
+            // The settings' Controls tab waiting for a key or button takes
+            // the next press whole, before it can mean anything to the game.
+            if (settings_menu.capturing()) {
+                switch (event.type) {
+                    c.SDL_EVENT_KEY_DOWN => {
+                        if (!event.key.repeat) settings_menu.captureKey(event.key.key);
+                        continue;
+                    },
+                    c.SDL_EVENT_GAMEPAD_BUTTON_DOWN => {
+                        const b = RemapSdlButton(event.gbutton.button);
+                        if (b >= 0) settings_menu.captureButton(b);
+                        continue;
+                    },
+                    c.SDL_EVENT_GAMEPAD_AXIS_MOTION => {
+                        const b = config.gamepadTriggerFromSdl(event.gaxis.axis, event.gaxis.value);
+                        if (b >= 0) {
+                            settings_menu.captureButton(b);
+                            continue;
+                        }
+                    },
+                    else => {},
+                }
+            }
             // Closing the tracker's window puts it back beside the game.
             if (rando.handleEvent(&event)) {
                 RandoLayoutChanged();
@@ -1315,24 +1338,7 @@ fn buttonLabelName(gamepad: ?*c.SDL_Gamepad, button: c_int) []const u8 {
 /// to arrive here as kGamepadBtn_A whatever its face says, and the SNES pad
 /// whose south button reads "B" still ends up driving SNES B.
 fn RemapSdlButton(button: u8) c_int {
-    return switch (button) {
-        c.SDL_GAMEPAD_BUTTON_SOUTH => kGamepadBtn_A,
-        c.SDL_GAMEPAD_BUTTON_EAST => kGamepadBtn_B,
-        c.SDL_GAMEPAD_BUTTON_WEST => kGamepadBtn_X,
-        c.SDL_GAMEPAD_BUTTON_NORTH => kGamepadBtn_Y,
-        c.SDL_GAMEPAD_BUTTON_BACK => kGamepadBtn_Back,
-        c.SDL_GAMEPAD_BUTTON_GUIDE => kGamepadBtn_Guide,
-        c.SDL_GAMEPAD_BUTTON_START => kGamepadBtn_Start,
-        c.SDL_GAMEPAD_BUTTON_LEFT_STICK => kGamepadBtn_L3,
-        c.SDL_GAMEPAD_BUTTON_RIGHT_STICK => kGamepadBtn_R3,
-        c.SDL_GAMEPAD_BUTTON_LEFT_SHOULDER => kGamepadBtn_L1,
-        c.SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER => kGamepadBtn_R1,
-        c.SDL_GAMEPAD_BUTTON_DPAD_UP => kGamepadBtn_DpadUp,
-        c.SDL_GAMEPAD_BUTTON_DPAD_DOWN => kGamepadBtn_DpadDown,
-        c.SDL_GAMEPAD_BUTTON_DPAD_LEFT => kGamepadBtn_DpadLeft,
-        c.SDL_GAMEPAD_BUTTON_DPAD_RIGHT => kGamepadBtn_DpadRight,
-        else => -1,
-    };
+    return config.gamepadButtonFromSdl(button);
 }
 
 fn HandleGamepadInput(button: c_int, pressed: bool) void {

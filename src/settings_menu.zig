@@ -8,6 +8,9 @@
 //! setting, Left, Right and A change it, and B saves zelda3.ini and goes back
 //! to the game.
 //!
+//! The last tab, Controls, maps the SNES pad's twelve buttons to keys and
+//! gamepad buttons, with a line drawing of the pad to show which is which.
+//!
 //! The screen is drawn over each finished frame with game_gfx rather than
 //! built in VRAM, and the game sits in its save menu underneath the whole time,
 //! so nothing about the game's own display needs putting back afterwards.
@@ -23,6 +26,10 @@ const rtl = @import("zelda_rtl_types.zig");
 const zelda_rtl = @import("zelda_rtl.zig");
 const main = @import("main.zig");
 const gfx = @import("game_gfx.zig");
+const hud = @import("hud_tables.zig");
+const pad_art = @import("pad_art.zig");
+const controls = @import("controls.zig");
+const c = @import("sdl.zig").c;
 
 /// Off while the game is being compared against the original, which never had
 /// a third choice on the Select menu.
@@ -95,6 +102,12 @@ const kTabIcons = [_][4]u16{
     .{ 0x2cd4, 0x2cd5, 0x2ce4, 0x2ce5 },
     .{ 0x3429, 0x342a, 0x342b, 0x342c },
 };
+
+/// The settings' own tabs, then Controls, which isn't a list of settings.
+const kTabCount = kTabs.len + 1;
+const kControlsTab = kTabs.len;
+/// The Power Glove.
+const kControlsIcon = hud.kHudItemGloves[1].v;
 
 const kTabs = blk: {
     var tabs: [kTabIcons.len]Tab = undefined;
@@ -279,6 +292,8 @@ fn open(origin: @TypeOf(g_origin)) bool {
     g_row = 0;
     g_top = 0;
     g_held = 0;
+    g_capture = null;
+    g_note = "";
     return true;
 }
 
@@ -305,6 +320,18 @@ pub fn update() void {
 
     // The details box takes any button to put away, B included, so B there
     // means back to the list rather than out of the menu.
+    if (g_note_frames > 0) {
+        g_note_frames -= 1;
+        if (g_note_frames == 0) g_note = "";
+    }
+    // Waiting for a key or button: the pad's presses are the answer, taken
+    // by main before they got here, so none of them mean anything else.
+    if (g_capture != null) {
+        g_capture_frames += 1;
+        if (g_capture_frames > kCaptureFrames) cancelCapture();
+        return;
+    }
+
     if (g_details) {
         if (pressed_h & (kJoypadH_B | kJoypadH_Y | kJoypadH_Start) != 0 or pressed_l & kJoypadL_A != 0) {
             g_details = false;
@@ -312,7 +339,7 @@ pub fn update() void {
         }
         return;
     }
-    if (pressed_h & kJoypadH_Y != 0) {
+    if (pressed_h & kJoypadH_Y != 0 and g_tab != kControlsTab) {
         g_details = true;
         vars.sound_effect_2.* = 32;
         return;
@@ -321,7 +348,7 @@ pub fn update() void {
     if (pressed_h & (kJoypadH_B | kJoypadH_Start) != 0) return close();
 
     if (pressed_l & (kJoypadL_L | kJoypadL_R) != 0) {
-        g_tab = if (pressed_l & kJoypadL_R != 0) (g_tab + 1) % kTabs.len else (g_tab + kTabs.len - 1) % kTabs.len;
+        g_tab = if (pressed_l & kJoypadL_R != 0) (g_tab + 1) % kTabCount else (g_tab + kTabCount - 1) % kTabCount;
         g_row = 0;
         g_top = 0;
         vars.sound_effect_2.* = 32;
@@ -330,6 +357,7 @@ pub fn update() void {
 
     const dirs = held_h & (kJoypadH_Up | kJoypadH_Down | kJoypadH_Left | kJoypadH_Right);
     const step = repeatStep(dirs != 0);
+    if (g_tab == kControlsTab) return controlsUpdate(step, dirs, pressed_l);
     const count = kTabs[g_tab].count;
     if (step and dirs & kJoypadH_Up != 0) {
         g_row = (g_row + count - 1) % count;
@@ -439,15 +467,15 @@ pub fn drawOver(pixels: [*]u8, pitch: usize, width: usize, height: usize, scale:
     loadTextColors();
     cv.dim();
     drawTabs(cv);
-    if (g_details) drawDetails(cv) else drawList(cv);
+    if (g_details) drawDetails(cv) else if (g_tab == kControlsTab) drawControls(cv) else drawList(cv);
     drawFooter(cv);
 }
 
 fn drawTabs(cv: gfx.Canvas) void {
     cv.box(8, 4, 30, 5, kFramePalette);
-    for (kTabs, 0..) |tab, i| {
-        const x: i32 = 32 + @as(i32, @intCast(i)) * 56;
-        cv.icon(x, 16, tab.icon);
+    for (0..kTabCount) |i| {
+        const x: i32 = 30 + @as(i32, @intCast(i)) * 44;
+        cv.icon(x, 16, if (i < kTabs.len) kTabs[i].icon else kControlsIcon);
         if (i == g_tab and g_frame & 0x10 != 0) drawRing(cv, x, 16);
     }
     // Which button moves between them.
@@ -547,8 +575,14 @@ fn drawValue(cv: gfx.Canvas, right: i32, y: i32, s: menu.Setting, value: []const
 }
 
 fn drawFooter(cv: gfx.Canvas) void {
-    const hint = if (g_details)
+    const hint = if (g_note.len != 0)
+        g_note
+    else if (g_capture != null)
+        "Press a key or a button, or Esc to cancel"
+    else if (g_details)
         "[B] Back"
+    else if (g_tab == kControlsTab)
+        "[Up][Down] Choose  [A] Change  [B] Done"
     else
         "[Up][Down] Choose  [Left][Right] Change  [Y] Info  [B] Done";
     cv.band(192, 24, 0x000000);
@@ -648,6 +682,158 @@ fn describe(s: menu.Setting) []const u8 {
     return "";
 }
 
+// ---------------------------------------------------------------- controls
+
+/// The SNES pad's buttons, in the order the Controls lines list them. The
+/// font has pictures for most; L and R get letters.
+const kControlLabels = [12][]const u8{ "[Up]", "[Down]", "[Left]", "[Right]", "Select", "Start", "[A]", "[B]", "[X]", "[Y]", "L", "R" };
+const kResetRow = kControlLabels.len;
+const kControlRows = kControlLabels.len + 1;
+const kControlsVisible = 4;
+/// Five seconds to press something before the question goes away.
+const kCaptureFrames = 300;
+
+
+/// The row waiting for a key or button, when one is.
+var g_capture: ?usize = null;
+var g_capture_frames: u32 = 0;
+/// A line for the footer in place of the hints, for a moment.
+var g_note: []const u8 = "";
+var g_note_frames: u32 = 0;
+
+fn showNote(msg: []const u8) void {
+    g_note = msg;
+    g_note_frames = 120;
+}
+
+/// Whether main should hand this screen the next key or button press.
+pub fn capturing() bool {
+    return g_open and g_capture != null;
+}
+
+fn cancelCapture() void {
+    g_capture = null;
+    showNote("Nothing changed");
+    vars.sound_effect_2.* = 60;
+}
+
+/// A key pressed while waiting. Escape backs out.
+pub fn captureKey(code: u32) void {
+    if (g_capture == null) return;
+    if (code == c.SDLK_ESCAPE) return cancelCapture();
+    const name = std.mem.span(c.SDL_GetKeyName(code));
+    if (name.len == 0) return;
+    finishCapture(.keyboard, name);
+}
+
+/// A gamepad button pressed while waiting, as main numbers them.
+pub fn captureButton(button: c_int) void {
+    if (g_capture == null) return;
+    const name = config.gamepadButtonName(button);
+    if (name.len == 0) return;
+    finishCapture(.gamepad, name);
+}
+
+fn finishCapture(device: controls.Device, name: []const u8) void {
+    const row = g_capture.?;
+    g_capture = null;
+    if (device == .keyboard and controls.keyTaken(&g_ini.?, name, true)) {
+        showNote("That key already does something else");
+        vars.sound_effect_2.* = 60;
+        return;
+    }
+    controls.assign(&g_ini.?, device, row, name, true) catch return;
+    g_dirty = true;
+    vars.sound_effect_1.* = 43;
+}
+
+fn controlsUpdate(step: bool, dirs: u8, pressed_l: u8) void {
+    if (step and dirs & kJoypadH_Up != 0) {
+        g_row = (g_row + kControlRows - 1) % kControlRows;
+        vars.sound_effect_2.* = 32;
+    } else if (step and dirs & kJoypadH_Down != 0) {
+        g_row = (g_row + 1) % kControlRows;
+        vars.sound_effect_2.* = 32;
+    } else if (pressed_l & kJoypadL_A != 0) {
+        if (g_row == kResetRow) {
+            controls.reset(&g_ini.?, true) catch return;
+            g_dirty = true;
+            showNote("Back to the defaults");
+            vars.sound_effect_1.* = 43;
+        } else {
+            g_capture = g_row;
+            g_capture_frames = 0;
+            g_note = "";
+            vars.sound_effect_2.* = 32;
+        }
+    }
+    if (g_row < g_top) g_top = g_row;
+    if (g_row >= g_top + kControlsVisible) g_top = g_row + 1 - kControlsVisible;
+}
+
+const kColKey: i32 = 80;
+const kColPad: i32 = 160;
+const kRowsTop: i32 = 118;
+
+fn drawControls(cv: gfx.Canvas) void {
+    cv.box(8, 46, 30, 18, kFramePalette);
+    _ = cv.text(24, 52, "Controls", kTextSelected);
+
+    const blink = g_frame & 0x10 != 0;
+    const lit: ?usize = if (g_row < 12 and (blink or g_capture != null)) g_row else null;
+    drawPad(cv, kPadArtX, kPadArtY, lit);
+
+    _ = cv.text(kColKey, 102, "Keyboard", kTextDim);
+    _ = cv.text(kColPad, 102, "Controller", kTextDim);
+
+    const keys = controls.current(&g_ini.?, .keyboard);
+    const pads = controls.current(&g_ini.?, .gamepad);
+    var row = g_top;
+    while (row < @min(kControlRows, g_top + kControlsVisible)) : (row += 1) {
+        const y = kRowsTop + @as(i32, @intCast(row - g_top)) * 16;
+        const selected = row == g_row;
+        const colors = if (selected) kTextSelected else kTextNormal;
+        if (selected) cv.fill(18, y - 1, 212, 16, kRowHighlight);
+        if (row == kResetRow) {
+            const label = "Reset all to defaults";
+            _ = cv.text(124 - @divTrunc(gfx.textWidth(label), 2), y, label, colors);
+            continue;
+        }
+        _ = cv.text(24, y, kControlLabels[row], colors);
+        if (selected and g_capture != null) {
+            _ = cv.text(kColKey, y, "Press a key or a button", kTextSelected);
+            continue;
+        }
+        var kb: [48]u8 = undefined;
+        var ks: [48]u8 = undefined;
+        _ = cv.text(kColKey, y, fontSafe(&ks, controls.keyLabel(&kb, keys.get(row))), colors);
+        var pb: [48]u8 = undefined;
+        _ = cv.text(kColPad, y, fontSafe(&pb, controls.padLabel(pads.get(row))), colors);
+    }
+    if (g_top > 0) _ = cv.text(232, kRowsTop, "[Up]", kTextDim);
+    if (g_top + kControlsVisible < kControlRows) _ = cv.text(232, kRowsTop + 48, "[Down]", kTextDim);
+}
+
+// The pad drawing, in game pixels just under the tab's title.
+const kPadArtW = pad_art.kWidth;
+const kPadArtH = pad_art.kHeight;
+const kPadArtX: i32 = 128 - kPadArtW / 2;
+const kPadArtY: i32 = 57;
+
+fn drawPad(cv: gfx.Canvas, ox: i32, oy: i32, lit: ?usize) void {
+    const Ctx = struct {
+        cv: gfx.Canvas,
+        ox: i32,
+        oy: i32,
+        fn put(p: *const anyopaque, x: i32, y: i32, rgb: u32) void {
+            const self: *const @This() = @ptrCast(@alignCast(p));
+            self.cv.fill(self.ox + x, self.oy + y, 1, 1, rgb);
+        }
+    };
+    const ctx = Ctx{ .cv = cv, .ox = ox, .oy = oy };
+    pad_art.draw(.{ .ctx = &ctx, .putFn = Ctx.put }, lit, kYellow);
+}
+
 // -------------------------------------------------------------------- tests
 
 const testing = std.testing;
@@ -694,4 +880,26 @@ test "labels and values only use what the font can draw" {
             }
         }
     }
+}
+
+test "the Controls tab's words are all in the font" {
+    for (kControlLabels) |label| {
+        var it = std.mem.tokenizeScalar(u8, label, ' ');
+        while (it.next()) |_| {}
+        try testing.expect(gfx.glyphIndex(label) != null or for (label) |ch| {
+            if (gfx.glyphIndex(&.{ch}) == null) break false;
+        } else true);
+    }
+    for ([_][]const u8{ "Controls", "Keyboard", "Controller", "Reset all to defaults", "Press a key or a button", "Press a key or a button, or Esc to cancel", "Nothing changed", "That key already does something else", "Back to the defaults" }) |text| {
+        for (text) |ch| try testing.expect(gfx.glyphIndex(&.{ch}) != null);
+    }
+}
+
+test "the pad drawing fits between the title and the list" {
+    try testing.expect(kPadArtX >= 16 and kPadArtX + kPadArtW <= 240);
+    // L and R stick up a few pixels past the drawing's top, and the column
+    // headings sit under its bottom.
+    try testing.expect(kPadArtY - pad_art.kShoulderRise >= 52);
+    try testing.expect(kPadArtY + kPadArtH <= 102);
+    try testing.expect(kRowsTop + 16 * kControlsVisible <= 46 + 18 * 8 - 8);
 }
