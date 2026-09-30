@@ -139,6 +139,22 @@ fn widescreenLinkOam() void {
     }
 }
 
+/// In a doorway, Link's hidden once he's within 4 pixels of the screen's
+/// left or right edge, so he doesn't wrap round to the other side as the
+/// doorway takes him off it. The widescreen camera stops short of a room's
+/// edge, so a side doorway is past the 4:3 screen's edge and in the margin
+/// beyond, where he'd have gone before reaching it; with the pieces put on
+/// the right side of the wrap (widescreenLinkOam), it's the wide screen's
+/// edges that count.
+fn doorwayOffScreenX(tv: u16) bool {
+    if (!config.g_widescreen_camera or config.g_config.extended_aspect_ratio == 0 or
+        features.enhanced_features0.* & features.kFeatures0_WidescreenVisualFixes == 0)
+        return tv < 4 or tv >= 252;
+    const x: i32 = @as(i16, @bitCast(tv));
+    const extra: i32 = config.g_config.extended_aspect_ratio;
+    return x < 4 - extra or x >= 252 + extra;
+}
+
 pub export fn LinkOam_Main() callconv(.c) void { // 8da18e
     defer widescreenLinkOam();
     const y_coord_backup = vars.link_y_coord.*;
@@ -558,7 +574,7 @@ pub export fn LinkOam_Main() callconv(.c) void { // 8da18e
     var want_hide = false;
     if (vars.is_standing_in_doorway.* != 0) {
         var tv = vars.link_x_coord.* -% vars.BG2HOFS_copy2.*;
-        if (tv < 4 or tv >= 252) {
+        if (doorwayOffScreenX(tv)) {
             want_hide = true;
         } else {
             tv = vars.link_y_coord.* -% vars.BG2VOFS_copy2.*;

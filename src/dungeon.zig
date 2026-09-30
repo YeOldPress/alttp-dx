@@ -15,6 +15,7 @@ const t = @import("dungeon_tables.zig");
 const main = @import("main.zig");
 const c = @import("dungeon_abi.zig");
 const overworld = @import("overworld.zig");
+const dungeon_wide = @import("dungeon_wide.zig");
 const Words = [*]align(1) u16;
 const Tiles = [*]align(1) const u16;
 const RoomBounds = v.RoomBounds;
@@ -129,6 +130,7 @@ fn transitionLayer() void {
 }
 fn startHorizontal(comptime right: bool) void {
     std.debug.assert(v.submodule_index.* == 0);
+    dungeon_wide.noteTransitionStart(if (right) 2 else 3);
     v.link_quadrant_x.* ^= 1;
     Dungeon_AdjustQuadrant();
     if (right) RoomBounds_AddA(v.room_bounds_x) else RoomBounds_SubA(v.room_bounds_x);
@@ -156,6 +158,7 @@ fn startHorizontal(comptime right: bool) void {
 }
 fn startVertical(comptime down: bool) void {
     std.debug.assert(v.submodule_index.* == 0);
+    dungeon_wide.noteTransitionStart(if (down) 0 else 1);
     v.link_quadrant_y.* ^= 2;
     Dungeon_AdjustQuadrant();
     if (down) RoomBounds_AddA(v.room_bounds_y) else RoomBounds_SubA(v.room_bounds_y);
@@ -206,7 +209,7 @@ fn scrollCameraAxis(comptime horizontal: bool) void {
     for (0..iterations) |_| {
         if (if (negative) pos > low_bound.* else pos < hi_bound.*) continue;
         const q = (full.* >> 1) + @as(u8, if (negative) 0 else 2);
-        const stop = if (horizontal and wideRoomMargin() != 0)
+        const stop = if (horizontal and overworld.wideCameraOn())
             (if (negative) bg2.* <= bounds.v[q] +% wideRoomMargin() else bg2.* >= bounds.v[q] -% wideRoomMargin())
         else
             bg2.* == bounds.v[q];
@@ -257,6 +260,57 @@ fn settleRoomCameraX() void {
     }
 }
 const kRoomSettleSpeed = 4;
+/// Widescreen: the camera where a sideways scroll stops, a margin in from the
+/// room's edge if the room's wide, or the 4:3 one's place if not. The scroll
+/// has that place as an x within the 512 pixels of a room; this is the first
+/// x the scroll gets to that has it, give or take the few pixels its steps
+/// can leave it off by. From the scroll's own target, since the same scroll
+/// also takes the camera between two parts of one room.
+fn wideScrollEndX(leftward: bool, cam: u16) u16 {
+    const targets: Tiles = @ptrCast(v.up_down_scroll_target);
+    const t43 = targets[if (leftward) 3 else 2];
+    const m = wideRoomMargin();
+    const want = (if (leftward) t43 -% m else t43 +% m) & 0x1ff;
+    return if (leftward)
+        (cam +% 4) -% (((cam +% 4) -% want) & 0x1ff)
+    else
+        (cam -% 4) +% ((want -% (cam -% 4)) & 0x1ff);
+}
+/// Puts the camera exactly where a sideways scroll into the room stops, the
+/// few pixels its steps fall short, and moves where Link has to be for it to
+/// follow him on by the margin it's gone past the 4:3 one's place, so it
+/// doesn't hold him that far off center.
+fn landWideCamera(leftward: bool) void {
+    if (!overworld.wideCameraOn()) return;
+    const m = wideRoomMargin();
+    // Even into a 4:3 room: a wide room's camera can start the scroll at an
+    // odd x, and the steps keep it odd, 2 pixels off the room's edge.
+    const to = wideScrollEndX(leftward, v.BG2HOFS_copy2.*);
+    v.BG2HOFS_copy2.* = to;
+    v.BG1HOFS_copy2.* = to;
+    const shift: u16 = if (leftward) 0 -% m else m;
+    v.camera_x_coord_scroll_low.* +%= shift;
+    v.camera_x_coord_scroll_hi.* = v.camera_x_coord_scroll_low.* +% 2;
+}
+/// Widescreen: the margins while a room-to-room scroll runs, for
+/// widescreenSideSpace; null when there isn't one to do this for.
+pub fn wideTransitionMargins(max: c_int) ?dungeon_wide.Margins {
+    const i = dungeon_wide.transitionDir() orelse return null;
+    const cam_x: i32 = v.BG2HOFS_copy2.*;
+    const cam_y: i32 = v.BG2VOFS_copy2.*;
+    var end_x = cam_x;
+    var end_y = cam_y;
+    if (i >= 2) {
+        end_x = wideScrollEndX(i == 3, v.BG2HOFS_copy2.*);
+    } else {
+        const targets: Tiles = @ptrCast(v.up_down_scroll_target);
+        end_y = @as(i32, v.dungeon_room_index.* >> 4) * 512 + (targets[i] & 0x1fc);
+    }
+    const qm: usize = v.quadrant_fullsize_x.* >> 1;
+    const end_left: c_int = @max(end_x - @as(i32, v.room_bounds_x.v[qm]), 0);
+    const end_right: c_int = @max(@as(i32, v.room_bounds_x.v[qm + 2]) - end_x, 0);
+    return dungeon_wide.transitionMargins(max, @min(end_left, max), @min(end_right, max), end_x, end_y);
+}
 const kGlideIntoWideRooms = false;
 /// Widescreen: brings the camera to where the 4:3 one would be leaving a
 /// room sideways, at the scroll's speed, before the next room starts loading;
@@ -267,6 +321,8 @@ const kGlideIntoWideRooms = false;
 fn cameraToScrollStart() bool {
     const dir = v.overworld_screen_transition.*;
     if (dir < 2 or !overworld.wideCameraOn()) return true;
+    // Drawn from the room buffers instead, the far half's still there.
+    if (dungeon_wide.enabled()) return true;
     const cam = v.BG2HOFS_copy2.*;
     // Leaving to the right, the 4:3 camera's a screen short of the room's
     // right edge, the next 512 on; to the left, at the room's left edge.
@@ -1056,6 +1112,7 @@ pub export fn Dungeon_AdjustQuadrant() void {
     v.composite_of_layout_and_quadrant.* = @as(u8, @truncate(v.dung_layout_and_starting_quadrant.*)) | v.link_quadrant_y.* | v.link_quadrant_x.*;
 }
 pub export fn Dungeon_HandleCamera() void {
+    dungeon_wide.noteRoomShown();
     scrollCameraAxis(false);
     settleRoomCameraX();
     scrollCameraAxis(true);
@@ -1087,17 +1144,24 @@ pub export fn DungeonTransition_ScrollRoom() void {
     bg2.* = (bg2.* +% delta) & 0xfffe;
     bg1.* = bg2.*;
     const targets: Tiles = @ptrCast(v.up_down_scroll_target);
+    var target = targets[i];
     if (i >= 2 and overworld.wideCameraOn()) {
-        // Widescreen: a wide room's camera can start the scroll a margin
-        // back from the 4:3 one, which makes it longer; Link walks in over
-        // its last stretch, as far as he does from the 4:3 camera, rather
-        // than for the extra steps as well.
-        const step: u16 = if (delta & 0x8000 != 0) 0 -% delta else delta;
+        // Widescreen: into a wide room, the scroll carries on to where its
+        // camera stops, a margin in from the room's edge; dungeon_wide.zig
+        // has the room's far half drawn from its buffers meanwhile. The
+        // steps are 4 pixels, so it stops as close as they get and snaps
+        // the last few. Link walks in over the scroll's last stretch, as far
+        // as he does in the original's, however long the scroll turned out.
+        const negative = delta & 0x8000 != 0;
+        const on = wideRoomMargin() & ~@as(u16, 3);
+        target = (if (negative) target -% on else target +% on) & 0x1fc;
+        const step: u16 = if (negative) 0 -% delta else delta;
         const at = bg2.* & 0x1fc;
-        const left = (if (delta & 0x8000 != 0) at -% targets[i] else targets[i] -% at) & 0x1ff;
+        const left = (if (negative) at -% target else target -% at) & 0x1ff;
         if (left <= 256 - @as(u16, @intCast(t.kStaircaseTab4[i])) * step) coord.* +%= delta;
     } else if (v.transition_counter.* >= t.kStaircaseTab4[i]) coord.* +%= delta;
-    if (bg2.* & 0x1fc == targets[i]) {
+    if (bg2.* & 0x1fc == target) {
+        if (i >= 2) landWideCamera(i == 3);
         SetAndSaveVisitedQuadrantFlags();
         v.subsubmodule_index.* +%= 1;
         v.transition_counter.* = 0;
@@ -7457,7 +7521,9 @@ pub export fn Module07_02_00_InitializeTransition() callconv(.c) void { // 828a4
 }
 
 pub export fn Module07_02_01_LoadNextRoom() callconv(.c) void { // 828a5b
+    dungeon_wide.keepRoomBeingLeft();
     c.Dungeon_LoadRoom();
+    dungeon_wide.noteRoomShown();
     c.ResetStarTileGraphics();
     c.LoadTransAuxGFX_sprite();
     v.subsubmodule_index.* +%= 1;

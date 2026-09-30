@@ -463,7 +463,40 @@ const TileCursor = struct {
     }
 };
 
-fn tilemapPointers(ppu: *Ppu, bglayer: *BgLayer, y: u32) [2][*]const u16 {
+/// A game's own source for background tilemap words, for layers it knows
+/// better than VRAM does. Given a layer and a position in its scrolled
+/// tilemap space (x and y as the PPU walks them, before the tilemap wraps),
+/// it answers the word for the tile there, or null to leave it to VRAM.
+/// Zelda uses it in widescreen to draw two dungeon rooms side by side while
+/// VRAM, 512 pixels of map, holds half of each.
+pub const BgTileSource = *const fn (ppu: *const Ppu, layer: u32, x: u32, y: u32) ?u16;
+pub var g_bg_tile_source: ?BgTileSource = null;
+
+/// Whether `g_bg_tile_source` wants to supply this line of this layer.
+pub var g_bg_tile_source_layers: u8 = 0;
+
+var g_bg_row: [4][64]u16 = undefined;
+
+fn tilemapPointers(ppu: *Ppu, bglayer: *BgLayer, layer: u32, y: u32) [2][*]const u16 {
+    const vram = tilemapPointersVram(ppu, bglayer, y);
+    const src = g_bg_tile_source orelse return vram;
+    if (g_bg_tile_source_layers & (@as(u8, 1) << @intCast(layer)) == 0) return vram;
+    // One row of 64 words, laid out as the PPU walks them: slot k is the
+    // tile whose x in the tilemap is k*8 mod 512. Each is the tile the
+    // source says goes at the x it's drawn at on this line, which is
+    // within 512 pixels of the scroll, as all of a line is.
+    const row = &g_bg_row[layer];
+    const x0: u32 = bglayer.hScroll -% kPpuExtraLeftRight;
+    for (0..64) |i| {
+        const x = x0 +% @as(u32, @intCast(i)) * 8;
+        const k = (x >> 3) & 63;
+        const vram_word = (if (k < 32) vram[0] else vram[1])[k & 31];
+        row[k] = src(ppu, layer, x, y) orelse vram_word;
+    }
+    return .{ @ptrCast(&row[0]), @ptrCast(&row[32]) };
+}
+
+fn tilemapPointersVram(ppu: *Ppu, bglayer: *BgLayer, y: u32) [2][*]const u16 {
     var sc_offs: u32 = @as(u32, bglayer.tilemapAdr) +% (((y >> 3) & 0x1f) << 5);
     if ((y & 0x100) != 0 and bglayer.tilemapHigher)
         sc_offs +%= if (bglayer.tilemapWider) 0x800 else 0x400;
@@ -483,7 +516,7 @@ fn PpuDrawBackground_4bpp(ppu: *Ppu, y_in: u32, sub: u1, layer: u32, zhi: PpuZbu
     if (isScreenWindowed(ppu, sub, layer)) PpuWindows_Calc(&win, ppu, layer) else PpuWindows_Clear(&win, ppu, layer);
     const bglayer = &ppu.bgLayer[layer];
     const y = y_in +% bglayer.vScroll;
-    const tps = tilemapPointers(ppu, bglayer, y);
+    const tps = tilemapPointers(ppu, bglayer, layer, y);
     const tileadr: i32 = bglayer.tileAdr;
     const tileadr1: i32 = tileadr + 7 - @as(i32, @intCast(y & 0x7));
     const tileadr0: i32 = tileadr + @as(i32, @intCast(y & 0x7));
@@ -590,7 +623,7 @@ fn PpuDrawBackground_2bpp(ppu: *Ppu, y_in: u32, sub: u1, layer: u32, zhi: PpuZbu
     if (isScreenWindowed(ppu, sub, layer)) PpuWindows_Calc(&win, ppu, layer) else PpuWindows_Clear(&win, ppu, layer);
     const bglayer = &ppu.bgLayer[layer];
     const y = y_in +% bglayer.vScroll;
-    const tps = tilemapPointers(ppu, bglayer, y);
+    const tps = tilemapPointers(ppu, bglayer, layer, y);
     const tileadr: i32 = bglayer.tileAdr;
     const tileadr1: i32 = tileadr + 7 - @as(i32, @intCast(y & 0x7));
     const tileadr0: i32 = tileadr + @as(i32, @intCast(y & 0x7));
@@ -707,7 +740,7 @@ fn drawBackgroundMosaic(
     if (isScreenWindowed(ppu, sub, layer)) PpuWindows_Calc(&win, ppu, layer) else PpuWindows_Clear(&win, ppu, layer);
     const bglayer = &ppu.bgLayer[layer];
     const y = @as(u32, ppu.mosaicModulo[y_in & 0x1ff]) +% bglayer.vScroll;
-    const tps = tilemapPointers(ppu, bglayer, y);
+    const tps = tilemapPointers(ppu, bglayer, layer, y);
     const tileadr: i32 = bglayer.tileAdr;
     const tileadr1: i32 = tileadr + 7 - @as(i32, @intCast(y & 0x7));
     const tileadr0: i32 = tileadr + @as(i32, @intCast(y & 0x7));
@@ -1496,7 +1529,11 @@ fn ppu_getPixelForBgLayer(ppu: *Ppu, x: c_int, y: c_int, layer: u32, priority: b
     if ((x & tileHighBitX) != 0 and layerp.tilemapWider) tilemapAdr +%= 0x400;
     if ((y & tileHighBitY) != 0 and layerp.tilemapHigher)
         tilemapAdr +%= if (layerp.tilemapWider) 0x800 else 0x400;
-    const tile = ppu.vram[tilemapAdr & 0x7fff];
+    var tile = ppu.vram[tilemapAdr & 0x7fff];
+    if (g_bg_tile_source) |src| {
+        if (!wideTiles and g_bg_tile_source_layers & (@as(u8, 1) << @intCast(layer)) != 0)
+            tile = src(ppu, layer, @bitCast(x), @bitCast(y)) orelse tile;
+    }
     // check priority, get palette
     if (((tile & 0x2000) != 0) != priority) return 0; // wrong priority
     var paletteNum: i32 = (tile & 0x1c00) >> 10;

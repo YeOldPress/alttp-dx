@@ -8,6 +8,8 @@ const vars = @import("variables.zig");
 const config = @import("config.zig");
 const overworld = @import("overworld.zig");
 const load_gfx = @import("load_gfx.zig");
+const dungeon = @import("dungeon.zig");
+const dungeon_wide = @import("dungeon_wide.zig");
 const hud_second_item = @import("hud_second_item.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const features = @import("features.zig");
@@ -329,17 +331,22 @@ pub fn widescreenSideSpace(max: c_int) struct { left: c_int, right: c_int, botto
             const qm = vars.quadrant_fullsize_x.* >> 1;
             extra_left = intMax(@as(c_int, vars.BG2HOFS_copy2.*) - vars.room_bounds_x.v[qm], 0);
             extra_right = intMax(@as(c_int, vars.room_bounds_x.v[qm + 2]) - vars.BG2HOFS_copy2.*, 0);
+            // Between two rooms, with both drawn from their buffers.
+            if (dungeon.wideTransitionMargins(max)) |m| {
+                extra_left = m.left;
+                extra_right = m.right;
+            }
         }
 
         const qy = vars.quadrant_fullsize_y.* >> 1;
         extra_bottom = intMax(@as(c_int, vars.room_bounds_y.v[qy + 2]) - vars.BG2VOFS_copy2.*, 0);
 
-        // Scrolling sideways from one room into the next, from when the next
-        // starts loading until the rest of it has, after the scroll: the map
-        // holds only the half of each on either side of the doorway, 512
-        // pixels between them, and whatever's beyond is the other halves'
-        // leftovers.
-        if (vars.main_module_index.* == 7 and vars.submodule_index.* == 2 and
+        // Scrolling sideways from one room into the next without that (the
+        // widescreen camera's off): the map holds only the half of each on
+        // either side of the doorway, 512 pixels between them, and whatever's
+        // beyond is the other halves' leftovers.
+        if (!dungeon_wide.enabled() and
+            vars.main_module_index.* == 7 and vars.submodule_index.* == 2 and
             vars.overworld_screen_transition.* >= 2 and
             vars.subsubmodule_index.* >= 1 and vars.subsubmodule_index.* <= 11)
         {
@@ -401,6 +408,11 @@ pub export fn ZeldaDrawPpuFrame(pixel_buffer: [*]u8, pitch: usize, render_flags:
     const height: c_int = if (render_flags & kPpuRenderFlags_Height240 != 0) 240 else 224;
 
     // The circle's HDMA goes on whichever channel the game switched on.
+    // Between dungeon rooms in widescreen, the two rooms' tiles.
+    ppu_mod.g_bg_tile_source = dungeon_wide.tileSource;
+    ppu_mod.g_bg_tile_source_layers = if (ppu.extraLeftRight != 0) dungeon_wide.sourceLayers() else 0;
+    defer ppu_mod.g_bg_tile_source_layers = 0;
+
     const spot_chan: ?*const SimpleHdma = if (ppu.extraLeftRight == 0)
         null
     else for (&hdma_chans) |*c| {
