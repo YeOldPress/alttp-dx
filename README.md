@@ -369,8 +369,9 @@ From upstream: widescreen, a sharper world map, pixel shaders, MSU audio, item
 switching with L and R and a second item on X, and optional gameplay tweaks
 and bug fixes under `[Features]` in `zelda3.ini`.
 
-Added here: the start menu, the in-game settings, rumble, a quit option on the
-player select screen, `zelda3-tools`, and randomizer seeds, played in the
+Added here: the start menu, the in-game settings, rumble, a widescreen HUD
+that moves out to the screen's edges (`WidescreenHud` in `[General]`), a quit
+option on the player select screen, `zelda3-tools`, and randomizer seeds, played in the
 emulator the port is checked against, with the item tracker.
 
 ## Questions nobody asked

@@ -110,6 +110,7 @@ pub const kSettings = [_]Setting{
     .{ .section = "General", .key = "Autosave", .label = "Autosave", .kind = .toggle },
     .{ .section = "General", .key = "DisplayPerfInTitle", .label = "Show FPS In Title", .kind = .toggle },
     .{ .section = "General", .key = "ExtendedAspectRatio", .label = "Aspect Ratio", .kind = .{ .choice = .{ .values = &.{ "4:3", "16:9", "16:10", "18:9" } } } },
+    .{ .section = "General", .key = "WidescreenHud", .label = "Widescreen HUD", .kind = .toggle },
     .{ .section = "General", .key = "DisableFrameDelay", .label = "Disable Frame Delay", .kind = .toggle },
     .{ .section = "General", .key = "Rumble", .label = "Rumble", .kind = .{ .number = .{ .min = 0, .max = 100, .step = 10, .suffix = "%" } } },
 

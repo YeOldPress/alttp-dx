@@ -5,6 +5,7 @@
 //! the PPU per scanline, frame stepping, and the save/replay state recorder.
 const std = @import("std");
 const vars = @import("variables.zig");
+const config = @import("config.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const features = @import("features.zig");
 const util = @import("util.zig");
@@ -246,6 +247,30 @@ fn intMax(a: c_int, b: c_int) c_int {
     return if (a > b) a else b;
 }
 
+/// Whether the HUD is on screen, in BG3's tilemap rows 2 to 7: playing in
+/// a dungeon or outdoors, and the interface's states that keep the game
+/// showing behind them - the item menu (whose slide pushes the HUD down the
+/// screen), text, potion refills, the desert prayer, the save menu. The maps
+/// draw their own things there, and the title and file screens have no HUD.
+fn hudOnScreen() bool {
+    return switch (vars.main_module_index.*) {
+        7, 9, 0x0b, 0x0f, 0x10, 0x11, 0x15 => true,
+        0x0e => switch (vars.submodule_index.*) {
+            1, 2, 4, 5, 8, 9, 0x0b => true,
+            else => false,
+        },
+        else => false,
+    };
+}
+
+/// Tells the PPU to spread the HUD out this frame, when that's wanted and
+/// there's a widescreen margin to spread it into.
+fn ConfigureHudSplit(ppu: *const Ppu) void {
+    ppu_mod.g_hud_split = .{};
+    if (!config.g_widescreen_hud or ppu.extraLeftRight == 0 or !hudOnScreen()) return;
+    ppu_mod.g_hud_split = .{ .ppu = ppu, .shift = ppu.extraLeftRight };
+}
+
 fn ConfigurePpuSideSpace() void {
     const s = widescreenSideSpace(kPpuExtraLeftRight);
     ppu_mod.PpuSetExtraSideSpace(zenvPpu(), s.left, s.right, s.bottom);
@@ -319,6 +344,7 @@ pub export fn ZeldaDrawPpuFrame(pixel_buffer: [*]u8, pitch: usize, render_flags:
 
     if (ppu.extraLeftRight != 0 or render_flags & kPpuRenderFlags_Height240 != 0)
         ConfigurePpuSideSpace();
+    ConfigureHudSplit(ppu);
 
     const height: c_int = if (render_flags & kPpuRenderFlags_Height240 != 0) 240 else 224;
 

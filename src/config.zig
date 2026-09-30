@@ -979,8 +979,14 @@ fn handleSound(key: [*:0]const u8, value: [*:0]u8) bool {
     return false;
 }
 
+/// The HUD spread to the edges of a widescreen frame. Kept apart from
+/// g_config, whose layout follows the old C struct.
+pub var g_widescreen_hud: bool = true;
+
 fn handleGeneral(key: [*:0]const u8, value: [*:0]u8) bool {
-    if (util.StringEqualsNoCase(key, "Autosave")) {
+    if (util.StringEqualsNoCase(key, "WidescreenHud")) {
+        return ParseBool(value, &g_widescreen_hud);
+    } else if (util.StringEqualsNoCase(key, "Autosave")) {
         g_config.autosave = strtol(value, null, 10) != 0;
         return true;
     } else if (util.StringEqualsNoCase(key, "ExtendedAspectRatio")) {

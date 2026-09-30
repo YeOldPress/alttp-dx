@@ -978,7 +978,69 @@ fn PpuDrawMode7Upsampled(ppu: *Ppu, y: u32) void {
 //  2: Sprites with priority 0 (4 * sprite_prio + 2)
 //  1: BG3 tiles with priority 0
 //  0: backdrop
+// ------------------------------------------------------------ widescreen HUD
+
+/// The HUD spread out to a widescreen frame's edges. BG3 carries the HUD in
+/// its top rows, and it's only 256 pixels wide, so in widescreen it sits in
+/// the middle with the margins empty on both sides. While this is on for a
+/// PPU, the HUD's lines leave BG3 out of the picture and paint it back on
+/// afterwards split in two: everything left of `split` moved left by
+/// `shift`, the rest moved right by it. The game's own state is never
+/// touched, only the pixels, so nothing about how it plays changes.
+///
+/// It lives here rather than in the Ppu struct, whose layout is pinned, and
+/// names the PPU it's for, so the randomizer's separate console never sees
+/// it. The game turns it on each frame only while the HUD is on screen.
+pub const HudSplit = struct {
+    ppu: ?*const Ppu = null,
+    /// The BG3 lines the HUD covers (tilemap rows 2 to 7), top inclusive,
+    /// bottom exclusive, in the tilemap rather than on screen: the item
+    /// menu scrolls BG3 to slide in from above, and the HUD slides down the
+    /// screen ahead of it, still split. With no scroll, line N is on screen
+    /// row N - 1: the SNES starts drawing at line 1.
+    top: u32 = 16,
+    bottom: u32 = 64,
+    split: i32 = 160,
+    shift: i32 = 0,
+};
+
+pub var g_hud_split: HudSplit = .{};
+
+/// Whether the line being drawn (1-based, as ppu_runLine counts them) is a
+/// HUD line to split.
+fn hudSplitLine(ppu: *const Ppu, line: u32) bool {
+    const s = g_hud_split;
+    if (s.ppu != ppu or s.shift == 0 or ppu.mode != 1) return false;
+    // Sideways scroll means BG3 is showing something other than the HUD.
+    const bg = &ppu.bgLayer[2];
+    if (bg.hScroll != 0) return false;
+    const mask: u32 = if (bg.tilemapHigher) 0x1ff else 0xff;
+    const bg_line = (line +% bg.vScroll) & mask;
+    return bg_line >= s.top and bg_line < s.bottom;
+}
+
+/// Paints the line's BG3 onto the finished line, split and moved out.
+fn drawHudSplit(ppu: *Ppu, y: u32, dst_org: [*]u8) void {
+    const s = g_hud_split;
+    clearBackdrop(&ppu.bgBuffers[0]);
+    PpuDrawBackground_2bpp(ppu, y, 0, 2, 0xf200, 0x1200);
+    const width: i32 = 256 + 2 * @as(i32, ppu.extraLeftRight);
+    var x: i32 = 0;
+    while (x < 256) : (x += 1) {
+        const v = ppu.bgBuffers[0].data[bufIndex(@intCast(x))];
+        if (v & 0xff == 0) continue; // see-through
+        const color: u32 = ppu.cgram[v & 0xff];
+        const out = x + @as(i32, ppu.extraLeftRight) + (if (x < s.split) -s.shift else s.shift);
+        if (out < 0 or out >= width) continue;
+        writePixel32(dst_org + @as(usize, @intCast(out)) * 4, @as(u32, ppu.brightnessMult[color & 0x1f]) << 16 |
+            @as(u32, ppu.brightnessMult[(color >> 5) & 0x1f]) << 8 |
+            ppu.brightnessMult[(color >> 10) & 0x1f]);
+    }
+}
+
 fn PpuDrawBackgrounds(ppu: *Ppu, y: u32, sub: u1) void {
+    // On a HUD line being split, BG3 is painted on at the end instead.
+    const skip_bg3 = hudSplitLine(ppu, y);
     if (ppu.mode == 1) {
         if (ppu.lineHasSprites)
             PpuDrawSprites(ppu, y, sub, true);
@@ -993,7 +1055,7 @@ fn PpuDrawBackgrounds(ppu: *Ppu, y: u32, sub: u1) void {
         else
             PpuDrawBackground_4bpp(ppu, y, sub, 1, 0xb100, 0x7100);
 
-        if (isMosaicEnabled(ppu, 2))
+        if (skip_bg3) {} else if (isMosaicEnabled(ppu, 2))
             drawBackgroundMosaic(ppu, 2, y, sub, 2, 0xf200, 0x1200)
         else
             PpuDrawBackground_2bpp(ppu, y, sub, 2, 0xf200, 0x1200);
@@ -1123,6 +1185,10 @@ fn PpuDrawWholeLine(ppu: *Ppu, y: u32) void {
         const off = (256 + @as(usize, ppu.extraLeftRight) * 2 - @as(usize, ppu.extraLeftRight - ppu.extraRightCur)) * 4;
         @memset((dst_org + off)[0 .. 4 * @as(usize, ppu.extraLeftRight - ppu.extraRightCur)], 0);
     }
+
+    // Last, after the sides are blanked, so the HUD holds its place at the
+    // edges however much of the room there is to show beside it.
+    if (hudSplitLine(ppu, y)) drawHudSplit(ppu, y, dst_org);
 }
 
 fn ppu_handlePixel(ppu: *Ppu, x: c_int, y: c_int) void {
@@ -1938,6 +2004,37 @@ test "brightness set partway down the frame applies to the lines after it" {
     ppu_write(ppu, 0x00, 0x0f);
     ppu_runLine(ppu, 1);
     try testing.expectEqual(@as(u8, 255), ppu.brightnessMult[31]);
+}
+
+test "the HUD split covers the HUD's lines, on its own PPU, with BG3 still" {
+    const ppu = try testPpu();
+    defer testing.allocator.destroy(ppu);
+    const other = try testPpu();
+    defer testing.allocator.destroy(other);
+    ppu.mode = 1;
+    other.mode = 1;
+    defer g_hud_split = .{};
+
+    g_hud_split = .{ .ppu = ppu, .shift = 71 };
+    try testing.expect(!hudSplitLine(ppu, 15));
+    try testing.expect(hudSplitLine(ppu, 16));
+    try testing.expect(hudSplitLine(ppu, 63));
+    try testing.expect(!hudSplitLine(ppu, 64));
+    // Another console - the randomizer's - is left alone.
+    try testing.expect(!hudSplitLine(other, 20));
+    // Scrolled, the split follows the HUD down the screen - the item menu
+    // sliding in from above - and skips what's taken its place.
+    ppu.bgLayer[2].vScroll = @bitCast(@as(i16, -40));
+    try testing.expect(!hudSplitLine(ppu, 20));
+    try testing.expect(hudSplitLine(ppu, 60));
+    ppu.bgLayer[2].vScroll = 0;
+    // Scrolled sideways, BG3 is showing something else.
+    ppu.bgLayer[2].hScroll = 8;
+    try testing.expect(!hudSplitLine(ppu, 20));
+    ppu.bgLayer[2].hScroll = 0;
+    // No margin to move into, no split.
+    g_hud_split.shift = 0;
+    try testing.expect(!hudSplitLine(ppu, 20));
 }
 
 test "the render scale is 4x only for upsampled mode 7" {
