@@ -73,7 +73,8 @@ The same flags with `-Dtarget=x86_64-windows` cross-compile from Linux or macOS.
 
 ## The start menu
 
-`zelda3` opens on a menu for settings, features and building the asset file.
+`zelda3` opens on a menu for settings, features, controls and building the
+asset file.
 Press Play and the game starts in the same window. It also shows whether the
 asset file is verified, different or missing, and won't start the game on
 assets it can't verify.
@@ -81,6 +82,11 @@ assets it can't verify.
 Turn it off with `StartMenu = 0` in `[General]`, from the menu itself, or from
 the settings inside the game. Arrows or the pad to move, Enter or A to pick,
 S or X to save, Esc or B to go back.
+
+**Controls** maps the SNES pad's buttons before the game even starts, the
+same way the Controls tab does inside the game (below): a big drawing of the
+pad, each button's key and controller button, A on a row and then any key or
+pad button to change it, and **Reset all to defaults**.
 
 ## Settings inside the game
 
@@ -106,6 +112,16 @@ graphics.
 L/R changes tab, Up/Down picks, Left/Right or A changes, Y explains, B or
 Start saves and goes back. Most settings apply right away; the ones that can't
 say "Applies next start".
+
+The last tab, **Controls** (the Power Glove), maps the SNES pad's buttons, with
+a drawing of the pad that lights up the one you're on. Each row shows its key
+and its controller button. Press A on one, then press any key or pad button
+to give it that: whichever you press, keyboard or controller, is the one that
+changes. Taking one another button already has swaps the two, so nothing is
+left without; keys that already do something else (fullscreen, snapshots,
+cheats) are refused. Esc, or five seconds, backs out, and **Reset all to
+defaults** puts both back. Changes work straight away and are saved to
+`Controls` in `[KeyMap]` and `[GamepadMap]`.
 
 ## Rumble
 
