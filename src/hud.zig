@@ -1200,8 +1200,14 @@ fn Hud_Update_Inventory() void { // 8dfc09
 
     if (vars.link_item_bow.* != 0) {
         if (vars.link_item_bow.* >= 3) {
-            at(hudbuf(), HUDXY(15, 0)).* = 0x2486;
-            at(hudbuf(), HUDXY(16, 0)).* = 0x2487;
+            // Silver arrows swap the arrow icon for their own. It has to
+            // move with the row: with four rupee digits (Carry More Rupees
+            // and 1000 or more) everything above shifts a tile right, and a
+            // silver arrow left where the row used to be landed a tile short,
+            // with the plain arrow's tip still showing beside it.
+            const col: i32 = 16 - @as(i32, @intCast(inv_offs));
+            at(hudbuf(), HUDXY(col, 0)).* = 0x2486;
+            at(hudbuf(), HUDXY(col + 1, 0)).* = 0x2487;
             vars.link_item_bow.* = if (vars.link_num_arrows.* != 0) 4 else 3;
         } else {
             vars.link_item_bow.* = if (vars.link_num_arrows.* != 0) 2 else 1;
@@ -1446,4 +1452,23 @@ test "the PV macro interleaves the two bitplanes" {
     try testing.expectEqual(@as(u16, 0x01ff), PV(.{ 1, 1, 1, 1, 1, 1, 1, 3 }));
     try testing.expectEqual(8, kBytesForNewTile0xC_TopOfR.len);
     try testing.expectEqual(8, kBytesForNewTile0xF_BottomofL.len);
+}
+
+test "the silver arrow sits where the arrow is, three rupee digits or four" {
+    defer @memset(g_ram[0..0x20000], 0);
+    for ([_]struct { rupees: u16, col: i32 }{
+        .{ .rupees = 500, .col = 15 }, // the original game's layout
+        .{ .rupees = 1500, .col = 16 }, // four digits shift the row a tile
+    }) |case| {
+        @memset(g_ram[0..0x20000], 0);
+        vars.link_rupees_actual.* = case.rupees;
+        vars.link_item_bow.* = 3;
+        vars.link_num_arrows.* = 10;
+        Hud_Update_Inventory();
+        try testing.expectEqual(@as(u16, 0x2486), at(hudbuf(), HUDXY(case.col, 0)).*);
+        try testing.expectEqual(@as(u16, 0x2487), at(hudbuf(), HUDXY(case.col + 1, 0)).*);
+        // Nothing of the plain arrow is left beside it.
+        const after = at(hudbuf(), HUDXY(case.col + 2, 0)).*;
+        try testing.expect(after != 0x20a7 and after != 0x20a9);
+    }
 }
