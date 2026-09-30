@@ -472,18 +472,34 @@ fn Hud_EquipItemBelow(item: *u8) void { // 8ddf00
     }
 }
 
+/// Which item button is held: 1 for X when the second item is on, 2 and 3
+/// for L and R when item switching is. 0 for none, meaning Y.
 pub export fn GetCurrentItemButtonIndex() callconv(.c) c_int {
-    if (features.enhanced_features0.* & features.kFeatures0_SwitchLR != 0) {
-        return if (vars.joypad1L_last.* & kJoypadL_X != 0)
-            1
-        else if (vars.joypad1L_last.* & kJoypadL_L != 0)
-            2
-        else if (vars.joypad1L_last.* & kJoypadL_R != 0)
-            3
-        else
-            0;
+    const f = features.enhanced_features0.*;
+    if (f & features.kFeatures0_ItemOnX != 0 and vars.joypad1L_last.* & kJoypadL_X != 0) return 1;
+    if (f & features.kFeatures0_SwitchLR != 0) {
+        // L and R together are the map, not whichever item L has.
+        if (hasItemOnX() and holdingLAndR()) return 0;
+        if (vars.joypad1L_last.* & kJoypadL_L != 0) return 2;
+        if (vars.joypad1L_last.* & kJoypadL_R != 0) return 3;
     }
     return 0;
+}
+
+fn holdingLAndR() bool {
+    return vars.joypad1L_last.* & (kJoypadL_L | kJoypadL_R) == kJoypadL_L | kJoypadL_R;
+}
+
+/// L and R together, the map's button while X holds a second item: both
+/// held, with one of them pressed just now, so holding them opens it once.
+pub fn pressedLAndR() bool {
+    return holdingLAndR() and vars.filtered_joypad_L.* & (kJoypadL_L | kJoypadL_R) != 0;
+}
+
+/// Whether X holds a second item right now: the feature is on and something
+/// is assigned. The map moves to L and R together while it does.
+pub fn hasItemOnX() bool {
+    return features.enhanced_features0.* & features.kFeatures0_ItemOnX != 0 and features.hud_cur_item_x.* != 0;
 }
 
 pub export fn GetCurrentItemButtonPtr(i: c_int) callconv(.c) *u8 {
@@ -797,6 +813,12 @@ pub export fn Hud_SearchForEquippedItem() callconv(.c) void { // 8de399
         if (!Hud_DoWeHaveThisItem(vars.hud_cur_item.*))
             Hud_EquipNextItem(vars.hud_cur_item);
     }
+}
+
+/// The four tile words of an item's icon, as the item box shows it - bottle
+/// contents, flute or shovel and all. For the second item's box.
+pub fn iconForItem(i: i32) [4]u16 {
+    return Hud_GetIconForItem(i).v;
 }
 
 fn Hud_GetIconForItem(i: i32) *const ItemBoxGfx {
@@ -1269,6 +1291,9 @@ pub export fn Hud_GetItemBoxPtr(item: c_int) callconv(.c) [*]const u16 {
 pub export fn Hud_HandleItemSwitchInputs() callconv(.c) void {
     if (features.enhanced_features0.* & features.kFeatures0_SwitchLR == 0)
         return;
+    // L and R together open the map; they don't also switch items.
+    if (hasItemOnX() and holdingLAndR())
+        return;
 
     var direction: bool = undefined;
 
@@ -1471,4 +1496,38 @@ test "the silver arrow sits where the arrow is, three rupee digits or four" {
         const after = at(hudbuf(), HUDXY(case.col + 2, 0)).*;
         try testing.expect(after != 0x20a7 and after != 0x20a9);
     }
+}
+
+test "with a second item on X, the map is L and R together" {
+    defer @memset(g_ram[0..0x20000], 0);
+    @memset(g_ram[0..0x20000], 0);
+    features.enhanced_features0.* = features.kFeatures0_ItemOnX | features.kFeatures0_SwitchLR;
+    defer features.enhanced_features0.* = 0;
+
+    // Nothing on X yet: X stays the map.
+    try testing.expect(!hasItemOnX());
+    features.hud_cur_item_x.* = 3;
+    try testing.expect(hasItemOnX());
+
+    // Both held, one just pressed: the map, once.
+    vars.joypad1L_last.* = kJoypadL_L | kJoypadL_R;
+    vars.filtered_joypad_L.* = kJoypadL_R;
+    try testing.expect(pressedLAndR());
+    vars.filtered_joypad_L.* = 0;
+    try testing.expect(!pressedLAndR());
+    // One alone isn't it.
+    vars.joypad1L_last.* = kJoypadL_L;
+    vars.filtered_joypad_L.* = kJoypadL_L;
+    try testing.expect(!pressedLAndR());
+
+    // Holding both doesn't reach for whatever item L has.
+    vars.joypad1L_last.* = kJoypadL_L | kJoypadL_R;
+    try testing.expectEqual(@as(c_int, 0), GetCurrentItemButtonIndex());
+    // X still means X's item.
+    vars.joypad1L_last.* = kJoypadL_X;
+    try testing.expectEqual(@as(c_int, 1), GetCurrentItemButtonIndex());
+    // With the feature off, X isn't an item button at all.
+    features.enhanced_features0.* = features.kFeatures0_SwitchLR;
+    try testing.expectEqual(@as(c_int, 0), GetCurrentItemButtonIndex());
+    try testing.expect(!hasItemOnX());
 }

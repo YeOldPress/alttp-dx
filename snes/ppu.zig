@@ -657,6 +657,7 @@ fn PpuDrawBackground_2bpp(ppu: *Ppu, y_in: u32, sub: u1, layer: u32, zhi: PpuZbu
             }
         }
     }
+    if (layer == 2) drawHudExtra(ppu, y_in, sub, &win, zhi, zlo);
 }
 
 /// Draw a whole line of a background layer into bgBuffers, with mosaic applied.
@@ -1002,9 +1003,107 @@ pub const HudSplit = struct {
     bottom: u32 = 64,
     split: i32 = 160,
     shift: i32 = 0,
+    /// Room made inside the left half: from `gap_at` to `split` moves
+    /// `gap` pixels less far left, so something can sit between. The second
+    /// item's box goes there, between the item box and the counters.
+    gap_at: i32 = 64,
+    gap: i32 = 0,
 };
 
 pub var g_hud_split: HudSplit = .{};
+
+/// Extra BG3 tiles the game adds to the HUD, placed to the pixel rather than
+/// on the tilemap's grid: the second item's box. Drawn as part of BG3, with
+/// its priority, windows and scroll, so everything that hides or dims the HUD
+/// - fades, the closing circle, windows, brightness - does the same to them.
+/// `y` is the BG3 line of the tile's top; `x` is the screen x, or with
+/// `beside`, where it goes in a split HUD's frame, left of the counters.
+pub const HudTile = struct { x: i16, y: i16, word: u16, beside: bool = false };
+
+pub const HudExtra = struct {
+    ppu: ?*const Ppu = null,
+    tiles: [32]HudTile = undefined,
+    n: usize = 0,
+
+    pub fn add(self: *HudExtra, t: HudTile) void {
+        if (self.n < self.tiles.len) {
+            self.tiles[self.n] = t;
+            self.n += 1;
+        }
+    }
+};
+
+pub var g_hud_extra: HudExtra = .{};
+
+/// One of an extra tile's pixels on a BG3 line, as a z-buffer value (its
+/// priority, palette and color), or null where it's see-through.
+fn hudTilePixel(ppu: *Ppu, t: HudTile, bg_line: u32, col: u32, zhi: PpuZbufType, zlo: PpuZbufType) ?PpuZbufType {
+    const r: i32 = @as(i32, @intCast(bg_line)) - t.y;
+    if (r < 0 or r > 7) return null;
+    const row: i32 = if (t.word & 0x8000 != 0) 7 - r else r;
+    const bits = read2bppBits(ppu, @as(i32, ppu.bgLayer[2].tileAdr) + row, t.word & 0x3ff);
+    const i: u5 = @intCast(if (t.word & 0x4000 != 0) col else 7 - col);
+    const pixel = ((bits >> i) & 1) | ((bits >> (7 + i)) & 2);
+    if (pixel == 0) return null;
+    const z: PpuZbufType = (if (t.word & 0x2000 != 0) zhi else zlo) +% @as(PpuZbufType, @truncate((t.word & 0x1c00) >> 8));
+    return z +% @as(PpuZbufType, @truncate(pixel));
+}
+
+/// Whether BG3's windows let it show at screen x.
+fn bg3WindowAllows(win: *const PpuWindows, x: i32) bool {
+    var i: u32 = 0;
+    while (i < win.nr) : (i += 1) {
+        if (x >= win.edges[i] and x < win.edges[i + 1]) return win.bits & (@as(u32, 1) << @intCast(i)) == 0;
+    }
+    return false;
+}
+
+fn hudBgLine(ppu: *const Ppu, line: u32) u32 {
+    const bg = &ppu.bgLayer[2];
+    const mask: u32 = if (bg.tilemapHigher) 0x1ff else 0xff;
+    return (line +% bg.vScroll) & mask;
+}
+
+/// The extra tiles in place on the tilemap's grid, drawn into BG3's line
+/// with everything else of BG3's.
+fn drawHudExtra(ppu: *Ppu, line: u32, sub: u1, win: *const PpuWindows, zhi: PpuZbufType, zlo: PpuZbufType) void {
+    const e = &g_hud_extra;
+    if (e.ppu != ppu or e.n == 0 or ppu.bgLayer[2].hScroll != 0) return;
+    const bg_line = hudBgLine(ppu, line);
+    for (e.tiles[0..e.n]) |t| {
+        if (t.beside) continue;
+        for (0..8) |c| {
+            const x: i32 = t.x + @as(i32, @intCast(c));
+            if (x < 0 or x >= 256 or !bg3WindowAllows(win, x)) continue;
+            const v = hudTilePixel(ppu, t, bg_line, @intCast(c), zhi, zlo) orelse continue;
+            const dst = &ppu.bgBuffers[sub].data[bufIndex(@intCast(x))];
+            if (v & 0xff00 >= dst.* & 0xff00) dst.* = v;
+        }
+    }
+}
+
+/// The extra tiles that go beside the item box in a split HUD, painted
+/// straight onto the finished line in the frame's own coordinates.
+fn drawHudExtraBeside(ppu: *Ppu, line: u32, dst_org: [*]u8) void {
+    const e = &g_hud_extra;
+    if (e.ppu != ppu or e.n == 0 or !isScreenEnabled(ppu, 0, 2)) return;
+    var win: PpuWindows = undefined;
+    if (isScreenWindowed(ppu, 0, 2)) PpuWindows_Calc(&win, ppu, 2) else PpuWindows_Clear(&win, ppu, 2);
+    const bg_line = hudBgLine(ppu, line);
+    const width: i32 = 256 + 2 * @as(i32, ppu.extraLeftRight);
+    for (e.tiles[0..e.n]) |t| {
+        if (!t.beside) continue;
+        for (0..8) |c| {
+            const x: i32 = t.x + @as(i32, @intCast(c));
+            if (x < 0 or x >= width or !bg3WindowAllows(&win, std.math.clamp(x, 0, 255))) continue;
+            const v = hudTilePixel(ppu, t, bg_line, @intCast(c), 0xf200, 0x1200) orelse continue;
+            const color: u32 = ppu.cgram[v & 0xff];
+            writePixel32(dst_org + @as(usize, @intCast(x)) * 4, @as(u32, ppu.brightnessMult[color & 0x1f]) << 16 |
+                @as(u32, ppu.brightnessMult[(color >> 5) & 0x1f]) << 8 |
+                ppu.brightnessMult[(color >> 10) & 0x1f]);
+        }
+    }
+}
 
 /// Whether the line being drawn (1-based, as ppu_runLine counts them) is a
 /// HUD line to split.
@@ -1030,12 +1129,14 @@ fn drawHudSplit(ppu: *Ppu, y: u32, dst_org: [*]u8) void {
         const v = ppu.bgBuffers[0].data[bufIndex(@intCast(x))];
         if (v & 0xff == 0) continue; // see-through
         const color: u32 = ppu.cgram[v & 0xff];
-        const out = x + @as(i32, ppu.extraLeftRight) + (if (x < s.split) -s.shift else s.shift);
+        const move = if (x >= s.split) s.shift else if (x >= s.gap_at) s.gap - s.shift else -s.shift;
+        const out = x + @as(i32, ppu.extraLeftRight) + move;
         if (out < 0 or out >= width) continue;
         writePixel32(dst_org + @as(usize, @intCast(out)) * 4, @as(u32, ppu.brightnessMult[color & 0x1f]) << 16 |
             @as(u32, ppu.brightnessMult[(color >> 5) & 0x1f]) << 8 |
             ppu.brightnessMult[(color >> 10) & 0x1f]);
     }
+    drawHudExtraBeside(ppu, y, dst_org);
 }
 
 fn PpuDrawBackgrounds(ppu: *Ppu, y: u32, sub: u1) void {

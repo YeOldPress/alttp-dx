@@ -1203,12 +1203,9 @@ pub export fn WorldMap_Brighten() callconv(.c) void {
         vars.overworld_map_state.* +%= 1;
 }
 
+/// The map button: X, or with a second item on X, L and R together.
 pub export fn DidPressButtonForMap() callconv(.c) bool {
-    if (features.hud_cur_item_x.* != 0) {
-        return vars.filtered_joypad_H.* & 0x20 != 0; // select
-    } else {
-        return vars.filtered_joypad_L.* & 0x40 != 0; // x
-    }
+    return if (hud.hasItemOnX()) hud.pressedLAndR() else vars.filtered_joypad_L.* & 0x40 != 0; // x
 }
 
 pub export fn WorldMap_PlayerControl() callconv(.c) void {
@@ -1834,11 +1831,7 @@ pub export fn DungeonMap_HandleInputAndSprites() callconv(.c) void {
 
 /// A static inline in the C.
 fn WantExitDungeonMap() bool {
-    if (features.hud_cur_item_x.* != 0) {
-        return vars.filtered_joypad_H.* & 0x20 != 0; // Select
-    } else {
-        return vars.filtered_joypad_L.* & 0x40 != 0; // X
-    }
+    return if (hud.hasItemOnX()) hud.pressedLAndR() else vars.filtered_joypad_L.* & 0x40 != 0; // X
 }
 
 pub export fn DungeonMap_HandleInput() callconv(.c) void {

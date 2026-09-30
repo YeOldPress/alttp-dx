@@ -152,6 +152,7 @@ pub const kSettings = [_]Setting{
 
     .{ .section = kSectionMark, .key = "", .label = "FEATURES", .kind = .text },
     .{ .section = "Features", .key = "ItemSwitchLR", .label = "Switch Items With L/R", .kind = .toggle },
+    .{ .section = "Features", .key = "ItemOnX", .label = "Second Item On X", .kind = .toggle },
     .{ .section = "Features", .key = "TurnWhileDashing", .label = "Turn While Dashing", .kind = .toggle },
     .{ .section = "Features", .key = "MirrorToDarkworld", .label = "Mirror To Dark World", .kind = .toggle },
     .{ .section = "Features", .key = "CollectItemsWithSword", .label = "Collect With Sword", .kind = .toggle },
@@ -350,6 +351,14 @@ pub const Ini = struct {
         for (kSettings, 0..) |s, si| {
             if (self.line_of[si] != null or isSection(s)) continue;
             if (defaultEntry(s.section, s.key)) |d| self.values[si] = try alloc.dupe(u8, d.value);
+        }
+        // A file from before ItemOnX had the second item as part of
+        // ItemSwitchLR, and the game still reads it that way, so show that.
+        const x = settingIndex("Features", "ItemOnX").?;
+        const lr = settingIndex("Features", "ItemSwitchLR").?;
+        if (self.line_of[x] == null and self.values[lr] != null) {
+            if (self.values[x]) |old| alloc.free(old);
+            self.values[x] = try alloc.dupe(u8, self.values[lr].?);
         }
         return self;
     }

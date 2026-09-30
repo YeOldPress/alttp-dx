@@ -109,6 +109,11 @@ const kFeatures0_CancelBirdTravel: u32 = 8192;
 const kFeatures0_GameChangingBugFixes: u32 = 16384;
 const kFeatures0_SwitchLRLimit: u32 = 32768;
 const kFeatures0_DimFlashes: u32 = 65536;
+const kFeatures0_ItemOnX: u32 = 131072;
+/// Whether zelda3.ini said anything about ItemOnX. Files from before it
+/// existed had the second item on X as part of ItemSwitchLR, so without a
+/// say of its own it follows that.
+var g_item_on_x_set = false;
 
 /// Must match `typedef struct Config` in config.h field for field.
 pub const Config = extern struct {
@@ -1042,6 +1047,7 @@ fn handleFeatures(key: [*:0]const u8, value: [*:0]u8) bool {
     const bits = .{
         .{ "ItemSwitchLR", kFeatures0_SwitchLR },
         .{ "ItemSwitchLRLimit", kFeatures0_SwitchLRLimit },
+        .{ "ItemOnX", kFeatures0_ItemOnX },
         .{ "TurnWhileDashing", kFeatures0_TurnWhileDashing },
         .{ "MirrorToDarkworld", kFeatures0_MirrorToDarkworld },
         .{ "CollectItemsWithSword", kFeatures0_CollectItemsWithSword },
@@ -1055,6 +1061,7 @@ fn handleFeatures(key: [*:0]const u8, value: [*:0]u8) bool {
         .{ "GameChangingBugFixes", kFeatures0_GameChangingBugFixes },
         .{ "CancelBirdTravel", kFeatures0_CancelBirdTravel },
     };
+    if (util.StringEqualsNoCase(key, "ItemOnX")) g_item_on_x_set = true;
     inline for (bits) |bit| {
         if (util.StringEqualsNoCase(key, bit[0]))
             return parseBoolBit(value, &g_config.features0, bit[1]);
@@ -1109,6 +1116,8 @@ export fn ParseConfigFile(filename_in: ?[*:0]const u8) callconv(.c) void {
             std.debug.print("Warning: Unable to read config file {s}\n", .{std.mem.span(filename.?)});
     }
     registerDefaultKeys();
+    if (!g_item_on_x_set and g_config.features0 & kFeatures0_SwitchLR != 0)
+        g_config.features0 |= kFeatures0_ItemOnX;
 }
 
 const testing = std.testing;

@@ -6,6 +6,7 @@
 const std = @import("std");
 const vars = @import("variables.zig");
 const config = @import("config.zig");
+const hud_second_item = @import("hud_second_item.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const features = @import("features.zig");
 const util = @import("util.zig");
@@ -252,7 +253,7 @@ fn intMax(a: c_int, b: c_int) c_int {
 /// showing behind them - the item menu (whose slide pushes the HUD down the
 /// screen), text, potion refills, the desert prayer, the save menu. The maps
 /// draw their own things there, and the title and file screens have no HUD.
-fn hudOnScreen() bool {
+pub fn hudOnScreen() bool {
     return switch (vars.main_module_index.*) {
         7, 9, 0x0b, 0x0f, 0x10, 0x11, 0x15 => true,
         0x0e => switch (vars.submodule_index.*) {
@@ -267,8 +268,12 @@ fn hudOnScreen() bool {
 /// there's a widescreen margin to spread it into.
 fn ConfigureHudSplit(ppu: *const Ppu) void {
     ppu_mod.g_hud_split = .{};
+    defer hud_second_item.configure(ppu, ppu_mod.g_hud_split.shift != 0);
     if (!config.g_widescreen_hud or ppu.extraLeftRight == 0 or !hudOnScreen()) return;
     ppu_mod.g_hud_split = .{ .ppu = ppu, .shift = ppu.extraLeftRight };
+    // With a second item on X, its box goes beside the item box, and the
+    // counters step aside for it.
+    if (hud_second_item.shown()) ppu_mod.g_hud_split.gap = hud_second_item.kBesideGap;
 }
 
 fn ConfigurePpuSideSpace() void {

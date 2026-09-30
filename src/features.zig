@@ -38,6 +38,10 @@ pub const kFeatures0_CancelBirdTravel: u32 = 8192;
 pub const kFeatures0_GameChangingBugFixes: u32 = 16384;
 pub const kFeatures0_SwitchLRLimit: u32 = 32768;
 pub const kFeatures0_DimFlashes: u32 = 65536;
+/// A second item on X: held on an item in the item menu, X takes it, and in
+/// play X uses it (the map moves to L and R together once X has one). Split out of
+/// SwitchLR, which used to switch it on along with L and R.
+pub const kFeatures0_ItemOnX: u32 = 131072;
 
 pub const enhanced_features0: *align(1) u32 = @ptrCast(&g_ram[0x64c]);
 pub const msu_curr_sample: *align(1) u32 = @ptrCast(&g_ram[0x650]);
@@ -72,7 +76,7 @@ test "the feature bits are distinct single bits" {
         kFeatures0_WidescreenVisualFixes, kFeatures0_CarryMoreRupees,
         kFeatures0_MiscBugFixes,          kFeatures0_CancelBirdTravel,
         kFeatures0_GameChangingBugFixes,  kFeatures0_SwitchLRLimit,
-        kFeatures0_DimFlashes,
+        kFeatures0_DimFlashes,            kFeatures0_ItemOnX,
     };
     var seen: u32 = 0;
     for (all) |bit| {

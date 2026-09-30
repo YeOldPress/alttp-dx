@@ -53,6 +53,7 @@ comptime {
     _ = @import("src/seed_info.zig");
     _ = @import("src/pad_art.zig");
     _ = @import("src/controls.zig");
+    _ = @import("src/hud_second_item.zig");
 
     if (builtin.is_test) {
         if (@import("build_options").ancilla_parity) _ = @import("tests/ancilla_parity.zig");

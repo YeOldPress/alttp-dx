@@ -369,6 +369,13 @@ From upstream: widescreen, a sharper world map, pixel shaders, MSU audio, item
 switching with L and R and a second item on X, and optional gameplay tweaks
 and bug fixes under `[Features]` in `zelda3.ini`.
 
+The second item on X is its own setting here, **Second Item On X** in
+Features (`ItemOnX`), apart from L and R switching. Hold X on an item in the
+item menu to put it there and press X to use it; while X has one, L and R
+pressed together open the map (and close it again), and Select is left to the
+save menu. A second box in the HUD shows it: under the item box, or
+beside it when the HUD is spread out for widescreen.
+
 Added here: the start menu, the in-game settings, rumble, a widescreen HUD
 that moves out to the screen's edges (`WidescreenHud` in `[General]`), a quit
 option on the player select screen, `zelda3-tools`, and randomizer seeds, played in the
