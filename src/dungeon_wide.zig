@@ -254,7 +254,12 @@ pub fn noteTransitionStart(dir: u8) void {
 /// The margins during a transition, given the room being entered's rules at
 /// where the camera will stop: see the top of the file.
 pub fn transitionMargins(max: c_int, end_left: c_int, end_right: c_int, end_cam_x: i32, end_cam_y: i32) ?Margins {
-    if (!(vars.main_module_index.* == 7 and vars.submodule_index.* == 2)) return null;
+    if (vars.main_module_index.* != 7) return null;
+    // Between two parts of one room too (submodule 1): the whole room's in
+    // VRAM then, so there's nothing to draw from here, but the margins still
+    // go from what they were to what they'll be a step at a time.
+    const within_room = vars.submodule_index.* == 1;
+    if (!within_room and vars.submodule_index.* != 2) return null;
     const s = g_start orelse return null;
     const cap = struct {
         fn f(v: i32, m: c_int) c_int {
@@ -263,13 +268,13 @@ pub fn transitionMargins(max: c_int, end_left: c_int, end_right: c_int, end_cam_
     }.f;
     // Until the next room's in its buffers, the room being left is all
     // there is, and its margins stay as they were.
-    if (sourceLayers() == 0) {
+    if (!within_room and sourceLayers() == 0) {
         // Not yet: the room being left is still the one in the buffers.
         if (vars.subsubmodule_index.* >= 2) return null;
         return .{ .left = cap(s.left, max), .right = cap(s.right, max) };
     }
-    const po = prevOrigin() orelse return null;
-    const co = g_shown orelse return null;
+    const po = if (within_room) cameraRoom() else prevOrigin() orelse return null;
+    const co = if (within_room) cameraRoom() else g_shown orelse return null;
     const cam_x: i32 = vars.BG2HOFS_copy2.*;
     const cam_y: i32 = vars.BG2VOFS_copy2.*;
     // How far along the scroll is, along its own axis only: a teleport door

@@ -304,8 +304,9 @@ pub fn widescreenSideSpace(max: c_int) struct { left: c_int, right: c_int, botto
     if (spotlight)
         mod = if (vars.player_is_indoors.* != 0) 7 else 9;
     // The special overworld areas (Zora's Domain, the Master Sword's grove
-    // and the rest) are the overworld, run by a module of their own.
-    if (mod == 11)
+    // and the rest) are the overworld, run by a module of their own, and so
+    // is the warp to the pyramid after Agahnim, once it's landed outside.
+    if (mod == 11 or (mod == 21 and vars.player_is_indoors.* == 0))
         mod = 9;
     if (mod == 9) {
         if (vars.main_module_index.* == 14 and vars.submodule_index.* == 7 and vars.overworld_map_state.* >= 4) {

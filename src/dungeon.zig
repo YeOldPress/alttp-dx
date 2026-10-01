@@ -261,15 +261,19 @@ fn settleRoomCameraX() void {
 }
 const kRoomSettleSpeed = 4;
 /// Out of (or into) a dark room, the screen fades out before the scroll and
-/// back in after it, the scroll itself in the dark. Widescreen: the fade
-/// back in starts over the scroll's second half instead, a step every other
-/// frame, so the room's coming up as it slides in. It stops short, at
+/// back in after it, the scroll itself in the dark. Widescreen, out of a
+/// dark room into a lit one: the fade back in starts over the scroll's
+/// second half instead, a step every other frame, so the room's coming up
+/// as it slides in. It stops short, at
 /// kFadeInLeftAfterScroll steps to go: the steps after the scroll take a few
 /// more on the way, and the last of them, finishing the fade, has to come at
 /// the fade the game saved it for, which moves on to the next step.
 fn fadeInDuringScroll(at: u16, target: u16, delta: u16) void {
     if (!dungeon_wide.enabled()) return;
     if (v.dung_want_lights_out.* | v.dung_want_lights_out_copy.* == 0) return;
+    // Only into a lit room: in a dark one there's nothing to see till the
+    // lantern's light goes up after the scroll, and the fade's for that.
+    if (v.dung_want_lights_out.* != 0) return;
     if (v.darkening_or_lightening_screen.* != 2) return; // fading in is next
     const countdown = low(v.palette_filter_countdown).*;
     if (countdown <= kFadeInLeftAfterScroll) return;
@@ -280,7 +284,20 @@ fn fadeInDuringScroll(at: u16, target: u16, delta: u16) void {
     const steps_left = countdown - kFadeInLeftAfterScroll;
     if (frames_left <= steps_left * 2 and frames_left & 1 == 0) c.ApplyPaletteFilter_bounce();
 }
-const kFadeInLeftAfterScroll = 0x0c;
+const kFadeInLeftAfterScroll = 4;
+
+/// A step of the fade back in, between the scroll and the fade that's meant
+/// to finish it. Finishing it flips the fade round to darkening and moves on
+/// to the next step, so it mustn't happen early: the fade that comes next
+/// would then darken past black for good, the palette running off its table
+/// (the colors cycling). The original never gets this far along by then.
+/// Widescreen starts the fade during the scroll and can, so it stops a step
+/// short and leaves the last one to the fade for it.
+fn fadeStepBeforeLast() void {
+    if (dungeon_wide.enabled() and v.darkening_or_lightening_screen.* == 2 and
+        low(v.palette_filter_countdown).* == 0) return;
+    c.ApplyPaletteFilter_bounce();
+}
 
 /// Widescreen: the camera where a sideways scroll stops, a margin in from the
 /// room's edge if the room's wide, or the 4:3 one's place if not. The scroll
@@ -1294,7 +1311,7 @@ pub export fn Dungeon_InterRoomTrans_State13() void {
     // now, so the camera carries on into a wide room's range while Link
     // walks in from the door, at the scroll's speed.
     settleRoomCameraX();
-    if (v.dung_want_lights_out.* | v.dung_want_lights_out_copy.* != 0) c.ApplyPaletteFilter_bounce();
+    if (v.dung_want_lights_out.* | v.dung_want_lights_out_copy.* != 0) fadeStepBeforeLast();
     Dungeon_IntraRoomTrans_State5();
 }
 pub export fn Dungeon_IntraRoomTrans_State5() void {
@@ -4250,7 +4267,16 @@ pub export fn Dungeon_LoadHeader() callconv(.c) void { // 81b564
         v.dung_loade_bgoffs_v_copy.* = (v.BG2VOFS_copy2.* +% 0x20) & ~@as(u16, 0x1FF);
     } else {
         if (((v.link_direction.* & 0xf) >> 1) < 2) {
-            v.dung_loade_bgoffs_h_copy.* = (v.BG2HOFS_copy2.* +% @as(u16, @bitCast(kAdjustment[(v.link_direction.* & 0xf) >> 1]))) & ~@as(u16, 0x1FF);
+            // The next room's a screen past the camera, which the original's
+            // has at the edge of the room being left. The widescreen one can
+            // stop up to a margin short, a screen past which is still that
+            // room: so where the original's would be, in the room it's in.
+            const adj = kAdjustment[(v.link_direction.* & 0xf) >> 1];
+            const cam = if (overworld.wideCameraOn())
+                (v.BG2HOFS_copy2.* & ~@as(u16, 0x1FF)) +% @as(u16, if (adj > 0) 256 else 0)
+            else
+                v.BG2HOFS_copy2.*;
+            v.dung_loade_bgoffs_h_copy.* = (cam +% @as(u16, @bitCast(kAdjustment[(v.link_direction.* & 0xf) >> 1]))) & ~@as(u16, 0x1FF);
             v.dung_loade_bgoffs_v_copy.* = (v.BG2VOFS_copy2.* +% 0x20) & ~@as(u16, 0x1FF);
         } else {
             v.dung_loade_bgoffs_h_copy.* = (v.BG2HOFS_copy2.* +% 0x20) & ~@as(u16, 0x1FF);
@@ -7638,7 +7664,7 @@ pub export fn Dungeon_InterRoomTrans_State3() callconv(.c) void { // 828a87
 
 pub export fn Dungeon_InterRoomTrans_State10() callconv(.c) void { // 828aa5
     if (v.dung_want_lights_out.* | v.dung_want_lights_out_copy.* != 0)
-        c.ApplyPaletteFilter_bounce();
+        fadeStepBeforeLast();
     Dungeon_InterRoomTrans_notDarkRoom();
 }
 
@@ -7655,7 +7681,7 @@ pub export fn Dungeon_InterRoomTrans_notDarkRoom() callconv(.c) void { // 828ab3
 
 pub export fn Dungeon_InterRoomTrans_State9() callconv(.c) void { // 828aba
     if (v.dung_want_lights_out.* | v.dung_want_lights_out_copy.* != 0)
-        c.ApplyPaletteFilter_bounce();
+        fadeStepBeforeLast();
     Dungeon_InterRoomTrans_State4();
 }
 

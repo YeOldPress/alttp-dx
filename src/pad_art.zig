@@ -15,8 +15,7 @@
 //! - **The game doesn't have one.** Everything else in the in-game menus
 //!   is borrowed from the game itself: the boxes, the hearts, the item
 //!   icons, the font all come out of the asset file built from your ROM, so
-//!   they look exactly like Nintendo's. I went looking for a controller in
-//!   there. There isn't one. A Link to the Past never once shows you a SNES
+//!   they look exactly like Nintendo's. A Link to the Past never once shows you a SNES
 //!   pad, presumably because you're holding it.
 //! - **This repo ships no art.** The whole deal is that the game's graphics
 //!   come from your ROM and nothing of Nintendo's lives here. A PNG of their
