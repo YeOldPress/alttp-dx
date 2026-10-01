@@ -2009,8 +2009,11 @@ fn snapCameraX() void {
     if (!wideCameraOn()) return;
     const xs = vars.ow_scroll_vars0.xstart;
     const xe = vars.ow_scroll_vars0.xend;
+    if (xe < xs) return;
+    // An area with no room to scroll sideways has no margin, but the camera
+    // still belongs in its range: one with none, a special area's, say, has
+    // a single place for it, where the 4:3 camera would have come in.
     const m = wideCameraMargin(xe -% xs);
-    if (m == 0) return;
     const cam = vars.BG2HOFS_copy2.*;
     const to = if (cam < xs +% m) xs +% m else if (cam > xe -% m) xe -% m else return;
     const delta: i16 = @bitCast(to -% cam);
@@ -2538,6 +2541,8 @@ pub export fn Overworld_EnterSpecialArea() callconv(.c) void {
 
     loPtr(vars.dungeon_room_index).* = roombak;
     load_gfx.Palette_SpecialOw();
+    // The camera's range is the special area's from here.
+    snapCameraX();
 }
 
 pub export fn LoadOverworldFromSpecialOverworld() callconv(.c) void {

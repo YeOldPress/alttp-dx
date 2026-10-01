@@ -4,6 +4,7 @@
 const std = @import("std");
 const vars = @import("variables.zig");
 const features = @import("features.zig");
+const config = @import("config.zig");
 
 const OamEnt = vars.OamEnt;
 const g_ram = &vars.g_ram;
@@ -820,13 +821,22 @@ pub export fn Tagalong_Draw() callconv(.c) void { // 89a907
     Follower_AnimateMovement_preserved(a, x, y);
 }
 
+/// How far past the 4:3 screen's right edge a follower still gets drawn: in
+/// widescreen, to the wide screen's edge, where the widescreen camera can have
+/// her walking (the left side already reaches 128 pixels past). The PPU puts
+/// pieces that far right on the right, given the room the margins leave.
+fn followerExtraRight() u16 {
+    if (features.enhanced_features0.* & features.kFeatures0_WidescreenVisualFixes == 0) return 0;
+    return config.g_config.extended_aspect_ratio;
+}
+
 fn SetOam_Follower(oam: [*]align(1) OamEnt, x: u16, y: u16, charnum: u8, flags: u8, big_in: u8) void {
     var big = big_in;
     oam[0].x = @truncate(x);
     // The C folds the `big` update into the condition with a comma operator, so
     // it only happens when the x test passes.
     oam[0].y = blk: {
-        if ((x +% 0x80) < 0x180) {
+        if ((x +% 0x80) < 0x180 +% followerExtraRight()) {
             big |= @truncate((x >> 8) & 1);
             if ((y +% 0x10) < 0x100) break :blk @as(u8, @truncate(y));
         }

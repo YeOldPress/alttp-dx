@@ -260,6 +260,28 @@ fn settleRoomCameraX() void {
     }
 }
 const kRoomSettleSpeed = 4;
+/// Out of (or into) a dark room, the screen fades out before the scroll and
+/// back in after it, the scroll itself in the dark. Widescreen: the fade
+/// back in starts over the scroll's second half instead, a step every other
+/// frame, so the room's coming up as it slides in. It stops short, at
+/// kFadeInLeftAfterScroll steps to go: the steps after the scroll take a few
+/// more on the way, and the last of them, finishing the fade, has to come at
+/// the fade the game saved it for, which moves on to the next step.
+fn fadeInDuringScroll(at: u16, target: u16, delta: u16) void {
+    if (!dungeon_wide.enabled()) return;
+    if (v.dung_want_lights_out.* | v.dung_want_lights_out_copy.* == 0) return;
+    if (v.darkening_or_lightening_screen.* != 2) return; // fading in is next
+    const countdown = low(v.palette_filter_countdown).*;
+    if (countdown <= kFadeInLeftAfterScroll) return;
+    const negative = delta & 0x8000 != 0;
+    const step: u16 = if (negative) 0 -% delta else delta;
+    const frames_left = ((if (negative) at -% target else target -% at) & 0x1ff) / step;
+    // A step every other frame, so it's done as the scroll lands.
+    const steps_left = countdown - kFadeInLeftAfterScroll;
+    if (frames_left <= steps_left * 2 and frames_left & 1 == 0) c.ApplyPaletteFilter_bounce();
+}
+const kFadeInLeftAfterScroll = 0x0c;
+
 /// Widescreen: the camera where a sideways scroll stops, a margin in from the
 /// room's edge if the room's wide, or the 4:3 one's place if not. The scroll
 /// has that place as an x within the 512 pixels of a room; this is the first
@@ -292,6 +314,44 @@ fn landWideCamera(leftward: bool) void {
     v.camera_x_coord_scroll_low.* +%= shift;
     v.camera_x_coord_scroll_hi.* = v.camera_x_coord_scroll_low.* +% 2;
 }
+/// Widescreen: where the room's camera range puts the camera's x from here:
+/// the nearest x in its range, which for a 4:3 room is the only one.
+fn roomCameraX(cam: u16) u16 {
+    const m = wideRoomMargin();
+    const qm: usize = v.quadrant_fullsize_x.* >> 1;
+    const lo = v.room_bounds_x.v[qm] +% m;
+    const hi = v.room_bounds_x.v[qm + 2] -% m;
+    return if (cam < lo) lo else if (cam > hi) hi else cam;
+}
+/// Puts the camera's x straight into the room's range, and where Link has
+/// to be for it to follow him with it, for rooms reached behind a fade:
+/// stairs, falling, warp tiles, and coming in from outside. The camera keeps the x it had in the room
+/// before, which the widescreen one can have up to a margin off where the
+/// 4:3 one would, and this room's range may not include it.
+fn snapRoomCameraX() void {
+    if (!overworld.wideCameraOn()) return;
+    const cam = v.BG2HOFS_copy2.*;
+    const d = roomCameraX(cam) -% cam;
+    v.BG2HOFS_copy2.* +%= d;
+    v.BG1HOFS_copy2.* +%= d;
+    v.camera_x_coord_scroll_low.* +%= d;
+    v.camera_x_coord_scroll_hi.* = v.camera_x_coord_scroll_low.* +% 2;
+}
+/// Moves the camera's x a share of the way to the room's range, to get
+/// there in `steps` more, and where Link has to be for it to follow him with
+/// it.
+fn slideCameraXToRoom(steps: u16) void {
+    const cam = v.BG2HOFS_copy2.*;
+    const to = roomCameraX(cam);
+    if (to == cam) return;
+    const gap: u16 = if (to > cam) to - cam else cam - to;
+    const n: u16 = (gap + steps - 1) / steps;
+    const d: u16 = if (to > cam) n else 0 -% n;
+    v.BG2HOFS_copy2.* +%= d;
+    v.BG1HOFS_copy2.* +%= d;
+    v.camera_x_coord_scroll_low.* +%= d;
+    v.camera_x_coord_scroll_hi.* = v.camera_x_coord_scroll_low.* +% 2;
+}
 /// Widescreen: the margins while a room-to-room scroll runs, for
 /// widescreenSideSpace; null when there isn't one to do this for.
 pub fn wideTransitionMargins(max: c_int) ?dungeon_wide.Margins {
@@ -304,7 +364,9 @@ pub fn wideTransitionMargins(max: c_int) ?dungeon_wide.Margins {
         end_x = wideScrollEndX(i == 3, v.BG2HOFS_copy2.*);
     } else {
         const targets: Tiles = @ptrCast(v.up_down_scroll_target);
-        end_y = @as(i32, v.dungeon_room_index.* >> 4) * 512 + (targets[i] & 0x1fc);
+        const origin = dungeon_wide.shownOrigin() orelse return null;
+        end_y = origin.y + (targets[i] & 0x1fc);
+        end_x = roomCameraX(v.BG2HOFS_copy2.*);
     }
     const qm: usize = v.quadrant_fullsize_x.* >> 1;
     const end_left: c_int = @max(end_x - @as(i32, v.room_bounds_x.v[qm]), 0);
@@ -866,9 +928,19 @@ pub export fn OrientLampLightCone() void {
         v.BG1VOFS_copy2.* = v.BG2VOFS_copy2.* -% v.link_y_coord.* +% 0x72 +% y[i];
         p = v.BG2HOFS_copy2.* -% v.link_x_coord.* +% 0x58 +% x[i] +% u16w(offset[i]) +% u16w(margin[i]);
     }
-    if (p & 0x8000 != 0) p = 0;
-    p = @min(p, limit[i]);
+    if (i >= 2 and dungeon_wide.drawsLanternLight()) {
+        // Widescreen: facing left or right, the light's kept from running
+        // off a 4:3 screen's sides; past them are the margins now, with the
+        // dark drawn round it (dungeon_wide.zig).
+        const ext: i32 = overworld.wideCameraMargin(0xffff);
+        const ps: i32 = std.math.clamp(@as(i32, @as(i16, @bitCast(p))), -ext, @as(i32, limit[i]) + ext);
+        p = @bitCast(@as(i16, @intCast(ps)));
+    } else {
+        if (p & 0x8000 != 0) p = 0;
+        p = @min(p, limit[i]);
+    }
     if (i < 2) v.BG1VOFS_copy2.* = p -% u16w(margin[i]) else v.BG1HOFS_copy2.* = p -% u16w(margin[i]);
+    dungeon_wide.noteLanternPicture(x[i], y[i]);
 }
 pub export fn SavePalaceDeaths() void {
     const j = low(v.cur_palace_index_x2).*;
@@ -1112,7 +1184,7 @@ pub export fn Dungeon_AdjustQuadrant() void {
     v.composite_of_layout_and_quadrant.* = @as(u8, @truncate(v.dung_layout_and_starting_quadrant.*)) | v.link_quadrant_y.* | v.link_quadrant_x.*;
 }
 pub export fn Dungeon_HandleCamera() void {
-    dungeon_wide.noteRoomShown();
+    dungeon_wide.notePlayFrame();
     scrollCameraAxis(false);
     settleRoomCameraX();
     scrollCameraAxis(true);
@@ -1160,6 +1232,16 @@ pub export fn DungeonTransition_ScrollRoom() void {
         const left = (if (negative) at -% target else target -% at) & 0x1ff;
         if (left <= 256 - @as(u16, @intCast(t.kStaircaseTab4[i])) * step) coord.* +%= delta;
     } else if (v.transition_counter.* >= t.kStaircaseTab4[i]) coord.* +%= delta;
+    if (i < 2 and overworld.wideCameraOn()) {
+        // Widescreen: a wide room's camera stops short of where the 4:3 one
+        // would be, and a scroll up or down leaves it there; the next room
+        // may want it elsewhere, so it goes over as the scroll goes down.
+        const negative = delta & 0x8000 != 0;
+        const at = bg2.* & 0x1fc;
+        const left = (if (negative) at -% target else target -% at) & 0x1ff;
+        slideCameraXToRoom(left / 4 + 1);
+    }
+    fadeInDuringScroll(bg2.* & 0x1fc, target, delta);
     if (bg2.* & 0x1fc == target) {
         if (i >= 2) landWideCamera(i == 3);
         SetAndSaveVisitedQuadrantFlags();
@@ -1175,6 +1257,14 @@ pub export fn Module07_11_0A_ScrollCamera() void {
     v.BG2VOFS_copy2.* = (v.BG2VOFS_copy2.* +% u16w(t.kStaircaseTab3[i])) & 0xfffc;
     v.BG1VOFS_copy2.* = v.BG2VOFS_copy2.*;
     const targets: Tiles = @ptrCast(v.up_down_scroll_target);
+    if (overworld.wideCameraOn()) {
+        // Widescreen: over to the next room's range as the stairs scroll,
+        // as a scroll up or down between rooms does.
+        const negative = u16w(t.kStaircaseTab3[i]) & 0x8000 != 0;
+        const at = v.BG1VOFS_copy2.* & 0x1fc;
+        const left = (if (negative) at -% targets[i] else targets[i] -% at) & 0x1ff;
+        slideCameraXToRoom(left / 4 + 1);
+    }
     if (v.BG1VOFS_copy2.* & 0x1fc == targets[i]) {
         if (v.submodule_index.* >= 18) i += 2;
         v.link_y_coord.* +%= u16w(t.kStaircaseTab5[i]);
@@ -7243,6 +7333,7 @@ pub export fn Module_PreDungeon() callconv(.c) void { // 82821e
     v.dung_num_lit_torches.* = 0;
     v.hdr_dungeon_dark_with_lantern.* = 0;
     c.Dungeon_LoadAndDrawRoom();
+    snapRoomCameraX();
     c.Dungeon_LoadCustomTileAttr();
 
     c.DecompressAnimatedDungeonTiles(t.kDungAnimatedTiles[index(v.main_tile_theme_index.*)]);
@@ -7523,7 +7614,7 @@ pub export fn Module07_02_00_InitializeTransition() callconv(.c) void { // 828a4
 pub export fn Module07_02_01_LoadNextRoom() callconv(.c) void { // 828a5b
     dungeon_wide.keepRoomBeingLeft();
     c.Dungeon_LoadRoom();
-    dungeon_wide.noteRoomShown();
+    dungeon_wide.noteNextRoomLoaded();
     c.ResetStarTileGraphics();
     c.LoadTransAuxGFX_sprite();
     v.subsubmodule_index.* +%= 1;
@@ -7811,6 +7902,7 @@ pub export fn DungeonTransition_LoadSpriteGFX() callconv(.c) void { // 828d10
 pub export fn DungeonTransition_AdjustForFatStairScroll() callconv(.c) void { // 828d1b
     c.MirrorBg1Bg2Offs();
     c.Dungeon_AdjustForRoomLayout();
+    snapRoomCameraX();
     var ts: u8 = @bitCast(t.kSpiralTab1[index(v.dung_hdr_bg2_properties.*)]);
     var tm: u8 = 0x16;
     if (sign8(ts)) {
@@ -7876,6 +7968,7 @@ pub export fn Module07_07_00_HandleMusicAndResetRoom() callconv(.c) void { // 82
 pub export fn Module07_07_06_SyncBG1and2() callconv(.c) void { // 828e80
     c.MirrorBg1Bg2Offs();
     c.Dungeon_AdjustForRoomLayout();
+    snapRoomCameraX();
     var ts: u8 = @bitCast(t.kSpiralTab1[index(v.dung_hdr_bg2_properties.*)]);
     var tm: u8 = 0x16;
     if (sign8(ts)) {
@@ -8178,6 +8271,7 @@ pub export fn Dungeon_SyncBackgroundsFromSpiralStairs() callconv(.c) void { // 8
     v.BG1HOFS_copy2.* = v.BG2HOFS_copy2.*;
     v.BG1VOFS_copy2.* = v.BG2VOFS_copy2.*;
     c.Dungeon_AdjustForRoomLayout();
+    snapRoomCameraX();
     var ts: u8 = @bitCast(t.kSpiralTab1[v.dung_hdr_bg2_properties.*]);
     var tm: u8 = 0x16;
     if (sign8(ts)) {
@@ -8504,6 +8598,7 @@ pub export fn Module07_15_04_SyncRoomPropsAndBuildOverlay() callconv(.c) void { 
         v.dung_cur_floor.* = 4;
     c.MirrorBg1Bg2Offs();
     c.Dungeon_AdjustForRoomLayout();
+    snapRoomCameraX();
     var ts: u8 = @bitCast(t.kSpiralTab1[v.dung_hdr_bg2_properties.*]);
     var tm: u8 = 0x16;
     if (sign8(ts)) {
@@ -8699,6 +8794,7 @@ pub export fn Module11_DungeonFallingEntrance() callconv(.c) void { // 829af9
             if (v.submodule_index.* != 0)
                 return;
             v.main_module_index.* = 7;
+            dungeon_wide.noteFellIn();
             v.flag_skip_call_tag_routines.* +%= 1;
             c.Dungeon_PlayBlipAndCacheQuadrantVisits();
             c.ResetThenCacheRoomEntryProperties();
@@ -8734,6 +8830,8 @@ pub export fn Module11_02_LoadEntrance() callconv(.c) void { // 829b1c
     v.dung_num_lit_torches.* = 0;
     v.hdr_dungeon_dark_with_lantern.* = 0;
     Dungeon_LoadAndDrawRoom();
+    dungeon_wide.noteRoomShown();
+    snapRoomCameraX();
     c.Dungeon_LoadCustomTileAttr();
     c.DecompressAnimatedDungeonTiles(t.kDungAnimatedTiles[v.main_tile_theme_index.*]);
     c.Dungeon_LoadAttributeTable();

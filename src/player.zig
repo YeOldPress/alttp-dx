@@ -2673,7 +2673,7 @@ pub export fn Link_CheckForSwordSwing() callconv(.c) void {
             HandleSwordControls();
             return;
         }
-        vars.link_delay_timer_spin_attack.* = tables.kSpinAttackDelays[vars.button_b_frames.*];
+        vars.link_delay_timer_spin_attack.* = spinAttackDelay(vars.button_b_frames.*);
         if (vars.button_b_frames.* == 5) {
             if (vars.link_sword_type.* != 0 and vars.link_sword_type.* != 1 and
                 vars.link_sword_type.* != 0xff)
@@ -2689,6 +2689,16 @@ pub export fn Link_CheckForSwordSwing() callconv(.c) void {
         }
     }
     player_oam.CalculateSwordHitBox();
+}
+
+/// The delay before the next frame of a sword swing or charge. The game
+/// can come here with the frame counter still at what a tablet cutscene or
+/// the victory spin left it at (0xc0, 0xe0, 144), and counts on from there,
+/// past the table's end; the original reads whatever comes after it there.
+/// Take the last entry instead of running off the table.
+fn spinAttackDelay(frame: u8) u8 {
+    const t = &tables.kSpinAttackDelays;
+    return t[@min(frame, t.len - 1)];
 }
 
 pub export fn HandleSwordControls() callconv(.c) void {
@@ -2755,7 +2765,7 @@ pub export fn Player_Sword_SpinAttackJerks_HoldDown() callconv(.c) void {
     // endif_2
     if (vars.button_b_frames.* == 9) {
         vars.button_b_frames.* = 10;
-        vars.link_delay_timer_spin_attack.* = tables.kSpinAttackDelays[vars.button_b_frames.*];
+        vars.link_delay_timer_spin_attack.* = spinAttackDelay(vars.button_b_frames.*);
     }
 
     vars.link_delay_timer_spin_attack.* -%= 1;
@@ -2772,7 +2782,7 @@ pub export fn Player_Sword_SpinAttackJerks_HoldDown() callconv(.c) void {
             frames = 10;
         }
         vars.button_b_frames.* = frames;
-        vars.link_delay_timer_spin_attack.* = tables.kSpinAttackDelays[vars.button_b_frames.*];
+        vars.link_delay_timer_spin_attack.* = spinAttackDelay(vars.button_b_frames.*);
     }
     player_oam.CalculateSwordHitBox();
 }

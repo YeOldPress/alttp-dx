@@ -296,10 +296,11 @@ pub fn widescreenSideSpace(max: c_int) struct { left: c_int, right: c_int, botto
     var mod: c_int = vars.main_module_index.*;
     if (mod == 14)
         mod = vars.saved_module_for_menu.*;
-    // The closing and opening circle through a door: whichever side of it is
-    // on screen, a room or the overworld, gets its margins as it would
-    // without the circle, which the circle then cuts round.
-    const spotlight = mod == 15 or mod == 16;
+    // The closing and opening circle through a door, and falling through a
+    // hole into a dungeon: whichever side of it is on screen, a room or the
+    // overworld, gets its margins as it would without them (the circle then
+    // cuts round them).
+    const spotlight = mod == 15 or mod == 16 or mod == 17;
     if (spotlight)
         mod = if (vars.player_is_indoors.* != 0) 7 else 9;
     // The special overworld areas (Zora's Domain, the Master Sword's grove
@@ -326,8 +327,18 @@ pub fn widescreenSideSpace(max: c_int) struct { left: c_int, right: c_int, botto
             extra_bottom = @as(c_int, vars.ow_scroll_vars0.yend) - vars.BG2VOFS_copy2.*;
         }
     } else if (mod == 7) {
-        // indoors, except when the light cone is in use
-        if (!(vars.hdr_dungeon_dark_with_lantern.* != 0 and vars.TS_copy.* != 0)) {
+        // indoors, except when the light cone is in use. Its layer is a 4:3
+        // screen wide and repeats past it. Stairs and the like clear the
+        // dark room flag as they start, with the cone still up, but the
+        // room's lights-out wish stays while they run (not its copy, which is
+        // the room before's: out of a dark room into a lit one, it's set
+        // with the cone gone). With the widescreen camera, the cone is drawn
+        // without its repeats (dungeon_wide.zig), and the margins can show a
+        // dark room like any other.
+        const lights_out = vars.hdr_dungeon_dark_with_lantern.* != 0 or
+            (vars.submodule_index.* != 0 and vars.dung_want_lights_out.* != 0);
+        const dark = lights_out and vars.TS_copy.* != 0 and !dungeon_wide.drawsLanternLight();
+        if (!dark) {
             const qm = vars.quadrant_fullsize_x.* >> 1;
             extra_left = intMax(@as(c_int, vars.BG2HOFS_copy2.*) - vars.room_bounds_x.v[qm], 0);
             extra_right = intMax(@as(c_int, vars.room_bounds_x.v[qm + 2]) - vars.BG2HOFS_copy2.*, 0);

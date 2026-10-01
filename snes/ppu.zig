@@ -496,6 +496,16 @@ fn tilemapPointers(ppu: *Ppu, bglayer: *BgLayer, layer: u32, y: u32) [2][*]const
     return .{ @ptrCast(&row[0]), @ptrCast(&row[32]) };
 }
 
+/// The tilemap word VRAM has for (x, y) of a layer's scrolled tilemap space,
+/// 8x8 tiles.
+pub fn bgTilemapWord(ppu: *const Ppu, layer: u32, x: u32, y: u32) u16 {
+    const bg = &ppu.bgLayer[layer];
+    var adr: u32 = @as(u32, bg.tilemapAdr) +% (((y >> 3) & 0x1f) << 5) +% ((x >> 3) & 0x1f);
+    if (x & 0x100 != 0 and bg.tilemapWider) adr +%= 0x400;
+    if (y & 0x100 != 0 and bg.tilemapHigher) adr +%= if (bg.tilemapWider) 0x800 else 0x400;
+    return ppu.vram[adr & 0x7fff];
+}
+
 fn tilemapPointersVram(ppu: *Ppu, bglayer: *BgLayer, y: u32) [2][*]const u16 {
     var sc_offs: u32 = @as(u32, bglayer.tilemapAdr) +% (((y >> 3) & 0x1f) << 5);
     if ((y & 0x100) != 0 and bglayer.tilemapHigher)

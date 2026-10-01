@@ -5,6 +5,7 @@ const std = @import("std");
 const vars = @import("variables.zig");
 const tables = @import("ancilla_tables.zig");
 const features = @import("features.zig");
+const config = @import("config.zig");
 const misc = @import("misc.zig");
 const sprite = @import("sprite.zig");
 const hud = @import("hud.zig");
@@ -995,10 +996,25 @@ pub export fn Ancilla_CheckTileCollisionOneFloor(k: c_int) callconv(.c) bool {
     return Ancilla_CheckTileCollision_targeted(k, x, y);
 }
 
+/// How far past the 4:3 screen's sides an ancilla still checks the tiles it
+/// touches. The game skips a point off the screen, and leaves its tile
+/// attribute as it was: the lamp then reads the last one and lights whatever
+/// torch that was. The 4:3 camera keeps Link on the screen; the widescreen
+/// one stops short of a room's walls and can leave him in the margin, his
+/// flame on a torch past the screen's edge. Widened as far as the screen
+/// is, or the 64 pixels ExtendScreen64 widens the rest by.
+fn tileCheckExtraX() u16 {
+    var xt: u16 = if (features.enhanced_features0.* & features.kFeatures0_ExtendScreen64 != 0) 0x40 else 0;
+    if (features.enhanced_features0.* & features.kFeatures0_WidescreenVisualFixes != 0)
+        xt = @max(xt, @as(u16, config.g_config.extended_aspect_ratio));
+    return xt;
+}
+
 pub export fn Ancilla_CheckTileCollision_targeted(k: c_int, x_in: u16, y: u16) callconv(.c) bool {
     const ku: usize = @intCast(k);
     var x = x_in;
-    if ((y -% vars.BG2VOFS_copy2.*) >= 224 or (x -% vars.BG2HOFS_copy2.*) >= 256)
+    const xt = tileCheckExtraX();
+    if ((y -% vars.BG2VOFS_copy2.*) >= 224 or (x -% vars.BG2HOFS_copy2.* +% xt) >= 256 + 2 * xt)
         return false;
     var tile_attr: u8 = undefined;
     if (vars.player_is_indoors.* == 0) {
