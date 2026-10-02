@@ -172,6 +172,33 @@ pub fn noteLanternPicture(x: u16, y: u16) void {
     g_lantern_up = true;
 }
 
+/// The game went to place the light and found a lit room, so there's no cone
+/// and layer 1 is the room's own again. Stairs and the like run for a good
+/// while with no play frame to notice that for us. A room-to-room scroll is
+/// the exception: the new room's header is read while the dark room being
+/// left is still on the screen, light and all, and `lanternLit` has its own
+/// say on when that goes.
+pub fn noteNoLanternPicture() void {
+    if (vars.main_module_index.* == 7 and vars.submodule_index.* == 2) return;
+    g_lantern_up = false;
+}
+
+/// How far past the 4:3 screen the lantern's light may reach on each side:
+/// as far as the margins go into the room. A scroll has already moved the
+/// bounds on to the room being entered while the light still belongs to the
+/// one being left, so there it's what they were when it started.
+pub fn lanternMargins() Margins {
+    if (vars.main_module_index.* == 7 and vars.submodule_index.* == 2) {
+        if (g_start) |s| return .{ .left = @intCast(s.left), .right = @intCast(s.right) };
+    }
+    const qm: usize = vars.quadrant_fullsize_x.* >> 1;
+    const cam: i32 = vars.BG2HOFS_copy2.*;
+    return .{
+        .left = @max(cam - @as(i32, vars.room_bounds_x.v[qm]), 0),
+        .right = @max(@as(i32, vars.room_bounds_x.v[qm + 2]) - cam, 0),
+    };
+}
+
 /// Layer 1 in a dark room: the picture of the light Link's facing comes from
 /// VRAM, and anything past it is the dark from that picture's corner.
 fn lanternTile(ppu: *const Ppu, x: u32, y: u32) ?u16 {

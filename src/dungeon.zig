@@ -921,7 +921,11 @@ pub export fn WaterFlood_BuildOneQuadrantForVRAM() void {
     TileMapPrep_NotWaterOnTag();
 }
 pub export fn OrientLampLightCone() void {
-    if (v.hdr_dungeon_dark_with_lantern.* == 0 or v.submodule_index.* == 20) return;
+    if (v.hdr_dungeon_dark_with_lantern.* == 0) {
+        dungeon_wide.noteNoLanternPicture();
+        return;
+    }
+    if (v.submodule_index.* == 20) return;
     const a = v.link_direction_facing.* >> 1;
     var i = a;
     if (v.is_standing_in_doorway.* != 0) {
@@ -948,9 +952,16 @@ pub export fn OrientLampLightCone() void {
     if (i >= 2 and dungeon_wide.drawsLanternLight()) {
         // Widescreen: facing left or right, the light's kept from running
         // off a 4:3 screen's sides; past them are the margins now, with the
-        // dark drawn round it (dungeon_wide.zig).
+        // dark drawn round it (dungeon_wide.zig). Only as far as the margins
+        // reach into the room, though: against a wall the camera has none,
+        // and letting the light slide on there carries it off the screen.
         const ext: i32 = overworld.wideCameraMargin(0xffff);
-        const ps: i32 = std.math.clamp(@as(i32, @as(i16, @bitCast(p))), -ext, @as(i32, limit[i]) + ext);
+        const m = dungeon_wide.lanternMargins();
+        const ps: i32 = std.math.clamp(
+            @as(i32, @as(i16, @bitCast(p))),
+            -@min(ext, @as(i32, m.right)),
+            @as(i32, limit[i]) + @min(ext, @as(i32, m.left)),
+        );
         p = @bitCast(@as(i16, @intCast(ps)));
     } else {
         if (p & 0x8000 != 0) p = 0;
@@ -1487,10 +1498,7 @@ pub export fn LoadType1ObjectSubtype1(idx: u8, dst_: Words, dsto_: u16) callconv
             dst[1] = src[2];
         },
         // 23 -  Pit [N]Edge [L-R] / 3F -  Water Edge [L-R]
-        0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
-        0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e,
-        0x3f, 0x40, 0x41, 0x42, 0x43, 0x44,
-        0x45, 0x46, 0xb3, 0xb4 => {
+        0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x3f, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0xb3, 0xb4 => {
             c.RoomDraw_GetObjectSize_1to16();
             const m = dst[0] & 0x3ff;
             if (m != 0x1db and m != 0x1a6 and m != 0x1dd and m != 0x1fc)
@@ -2035,8 +2043,7 @@ pub export fn LoadType1ObjectSubtype1(idx: u8, dst_: Words, dsto_: u16) callconv
                 if (!decWidth()) break;
             }
         },
-        0x97, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f,
-        0xad, 0xae, 0xaf, 0xbe, 0xbf => {},
+        0x97, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f, 0xad, 0xae, 0xaf, 0xbe, 0xbf => {},
         // A0 -  / Ceiling [NW] / A5 -  / Ceiling [Trans][NW]
         0xa0, 0xa5, 0xa9 => {
             c.Object_SizeAtoAplus15(4);
@@ -2221,11 +2228,7 @@ pub export fn LoadType1ObjectSubtype1(idx: u8, dst_: Words, dsto_: u16) callconv
             }
         },
         // C4 -  Doorless Room Transition / DB -  Floor2 [4-way] and plain floors
-        0xc4, 0xdb,
-        0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca,
-        0xd1, 0xd2, 0xd9,
-        0xdf, 0xe0, 0xe1, 0xe2, 0xe3, 0xe4,
-        0xe5, 0xe6, 0xe7, 0xe8 => {
+        0xc4, 0xdb, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd1, 0xd2, 0xd9, 0xdf, 0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8 => {
             if (idx == 0xc4) {
                 src = SrcPtr(v.dung_floor_2_filler_tiles.*);
             } else if (idx == 0xdb) {
@@ -2457,8 +2460,7 @@ pub export fn LoadType1ObjectSubtype2(idx: u8, dst_: Words, dsto_: u16) callconv
 
     switch (idx) {
         // 00 -  Wall Outer Corner (HIGH) [NW]
-        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-        0x1c, 0x24, 0x25, 0x29 => RoomDraw_Object_Nx4(4, src, dst),
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x1c, 0x24, 0x25, 0x29 => RoomDraw_Object_Nx4(4, src, dst),
         // 08 -  Wall Outer Corner (LOW) [NW]
         0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f => Object_DrawNx4_BothBgs(4, src, @as(c_int, dsto)),
         // 10 -  Wall S-Bend (LOW) [N1]
@@ -2764,12 +2766,7 @@ pub export fn LoadType1ObjectSubtype3(idx: u8, dst_: Words, dsto_: u16) callconv
             dd[xy(1, 2)] = src[3];
             dd[xy(14, 2)] = src[3] | 0x4000;
         },
-        0x10, 0x11, 0x13, 0x1a, 0x22, 0x23, 0x24, 0x25,
-        0x3e, 0x3f, 0x40, 0x41, 0x42,
-        0x43, 0x44, 0x45, 0x46, 0x49, 0x4a, 0x4f,
-        0x50, 0x51, 0x52, 0x53, 0x56, 0x57, 0x58, 0x59,
-        0x5e, 0x5f, 0x63, 0x64, 0x65,
-        0x75, 0x7c, 0x7d, 0x7e => RoomDraw_Rightwards2x2(src, dst),
+        0x10, 0x11, 0x13, 0x1a, 0x22, 0x23, 0x24, 0x25, 0x3e, 0x3f, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x49, 0x4a, 0x4f, 0x50, 0x51, 0x52, 0x53, 0x56, 0x57, 0x58, 0x59, 0x5e, 0x5f, 0x63, 0x64, 0x65, 0x75, 0x7c, 0x7d, 0x7e => RoomDraw_Rightwards2x2(src, dst),
         // 12 -  Rupee Floor
         0x12 => {
             if (v.dung_savegame_state_bits.* & 0x1000 != 0)
@@ -3253,7 +3250,6 @@ pub export fn Dungeon_OpeningLockedDoor_Combined(skip_anim: bool) callconv(.c) v
 /// searches *backwards*.
 /// `memcpy(&dung_line_ptrs_row0, tab, 33)`: the 33 bytes starting at 0x7E00BF.
 /// `WORD(level_data[offs])`: unaligned little-endian 16-bit read.
-
 pub export fn PrepareDungeonExitFromBossFight() callconv(.c) void { // 80f945
     c.SavePalaceDeaths();
     c.SaveDungeonKeys();
@@ -4251,7 +4247,6 @@ pub export fn RoomDraw_FlagDoorsAndGetFinalType(direction: u8, door_type: u8, ds
 // dungeon.c: #define adjacent_doors ((uint16*)(g_ram+0x1110))
 
 /// WORD(dung_bg2_attr_table[i]) - unaligned 16-bit view into the attribute table.
-
 pub export fn Dungeon_LoadHeader() callconv(.c) void { // 81b564
     v.dung_flag_statechange_waterpuzzle.* = 0;
     v.dung_flag_somaria_block_switch.* = 0;
@@ -5956,7 +5951,6 @@ comptime {
 /// WORD(dung_bg1_attr_table[i]) - unaligned 16-bit view into the attribute table.
 /// WORD(dung_bg2_attr_table[i]) - unaligned 16-bit view into the attribute table.
 /// The C indexes dung_bg2_attr_table with a possibly negative offset.
-
 pub export fn Bomb_CheckForDestructibles(x: u16, y: u16, r14: u8) callconv(.c) void { // 81d1f4
     if (v.main_module_index.* != 7) {
         c.Overworld_BombTiles32x32(x, y);
@@ -7124,7 +7118,6 @@ pub export fn Dungeon_DrawRoomOverlay(src_: [*]const u8) callconv(.c) void { // 
 /// assets.h: #define kDungeonRoomOverlay ((uint8*)g_asset_ptrs[48])
 /// assets.h: #define kDungeonRoomOverlayOffs ((uint16*)g_asset_ptrs[49])
 /// misc.h: static inline int FindInWordArray(const uint16 *data, uint16 lookfor, size_t size)
-
 pub export fn GetDoorDrawDataIndex_North_clean_door_index(door: c_int) callconv(.c) void { // 81fa4a
     GetDoorDrawDataIndex_North(door, door);
 }
@@ -9306,4 +9299,3 @@ pub export fn SpiralStairs_FindLandingSpot() callconv(.c) void { // 87f391
     if (@as(u8, @truncate(v.link_x_coord.*)) == @as(u8, @truncate(v.tiledetect_which_y_pos[1])))
         v.some_animation_timer_steps.* = 2;
 }
-
