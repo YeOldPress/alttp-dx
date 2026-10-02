@@ -3008,7 +3008,10 @@ pub export fn Ancilla15_JumpSplash(k: c_int) callconv(.c) void {
         oam = Ancilla_AllocateOamFromCustomRegion(oam + 1);
         pt.x = mirror;
     }
-    Ancilla_SetOam(oam, ax +% 12 -% vars.BG2HOFS_copy2.*, pt.y, 0xc0, 0x24, if (j == 1) 1 else 2);
+    // The last argument is the extended OAM byte, whose low bit is x's 9th:
+    // Ancilla_SetOam works that out from x itself, and a 1 here would throw
+    // the piece 512 pixels left, off the screen. 0 is the 8x8 size alone.
+    Ancilla_SetOam(oam, ax +% 12 -% vars.BG2HOFS_copy2.*, pt.y, 0xc0, 0x24, if (j == 1) 0 else 2);
 }
 pub export fn Ancilla32_BlastWallFireball(k: c_int) callconv(.c) void {
     const u: usize = @intCast(k);
