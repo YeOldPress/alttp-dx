@@ -166,6 +166,7 @@ pub const kSettings = [_]Setting{
     .{ .section = "Features", .key = "MiscBugFixes", .label = "Misc Bug Fixes", .kind = .toggle },
     .{ .section = "Features", .key = "GameChangingBugFixes", .label = "Game Changing Fixes", .kind = .toggle },
     .{ .section = "Features", .key = "CancelBirdTravel", .label = "Cancel Bird Travel", .kind = .toggle },
+    .{ .section = "Features", .key = "DiggingGamePity", .label = "Digging Game Pity", .note = "HEART PIECE GUARANTEED AFTER 250 DIGS", .kind = .toggle },
 
     // The ALTTPR.COM page, not the lists above: a seed gets its own
     // choices, so trying widescreen on one leaves the normal game alone.

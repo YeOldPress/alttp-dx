@@ -680,6 +680,7 @@ fn describe(s: menu.Setting) []const u8 {
         .{ "MiscBugFixes", "Fix a number of the original game's bugs that don't change how it plays." },
         .{ "GameChangingBugFixes", "Fix bugs whose fixes do change how the game plays." },
         .{ "CancelBirdTravel", "Let X cancel the bird's flight before it takes off." },
+        .{ "DiggingGamePity", "Have the digging game hand over its heart piece after 250 digs without one, instead of leaving it to a 1 in 32 chance a dig. The count is never saved." },
     };
     for (kDescriptions) |d| {
         if (std.mem.eql(u8, d[0], s.key)) return d[1];
@@ -697,7 +698,6 @@ const kControlRows = kControlLabels.len + 1;
 const kControlsVisible = 4;
 /// Five seconds to press something before the question goes away.
 const kCaptureFrames = 300;
-
 
 /// The row waiting for a key or button, when one is.
 var g_capture: ?usize = null;

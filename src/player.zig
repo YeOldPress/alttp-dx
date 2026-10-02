@@ -225,9 +225,8 @@ const kKickback_y0 = [10]i8{ 0, 0, 0, 1, 1, 1, 2, 2, 2, 3 };
 /// "Bug in zelda, might read index 15" -- the tail past index 9 is whatever
 /// followed the array in the original ROM, and is reproduced rather than fixed.
 const kKickback_y1 = [16]i8{
-    0,          1,          1,          2,          2,          2,          3,          3,
-    3,          3,          @bitCast(@as(u8, 0xa5)), 0x30,      @bitCast(@as(u8, 0xf0)), 0x04,
-    @bitCast(@as(u8, 0xa5)), 0x31,
+    0, 1, 1,                       2,    2,                       2,    3,                       3,
+    3, 3, @bitCast(@as(u8, 0xa5)), 0x30, @bitCast(@as(u8, 0xf0)), 0x04, @bitCast(@as(u8, 0xa5)), 0x31,
 };
 
 /// PushBlock_AttemptToPushTheBlock. Indexed by PushBlock_GetTargetTileFlag's
@@ -2900,8 +2899,7 @@ pub export fn LinkItem_Bow() callconv(.c) void {
         return;
     }
 
-    const obj = AncillaAdd_Arrow(9, vars.link_direction_facing.*, 2,
-        vars.link_x_coord.*, vars.link_y_coord.*);
+    const obj = AncillaAdd_Arrow(9, vars.link_direction_facing.*, 2, vars.link_x_coord.*, vars.link_y_coord.*);
     if (obj >= 0) {
         if (vars.archery_game_arrows_left.* != 0) {
             vars.archery_game_arrows_left.* -%= 1;
@@ -4069,10 +4067,10 @@ pub export fn SearchForByrnaSpark() callconv(.c) bool {
 
 pub export fn LinkItem_Net() callconv(.c) void {
     const kBugNetTimers = [40]u8{
-        11, 6, 7, 8, 1,  2, 3, 4, 5, 6,
-        1,  2, 3, 4, 5,  6, 7, 8, 1, 2,
-        9,  4, 5, 6, 7,  8, 1, 2, 3, 4,
-        10, 8, 1, 2, 3,  4, 5, 6, 7, 8,
+        11, 6, 7, 8, 1, 2, 3, 4, 5, 6,
+        1,  2, 3, 4, 5, 6, 7, 8, 1, 2,
+        9,  4, 5, 6, 7, 8, 1, 2, 3, 4,
+        10, 8, 1, 2, 3, 4, 5, 6, 7, 8,
     };
     if (vars.button_mask_b_y.* & 0x40 == 0) {
         if (vars.is_standing_in_doorway.* != 0 or !CheckYButtonPress())
@@ -4243,8 +4241,8 @@ pub export fn Link_APress_LiftCarryThrow() callconv(.c) void {
         const kLiftTab0 = [10]u8{ 8, 24, 8, 24, 8, 32, 6, 8, 13, 13 };
         const kLiftTab1 = [10]u8{ 0, 1, 0, 1, 0, 1, 0, 1, 2, 3 };
         const kLiftTab2 = [29]u8{
-            6,    7,    7,    5,    10,   0,    23, 0,    18,   0,
-            18,   0,    8,    0,    8,    0,    254, 255, 17,   0,
+            6,    7,    7,    5,    10,   0,    23,   0,    18,   0,
+            18,   0,    8,    0,    8,    0,    254,  255,  17,   0,
             0x54, 0x52, 0x50, 0xFF, 0x51, 0x53, 0x55, 0x56, 0x57,
         };
 
@@ -6500,12 +6498,14 @@ pub export fn Link_HandleLiftables() callconv(.c) u8 {
     tile_detect.TileDetect_ResetState();
 
     // These two live in zelda_rtl.zig, not player_tables.zig, and are int8.
-    const y0 = (vars.link_y_coord.* +% @as(u16, @bitCast(@as(i16,
+    const y0 = (vars.link_y_coord.* +% @as(u16, @bitCast(@as(
+        i16,
         rtl.kGetBestActionToPerformOnTile_y[vars.link_direction_facing.* >> 1],
     )))) & vars.tilemap_location_calc_mask.*;
     const y1 = (vars.link_y_coord.* +% 20) & vars.tilemap_location_calc_mask.*;
 
-    const x0 = ((vars.link_x_coord.* +% @as(u16, @bitCast(@as(i16,
+    const x0 = ((vars.link_x_coord.* +% @as(u16, @bitCast(@as(
+        i16,
         rtl.kGetBestActionToPerformOnTile_x[vars.link_direction_facing.* >> 1],
     )))) & vars.tilemap_location_calc_mask.*) >> 3;
     const x1 = ((vars.link_x_coord.* +% 8) & vars.tilemap_location_calc_mask.*) >> 3;
@@ -6802,8 +6802,8 @@ pub export fn Link_HandleVelocity() callconv(.c) void {
     } // endif_7
 
     const kSpeedMod = [27]u8{
-        24, 16, 10, 24, 16, 8, 8, 4, 12, 16, 9, 25, 20, 13,
-        16, 8, 64, 42, 16, 8, 4, 2, 48, 24, 32, 21, 0,
+        24, 16, 10, 24, 16, 8, 8, 4, 12, 16, 9,  25, 20, 13,
+        16, 8,  64, 42, 16, 8, 4, 2, 48, 24, 32, 21, 0,
     };
 
     const vel = vars.link_speed_modifier.* +% kSpeedMod[r0];
@@ -7968,6 +7968,15 @@ test "Link_ResetProperties_C clears item and button state" {
     try std.testing.expectEqual(@as(u8, 0), vars.link_auxiliary_state.*);
 }
 
+/// Digs since the digging game last turned up a heart piece. The game's own
+/// odds are one in 32 a dig, and only from the 25th of a round, which can go
+/// cold for a very long time, so DiggingGamePity hands the piece over outright
+/// once the drought reaches `kDiggingGamePity`. It lives here rather than in
+/// the game's ram so that nothing of it reaches the save file, which stays
+/// exactly the 8K a SNES cart holds: it lasts as long as the program runs.
+var g_digs_since_heart_piece: u32 = 0;
+const kDiggingGamePity = 250;
+
 pub export fn DiggingGameGuy_AttemptPrizeSpawn() callconv(.c) void {
     const kDiggingGameGuy_Xvel = [2]i8{ -16, 16 };
     const kDiggingGameGuy_X = [2]i8{ 0, 19 };
@@ -7976,22 +7985,43 @@ pub export fn DiggingGameGuy_AttemptPrizeSpawn() callconv(.c) void {
     vars.beamos_x_hi[1] +%= 1;
     if (vars.link_y_coord.* >= 0xb18)
         return;
+    g_digs_since_heart_piece +|= 1;
+    // The piece is a one-off. Once it's been dug up the field's flag is set
+    // and the sprite kills itself the frame it appears, so don't let a dig
+    // or the pity be spent on one that can never show.
+    const taken = vars.save_ow_event_info[loPtr(vars.overworld_screen_index).*] & 0x40 != 0;
+    // Still one a round: a round that has had its piece waits for the next.
+    const pity_due = !taken and
+        features.enhanced_features0.* & features.kFeatures0_DiggingGamePity != 0 and
+        g_digs_since_heart_piece >= kDiggingGamePity and vars.beamos_x_hi[0] == 0;
     var j: c_int = misc.GetRandomNumber() & 7;
     var item_to_spawn: u8 = undefined;
+    var want_heart = false;
     switch (j) {
         0, 1, 2, 3 => item_to_spawn = kDiggingGameGuy_Items[@intCast(j)],
         4 => {
-            if (vars.beamos_x_hi[1] < 25 or vars.beamos_x_hi[0] != 0 or
-                (misc.GetRandomNumber() & 3) != 0)
+            want_heart = !taken and vars.beamos_x_hi[1] >= 25 and vars.beamos_x_hi[0] == 0 and
+                (misc.GetRandomNumber() & 3) == 0;
+            if (!want_heart and !pity_due)
                 return;
-            vars.beamos_x_hi[0] = 0xeb;
-            item_to_spawn = 0xeb;
+            want_heart = true;
         },
-        else => return,
+        else => {
+            if (!pity_due)
+                return;
+            want_heart = true;
+        },
+    }
+    if (want_heart) {
+        vars.beamos_x_hi[0] = 0xeb;
+        item_to_spawn = 0xeb;
     }
     var info: sprite.SpriteSpawnInfo = undefined;
     j = sprite.Sprite_SpawnDynamically(4, item_to_spawn, &info); // zelda bug: 4 wtf...
     if (j >= 0) {
+        // Only once it's really out there: a spawn with no slot free loses
+        // the piece, and the count should carry on toward the next one.
+        if (want_heart) g_digs_since_heart_piece = 0;
         const u: usize = @intCast(j);
         const i: usize = @intFromBool(vars.link_direction_facing.* != 4);
         vars.sprite_x_vel[u] = @bitCast(kDiggingGameGuy_Xvel[i]);
