@@ -27,8 +27,7 @@
         packages.default = 
           with pkgs; 
           stdenv.mkDerivation {
-            pname = "zelda3";
-            version = "1.2.1";
+            name = "zelda3";
             src = ./.;
 
             nativeBuildInputs = [ zig.hook pkg-config makeWrapper ];
