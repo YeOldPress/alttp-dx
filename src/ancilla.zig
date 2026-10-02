@@ -1489,9 +1489,12 @@ pub export fn Boomerang_ScreenEdge(k: c_int) callconv(.c) bool {
     const x = Ancilla_GetX(k);
     const y = Ancilla_GetY(k);
     if (vars.hookshot_effect_index.* & 3 != 0) {
-        const t = x +% @as(u16, if (vars.hookshot_effect_index.* & 1 != 0) 16 else 0) -%
+        // The margins are screen too, so it flies out to their edge. A wall
+        // out there still clinks it back, the same as one in the middle.
+        const xt = tileCheckExtraX();
+        const t = x +% @as(u16, if (vars.hookshot_effect_index.* & 1 != 0) 16 else 0) +% xt -%
             vars.BG2HOFS_copy2.*;
-        if (t >= 0x100)
+        if (t >= 0x100 + 2 * xt)
             return true;
     }
     if (vars.hookshot_effect_index.* & 12 != 0) {

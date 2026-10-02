@@ -253,15 +253,23 @@ fn intMax(a: c_int, b: c_int) c_int {
 }
 
 /// Whether the HUD is on screen, in BG3's tilemap rows 2 to 7: playing in
-/// a dungeon or outdoors, and the interface's states that keep the game
-/// showing behind them - the item menu (whose slide pushes the HUD down the
-/// screen), text, potion refills, the desert prayer, the save menu. The maps
-/// draw their own things there, and the title and file screens have no HUD.
+/// a dungeon or outdoors, the death screen and the victory sequences that
+/// keep the room playing behind them, and the interface's states that keep
+/// the game showing behind them - the item menu (whose slide pushes the HUD
+/// down the screen), text, potion refills, the desert prayer, the save menu.
+/// The maps draw their own things there, and the title and file screens have
+/// no HUD.
 pub fn hudOnScreen() bool {
     return switch (vars.main_module_index.*) {
-        7, 9, 0x0b, 0x0f, 0x10, 0x11, 0x15 => true,
+        7, 9, 0x0b, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x15, 0x16, 0x18 => true,
         0x0e => switch (vars.submodule_index.*) {
             1, 2, 4, 5, 8, 9, 0x0b => true,
+            // The maps and the flute menu take the whole screen for
+            // themselves, but the HUD is still the thing on BG3 while the
+            // game fades out into them, and again as it fades back.
+            3 => vars.overworld_map_state.* == 0 or vars.overworld_map_state.* == 8,
+            7 => vars.overworld_map_state.* == 0,
+            0x0a => vars.overworld_map_state.* == 0 or vars.overworld_map_state.* == 9,
             else => false,
         },
         else => false,
@@ -308,6 +316,18 @@ pub fn widescreenSideSpace(max: c_int) struct { left: c_int, right: c_int, botto
     // is the warp to the pyramid after Agahnim, once it's landed outside.
     if (mod == 11 or (mod == 21 and vars.player_is_indoors.* == 0))
         mod = 9;
+    // Agahnim beaten: the tower's room fades out and the pyramid comes up,
+    // with the bat on its way to smash it. The indoors flag goes over before
+    // the screen does, so the room's rules hold until the pyramid's loading.
+    if (mod == 24)
+        mod = if (vars.overworld_map_state.* < 3) 7 else 9;
+    // Dying plays out in the room or the area it happened in, and then the
+    // world's layers go off and the screen is the game over screen: a
+    // backdrop, the HUD and Link, which fill the width as the title does.
+    // They come back on at the end, for the fairy to put Link down in.
+    const game_over = mod == 18 and (vars.TM_copy.* | vars.TS_copy.*) & 3 == 0;
+    if (mod == 18 and !game_over)
+        mod = if (vars.player_is_indoors.* != 0) 7 else 9;
     if (mod == 9) {
         if (vars.main_module_index.* == 14 and vars.submodule_index.* == 7 and vars.overworld_map_state.* >= 4) {
             // World map
@@ -367,12 +387,49 @@ pub fn widescreenSideSpace(max: c_int) struct { left: c_int, right: c_int, botto
             extra_left = @min(extra_left, intMax(cam - (door - 256), 0));
             extra_right = @min(extra_right, intMax(door - cam, 0));
         }
-    } else if (mod == 20 or mod == 0 or mod == 1) {
+    } else if (mod == 20 or mod == 26 or mod == 0 or mod == 1 or mod == 2 or mod == 3 or mod == 4 or game_over) {
         extra_left = max;
         extra_right = max;
         extra_bottom = 16;
     }
     return .{ .left = extra_left, .right = extra_right, .bottom = extra_bottom };
+}
+
+/// The file select screens and the one you name a file on draw their backdrop
+/// 32 tiles wide, which is a 4:3 screen exactly; the rest of the map still
+/// holds the blank they were erased with, so the margins come out black. Lays
+/// the backdrop's own two tiles along the rest of the map so the pattern
+/// carries on past the old edges. The boxes and text stay where they are.
+fn extendMenuBackdrop(ppu: *Ppu) void {
+    switch (vars.main_module_index.*) {
+        1, 2, 3, 4 => {},
+        else => return,
+    }
+    const bg = &ppu.bgLayer[0];
+    if (!bg.tilemapWider or bg.hScroll != 0) return;
+    const vram = g_zenv.vram.?;
+    const base: u32 = bg.tilemapAdr;
+    const pair = [2]u16{ vram[base], vram[base + 1] };
+    for (0..32) |row| {
+        const dst = base + 0x400 + @as(u32, @intCast(row)) * 32;
+        for (0..32) |c| vram[dst + c] = pair[c & 1];
+    }
+}
+
+/// How far past the 4:3 screen's sides a sprite still counts as being on
+/// screen. The game keeps them going for 64 pixels past the edge and kills
+/// or sleeps them beyond that; the margins add however much of the world is
+/// really showing out there, so a sprite you can see stays awake, and one in
+/// a part of a room the margins don't reach sleeps on as it would at 4:3.
+pub fn spriteSideSpace() struct { left: u16, right: u16 } {
+    if (features.enhanced_features0.* & features.kFeatures0_ExtendScreen64 == 0)
+        return .{ .left = 0, .right = 0 };
+    const s = widescreenSideSpace(kPpuExtraLeftRight);
+    const cap: c_int = @min(@as(c_int, config.g_config.extended_aspect_ratio), kPpuExtraLeftRight);
+    return .{
+        .left = @intCast(std.math.clamp(s.left, 0, cap)),
+        .right = @intCast(std.math.clamp(s.right, 0, cap)),
+    };
 }
 
 /// The circle's real edges for the line the spotlight's HDMA last set the
@@ -415,6 +472,7 @@ pub export fn ZeldaDrawPpuFrame(pixel_buffer: [*]u8, pitch: usize, render_flags:
 
     if (ppu.extraLeftRight != 0 or render_flags & kPpuRenderFlags_Height240 != 0)
         ConfigurePpuSideSpace();
+    if (ppu.extraLeftRight != 0) extendMenuBackdrop(ppu);
     ConfigureHudSplit(ppu);
 
     const height: c_int = if (render_flags & kPpuRenderFlags_Height240 != 0) 240 else 224;

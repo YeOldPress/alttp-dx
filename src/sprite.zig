@@ -7,6 +7,7 @@
 const std = @import("std");
 const vars = @import("variables.zig");
 const tables = @import("sprite_tables.zig");
+const config = @import("config.zig");
 const features = @import("features.zig");
 const misc = @import("misc.zig");
 const load_gfx = @import("load_gfx.zig");
@@ -14,6 +15,7 @@ const overlord = @import("overlord.zig");
 const overworld = @import("overworld.zig");
 const tagalong = @import("tagalong.zig");
 const tile_detect = @import("tile_detect.zig");
+const zelda_rtl = @import("zelda_rtl.zig");
 const main_mod = @import("main.zig");
 
 const g_ram = &vars.g_ram;
@@ -380,9 +382,9 @@ pub export fn Garnish_SparkleCommon(k: c_int, shift: u8) callconv(.c) void {
         return;
     const oam = GetOamCurPtr();
     const j: usize = vars.garnish_sprite[ki];
-    SetOamPlain(
+    SetOamHelper1(
         oam,
-        @truncate(pt.x),
+        pt.x,
         @truncate(pt.y),
         tables.kGarnishSparkle_Char[tv],
         ((vars.sprite_oam_flags[j] | vars.sprite_obj_prio[j]) & 0xf0) | 4,
@@ -397,9 +399,9 @@ pub export fn Garnish_DustCommon(k: c_int, shift: u8) callconv(.c) void {
     if (Garnish_ReturnIfPrepFails(k, &pt))
         return;
     const oam = GetOamCurPtr();
-    SetOamPlain(
+    SetOamHelper1(
         oam,
-        @truncate(pt.x),
+        pt.x,
         @truncate(pt.y),
         tables.kRunningManDust_Char[vars.tmp_counter.*],
         0x24,
@@ -409,14 +411,14 @@ pub export fn Garnish_DustCommon(k: c_int, shift: u8) callconv(.c) void {
 
 pub export fn SpriteModule_Explode(k: c_int) callconv(.c) void {
     const kSpriteExplode_Dmd = [32]DrawMultipleData{
-        d(0, 0, 0x0060, 2),   d(0, 0, 0x0060, 2),   d(0, 0, 0x0060, 2),   d(0, 0, 0x0060, 2),
-        d(-5, -5, 0x0062, 2), d(5, -5, 0x4062, 2),  d(-5, 5, 0x8062, 2),  d(5, 5, 0xc062, 2),
-        d(-8, -8, 0x0062, 2), d(8, -8, 0x4062, 2),  d(-8, 8, 0x8062, 2),  d(8, 8, 0xc062, 2),
-        d(-8, -8, 0x0064, 2), d(8, -8, 0x4064, 2),  d(-8, 8, 0x8064, 2),  d(8, 8, 0xc064, 2),
-        d(-8, -8, 0x0066, 2), d(8, -8, 0x4066, 2),  d(-8, 8, 0x8066, 2),  d(8, 8, 0xc066, 2),
-        d(-8, -8, 0x0068, 2), d(8, -8, 0x0068, 2),  d(-8, 8, 0x0068, 2),  d(8, 8, 0x0068, 2),
-        d(-8, -8, 0x006a, 2), d(8, -8, 0x406a, 2),  d(-8, 8, 0x806a, 2),  d(8, 8, 0xc06a, 2),
-        d(-8, -8, 0x004e, 2), d(8, -8, 0x404e, 2),  d(-8, 8, 0x804e, 2),  d(8, 8, 0xc04e, 2),
+        d(0, 0, 0x0060, 2),   d(0, 0, 0x0060, 2),  d(0, 0, 0x0060, 2),  d(0, 0, 0x0060, 2),
+        d(-5, -5, 0x0062, 2), d(5, -5, 0x4062, 2), d(-5, 5, 0x8062, 2), d(5, 5, 0xc062, 2),
+        d(-8, -8, 0x0062, 2), d(8, -8, 0x4062, 2), d(-8, 8, 0x8062, 2), d(8, 8, 0xc062, 2),
+        d(-8, -8, 0x0064, 2), d(8, -8, 0x4064, 2), d(-8, 8, 0x8064, 2), d(8, 8, 0xc064, 2),
+        d(-8, -8, 0x0066, 2), d(8, -8, 0x4066, 2), d(-8, 8, 0x8066, 2), d(8, 8, 0xc066, 2),
+        d(-8, -8, 0x0068, 2), d(8, -8, 0x0068, 2), d(-8, 8, 0x0068, 2), d(8, 8, 0x0068, 2),
+        d(-8, -8, 0x006a, 2), d(8, -8, 0x406a, 2), d(-8, 8, 0x806a, 2), d(8, 8, 0xc06a, 2),
+        d(-8, -8, 0x004e, 2), d(8, -8, 0x404e, 2), d(-8, 8, 0x804e, 2), d(8, 8, 0xc04e, 2),
     };
 
     const ki: usize = @intCast(k);
@@ -1768,9 +1770,9 @@ pub export fn Sprite_PrepOamCoordOrDoubleRet(k: c_int, ret: *PrepOamCoordsRet) c
     R2().* = y -% vars.sprite_z[ki];
     ret.flags = vars.sprite_oam_flags[ki] ^ vars.sprite_obj_prio[ki];
     ret.r4 = 0;
-    const xt: u16 = if (features.enhanced_features0.* & features.kFeatures0_ExtendScreen64 != 0) 0x40 else 0;
+    const xs = zelda_rtl.spriteSideSpace();
 
-    if ((x +% 0x40 +% xt) >= (0x170 + xt * 2) or
+    if ((x +% 0x40 +% xs.left) >= (0x170 + xs.left + xs.right) or
         ((y +% 0x40) >= 0x170 and vars.sprite_flags4[ki] & 0x20 == 0))
     {
         vars.sprite_pause[ki] +%= 1;
@@ -3981,9 +3983,9 @@ pub export fn Garnish15_ArrghusSplash(k: c_int) callconv(.c) void {
         oam += 1;
     }) {
         const j: usize = @as(usize, @intCast(i)) + g;
-        SetOamPlain(
+        SetOamHelper1(
             oam,
-            @truncate(pt.x +% @as(u16, @bitCast(@as(i16, tables.kArrghusSplash_X[j])))),
+            pt.x +% @as(u16, @bitCast(@as(i16, tables.kArrghusSplash_X[j]))),
             @truncate(pt.y +% @as(u16, @bitCast(@as(i16, tables.kArrghusSplash_Y[j])))),
             tables.kArrghusSplash_Char[j],
             tables.kArrghusSplash_Flags[j],
@@ -4031,8 +4033,8 @@ pub export fn Garnish11_WitheringGanonBatFlame(k: c_int) callconv(.c) void {
     if (Garnish_ReturnIfPrepFails(k, &pt))
         return;
     const oam = GetOamCurPtr();
-    SetOamPlain(oam + 0, @truncate(pt.x +% 0), @truncate(pt.y), 0xa4, 0x22, 0);
-    SetOamPlain(oam + 1, @truncate(pt.x +% 8), @truncate(pt.y), 0xa5, 0x22, 0);
+    SetOamHelper1(oam + 0, pt.x +% 0, @truncate(pt.y), 0xa4, 0x22, 0);
+    SetOamHelper1(oam + 1, pt.x +% 8, @truncate(pt.y), 0xa5, 0x22, 0);
 }
 
 pub export fn Garnish10_GanonBatFlame(k: c_int) callconv(.c) void {
@@ -4043,9 +4045,9 @@ pub export fn Garnish10_GanonBatFlame(k: c_int) callconv(.c) void {
     if (Garnish_ReturnIfPrepFails(k, &pt))
         return;
     const j: usize = tables.kGanonBatFlame_Idx[vars.garnish_countdown[ki] >> 3];
-    SetOamPlain(
+    SetOamHelper1(
         GetOamCurPtr(),
-        @truncate(pt.x),
+        pt.x,
         @truncate(pt.y),
         tables.kGanonBatFlame_Char[j],
         tables.kGanonBatFlame_Flags[j] | 0x22,
@@ -4062,9 +4064,9 @@ pub export fn Garnish0C_TrinexxIceBreath(k: c_int) callconv(.c) void {
     var pt: Point16U = undefined;
     if (Garnish_ReturnIfPrepFails(k, &pt))
         return;
-    SetOamPlain(
+    SetOamHelper1(
         GetOamCurPtr(),
-        @truncate(pt.x),
+        pt.x,
         @truncate(pt.y),
         tables.kTrinexxIce_Char[vars.garnish_countdown[ki] >> 4],
         tables.kTrinexxIce_Flags[(vars.garnish_countdown[ki] >> 2) & 3] | 0x35,
@@ -4086,9 +4088,9 @@ pub export fn Garnish0A_CannonSmoke(k: c_int) callconv(.c) void {
     if (Garnish_ReturnIfPrepFails(k, &pt))
         return;
     const j: usize = vars.garnish_sprite[ki];
-    SetOamPlain(
+    SetOamHelper1(
         GetOamCurPtr(),
-        @truncate(pt.x),
+        pt.x,
         @truncate(pt.y),
         tables.kGarnish_CannonPoof_Char[vars.garnish_countdown[ki] >> 3],
         tables.kGarnish_CannonPoof_Flags[j] | 4,
@@ -4103,9 +4105,9 @@ pub export fn Garnish09_LightningTrail(k: c_int) callconv(.c) void {
         return;
     const j: usize = vars.garnish_sprite[ki];
     const sub: u8 = if (loPtr(vars.dungeon_room_index2).* == 0x20) 0x80 else 0;
-    SetOamPlain(
+    SetOamHelper1(
         GetOamCurPtr(),
-        @truncate(pt.x),
+        pt.x,
         @truncate(pt.y),
         tables.kLightningTrail_Char[j] -% sub,
         ((vars.frame_counter.* << 1) & 0xe) | tables.kLightningTrail_Flags[j],
@@ -4141,9 +4143,9 @@ pub export fn Garnish07_BabasuFlash(k: c_int) callconv(.c) void {
     if (Garnish_ReturnIfPrepFails(k, &pt))
         return;
     const j: usize = vars.garnish_countdown[ki] >> 3;
-    SetOamPlain(
+    SetOamHelper1(
         GetOamCurPtr(),
-        @truncate(pt.x),
+        pt.x,
         @truncate(pt.y),
         tables.kBabusuFlash_Char[j],
         tables.kBabusuFlash_Flags[j],
@@ -4158,9 +4160,9 @@ pub export fn Garnish08_KholdstareTrail(k: c_int) callconv(.c) void {
         return;
     const i: usize = vars.garnish_countdown[ki] >> 2;
     const j: usize = vars.garnish_sprite[ki];
-    SetOamPlain(
+    SetOamHelper1(
         GetOamCurPtr(),
-        @truncate(pt.x +% @as(u16, @bitCast(@as(i16, tables.kGarnish_Nebule_XY[i])))),
+        pt.x +% @as(u16, @bitCast(@as(i16, tables.kGarnish_Nebule_XY[i]))),
         @truncate(pt.y +% @as(u16, @bitCast(@as(i16, tables.kGarnish_Nebule_XY[i])))),
         tables.kGarnish_Nebule_Char[i],
         (vars.sprite_oam_flags[j] | vars.sprite_obj_prio[j]) & ~@as(u8, 1),
@@ -4174,9 +4176,9 @@ pub export fn Garnish06_ZoroTrail(k: c_int) callconv(.c) void {
     if (Garnish_ReturnIfPrepFails(k, &pt))
         return;
     const j: usize = vars.garnish_sprite[ki];
-    SetOamPlain(
+    SetOamHelper1(
         GetOamCurPtr(),
-        @truncate(pt.x),
+        pt.x,
         @truncate(pt.y),
         0x75,
         vars.sprite_oam_flags[j] | vars.sprite_obj_prio[j],
@@ -4198,9 +4200,9 @@ pub export fn Garnish0E_TrinexxFireBreath(k: c_int) callconv(.c) void {
     if (Garnish_ReturnIfPrepFails(k, &pt))
         return;
     const j: usize = vars.garnish_sprite[ki];
-    SetOamPlain(
+    SetOamHelper1(
         GetOamCurPtr(),
-        @truncate(pt.x),
+        pt.x,
         @truncate(pt.y),
         tables.kTrinexxLavaBubble_Char[vars.garnish_countdown[ki] >> 3],
         ((vars.sprite_oam_flags[j] | vars.sprite_obj_prio[j]) & 0xf0) | 0xe,
@@ -4214,9 +4216,9 @@ pub export fn Garnish0F_BlindLaserTrail(k: c_int) callconv(.c) void {
     if (Garnish_ReturnIfPrepFails(k, &pt))
         return;
     const j: usize = vars.garnish_sprite[ki];
-    SetOamPlain(
+    SetOamHelper1(
         GetOamCurPtr(),
-        @truncate(pt.x),
+        pt.x,
         @truncate(pt.y),
         tables.kBlindLaserTrail_Char[vars.garnish_oam_flags[ki] - 7],
         vars.sprite_oam_flags[j] | vars.sprite_obj_prio[j],
@@ -4229,9 +4231,9 @@ pub export fn Garnish04_LaserTrail(k: c_int) callconv(.c) void {
     var pt: Point16U = undefined;
     if (Garnish_ReturnIfPrepFails(k, &pt))
         return;
-    SetOamPlain(
+    SetOamHelper1(
         GetOamCurPtr(),
-        @truncate(pt.x),
+        pt.x,
         @truncate(pt.y),
         tables.kLaserBeamTrail_Char[vars.garnish_oam_flags[ki]],
         0x25,
@@ -4239,16 +4241,28 @@ pub export fn Garnish04_LaserTrail(k: c_int) callconv(.c) void {
     );
 }
 
+/// How far past the 4:3 screen's sides a garnish still counts as on screen.
+fn garnishExtraX() u16 {
+    if (features.enhanced_features0.* & features.kFeatures0_WidescreenVisualFixes == 0) return 0;
+    return config.g_config.extended_aspect_ratio;
+}
+
+/// A garnish is thrown away the moment it leaves the screen, which the game
+/// sizes at 256 pixels. The margins are screen too, so a fire snake's tail
+/// and the like would vanish out there while you can still see them. `pt.x`
+/// comes back as the 9 bit coordinate OAM takes, which reaches either way
+/// past the 4:3 edges.
 pub export fn Garnish_ReturnIfPrepFails(k: c_int, pt: *Point16U) callconv(.c) bool {
     const ki: usize = @intCast(k);
+    const xt = garnishExtraX();
     const x = Garnish_GetX(k) -% vars.BG2HOFS_copy2.*;
     const y = Garnish_GetY(k) -% vars.BG2VOFS_copy2.*;
 
-    if (x >= 256 or y >= 256) {
+    if (x +% xt >= 256 + 2 * xt or y >= 256) {
         vars.garnish_type[ki] = 0;
         return true;
     }
-    pt.x = x;
+    pt.x = x & 0x1ff;
     pt.y = y -% 16;
     return false;
 }
@@ -4282,9 +4296,9 @@ pub export fn Garnish01_FireSnakeTail(k: c_int) callconv(.c) void {
     if (Garnish_ReturnIfPrepFails(k, &pt))
         return;
     const j: usize = vars.garnish_sprite[ki];
-    SetOamPlain(
+    SetOamHelper1(
         GetOamCurPtr(),
-        @truncate(pt.x),
+        pt.x,
         @truncate(pt.y),
         0x28,
         vars.sprite_oam_flags[j] | vars.sprite_obj_prio[j],
@@ -4840,9 +4854,10 @@ test "velocity to angle survives a component the table cannot reach" {
     // Everything the table does hold is untouched, the deliberate walk into the
     // next quadrant row included: the value still comes from the raw index.
     const in_range = [_]struct { x: u8, y: u8 }{
-        .{ .x = 0, .y = 0 },       .{ .x = 16, .y = 0 },
+        .{ .x = 0, .y = 0 }, .{ .x = 16, .y = 0 },
         .{ .x = 0x40, .y = 0x20 }, // minor 32, so index 8: into the next row
-        .{ .x = 0x7c, .y = 0x1c }, .{ .x = 200, .y = 16 },
+        .{ .x = 0x7c, .y = 0x1c },
+        .{ .x = 200, .y = 16 },
     };
     for (in_range) |c| {
         var x = c.x;
@@ -4895,4 +4910,3 @@ test "Sprite_ScheduleForBreakage sets the breakage state the C does" {
     try std.testing.expectEqual(@as(u8, 6), vars.sprite_state[2]);
     try std.testing.expectEqual(@as(u8, 5), vars.sprite_flags2[2]);
 }
-

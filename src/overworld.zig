@@ -2007,6 +2007,10 @@ fn addOverlayScrollX(r4: u16) void {
 /// the camera moves right they're a column further on.
 fn snapCameraX() void {
     if (!wideCameraOn()) return;
+    // The room the Triforce is in borrows a special area to stand its scene
+    // up in, and puts the camera somewhere of its own outside that area's
+    // range. Pulling it into range tears the scene apart.
+    if (vars.main_module_index.* == 25) return;
     const xs = vars.ow_scroll_vars0.xstart;
     const xe = vars.ow_scroll_vars0.xend;
     if (xe < xs) return;
