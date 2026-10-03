@@ -34,8 +34,8 @@ pub const Lang = struct {
 /// The language a code like "fr-c" names; underscores work too, as in the
 /// file names.
 pub fn fromCode(code: []const u8) ?Language {
-    inline for (@typeInfo(Language).@"enum".fields) |f| {
-        const lang: Language = @enumFromInt(f.value);
+    inline for (@typeInfo(Language).@"enum".field_values) |value| {
+        const lang: Language = @enumFromInt(value);
         if (eqlLoose(get(lang).code, code)) return lang;
     }
     return null;

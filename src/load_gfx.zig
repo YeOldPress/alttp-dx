@@ -1504,7 +1504,7 @@ pub export fn IrisSpotlight_ResetTable() callconv(.c) void {
 /// so a line the table's since been rewritten for (by the water, say) isn't
 /// taken for the circle's.
 pub const SpotlightWide = struct { narrow: u16, left: i16, right: i16 };
-pub var g_spotlight_wide = [_]SpotlightWide{.{ .narrow = 0xff, .left = 255, .right = 0 }} ** 240;
+pub var g_spotlight_wide: [240]SpotlightWide = @splat(.{ .narrow = 0xff, .left = 255, .right = 0 });
 
 /// The circle's half-width on one line, or null for a line it misses.
 fn spotlightHalfWidth(a: u8) ?u16 {

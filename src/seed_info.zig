@@ -259,6 +259,6 @@ test "prizes and medallions decode the way the randomizer writes them" {
     try std.testing.expectEqual(Prize.green_pendant, prize(0x00, 0x04));
     try std.testing.expectEqual(Medallion.quake, medallion(2));
     // Too small to be a seed: nothing is guessed.
-    const info = read(&[_]u8{0} ** 16);
+    const info = read(&@as([16]u8, @splat(0)));
     try std.testing.expectEqualStrings("?", info.goal);
 }

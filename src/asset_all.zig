@@ -147,7 +147,7 @@ fn addDungeonRoomsFromRom(b: *Builder, alloc: std.mem.Allocator, rom: Rom) !void
     try b.addMany("kStartingPoint_", kEntranceFields[0..11]);
     // Starting points have no doorway orientation table; the old Python writes
     // zeros in its place.
-    try b.add("kStartingPoint_doorwayOrientation", .uint8, try alloc.dupe(u8, &[_]u8{0} ** 7));
+    try b.add("kStartingPoint_doorwayOrientation", .uint8, try alloc.dupe(u8, &@as([7]u8, @splat(0))));
     try b.addMany("kStartingPoint_", kEntranceFields[12..]);
     try b.add("kStartingPoint_doorSettings", .uint16, try build_mod.buildDoorSettings(alloc, rom, 0x82dc32, 7));
     try b.add("kStartingPoint_entrance", .uint8, try build_mod.buildStartingPointEntrance(alloc, rom));

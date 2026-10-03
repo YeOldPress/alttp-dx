@@ -1750,7 +1750,7 @@ var g_rom_buf: [4096]u8 = undefined;
 fn findRom(start_dir: []const u8, buf: []u8) ?[:0]const u8 {
     if (fileio.exists(kRomPath)) return kRomPath;
 
-    const joined = std.fmt.bufPrintZ(buf, "{s}/{s}", .{ start_dir, kRomPath }) catch return null;
+    const joined = std.fmt.bufPrintSentinel(buf, "{s}/{s}", .{ start_dir, kRomPath }, 0) catch return null;
     if (fileio.exists(joined.ptr)) return joined;
     return null;
 }
@@ -2619,7 +2619,7 @@ const testing = std.testing;
 /// binaries at once, and a shared name lets one delete the other's file.
 fn scratchName(buf: []u8, base: []const u8, ext: []const u8) ![:0]const u8 {
     const pid: u64 = if (builtin.os.tag == .windows) std.os.windows.GetCurrentProcessId() else @intCast(std.c.getpid());
-    return std.fmt.bufPrintZ(buf, "zig-cache-{s}-{d}.{s}", .{ base, pid, ext });
+    return std.fmt.bufPrintSentinel(buf, "zig-cache-{s}-{d}.{s}", .{ base, pid, ext }, 0);
 }
 
 test "an untouched ini round trips byte for byte" {
@@ -3066,7 +3066,7 @@ test "a setting the file lacks shows its default and is added when changed" {
     var path_buf: [64]u8 = undefined;
     // getpid() is a handle rather than a number on Windows, which has its own.
     const pid: u64 = if (builtin.os.tag == .windows) std.os.windows.GetCurrentProcessId() else @intCast(std.c.getpid());
-    const path = try std.fmt.bufPrintZ(&path_buf, "zig-cache-missing-key-{d}.ini", .{pid});
+    const path = try std.fmt.bufPrintSentinel(&path_buf, "zig-cache-missing-key-{d}.ini", .{pid}, 0);
     defer _ = fileio.remove(path);
     // An ini from before StartMenu and Rumble existed.
     try fileio.writeWholeFile(path, "[General]\n# Automatically save state\nAutosave = 0\n\n[Graphics]\nWindowScale = 3\n");

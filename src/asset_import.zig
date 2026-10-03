@@ -164,7 +164,7 @@ pub const Languages = struct {
         var buf: [1024]u8 = undefined;
         var name_buf: [32]u8 = undefined;
         for ([_][]const u8{ dialogue.fileName(&name_buf, lang), graphics.fontType(lang).file }) |name| {
-            const path = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ dir, name }) catch return false;
+            const path = std.fmt.bufPrintSentinel(&buf, "{s}/{s}", .{ dir, name }, 0) catch return false;
             if (!fileio.exists(path.ptr)) return false;
         }
         return true;
@@ -1109,7 +1109,7 @@ test "exporting the ROM and building from the files gives the standard assets" {
     // A folder of our own, since more than one test binary can run at once.
     const pid: u64 = if (@import("builtin").os.tag == .windows) std.os.windows.GetCurrentProcessId() else @intCast(std.c.getpid());
     var dir_buf: [64]u8 = undefined;
-    const dir = try std.fmt.bufPrintZ(&dir_buf, "zig-cache-export-{d}", .{pid});
+    const dir = try std.fmt.bufPrintSentinel(&dir_buf, "zig-cache-export-{d}", .{pid}, 0);
     try fileio.makeDir(dir.ptr);
     try @import("asset_export.zig").exportFiles(alloc, rom, dir, null);
 
@@ -1143,37 +1143,37 @@ test "exporting the ROM and building from the files gives the standard assets" {
 fn removeTree(dir: []const u8) void {
     var buf: [256]u8 = undefined;
     for (0..320) |i| {
-        const p = std.fmt.bufPrintZ(&buf, "{s}/dungeon/dungeon-{d}.yaml", .{ dir, i }) catch return;
+        const p = std.fmt.bufPrintSentinel(&buf, "{s}/dungeon/dungeon-{d}.yaml", .{ dir, i }, 0) catch return;
         _ = fileio.remove(p.ptr);
     }
     for (0..160) |i| {
-        const p = std.fmt.bufPrintZ(&buf, "{s}/overworld/overworld-{d}.yaml", .{ dir, i }) catch return;
+        const p = std.fmt.bufPrintSentinel(&buf, "{s}/overworld/overworld-{d}.yaml", .{ dir, i }, 0) catch return;
         _ = fileio.remove(p.ptr);
     }
     for ([_][]const u8{ "dungeon/default_rooms.yaml", "dungeon/overlay_rooms.yaml", "dialogue.txt", "map32_to_map16.txt", "linksprite.png", "font.png", "hud_icons.png" }) |f| {
-        const p = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ dir, f }) catch return;
+        const p = std.fmt.bufPrintSentinel(&buf, "{s}/{s}", .{ dir, f }, 0) catch return;
         _ = fileio.remove(p.ptr);
     }
     for ([_][]const u8{ "sound_intro.txt", "sound_indoor.txt", "sound_ending.txt", "sfx.txt", "music_info.yaml", "sound/intro.spc", "sound/indoor.spc", "sound/ending.spc" }) |f| {
-        const p = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ dir, f }) catch return;
+        const p = std.fmt.bufPrintSentinel(&buf, "{s}/{s}", .{ dir, f }, 0) catch return;
         _ = fileio.remove(p.ptr);
     }
     for (0..25) |n| {
         for ([_][]const u8{ "pcm", "pcm.brr" }) |ext| {
-            const p = std.fmt.bufPrintZ(&buf, "{s}/sound/sound{d}.{s}", .{ dir, n, ext }) catch return;
+            const p = std.fmt.bufPrintSentinel(&buf, "{s}/sound/sound{d}.{s}", .{ dir, n, ext }, 0) catch return;
             _ = fileio.remove(p.ptr);
         }
     }
     for (sheets_mod.kGroups) |g| {
-        const p = std.fmt.bufPrintZ(&buf, "{s}/sprites/sprites_{c}.png", .{ dir, g }) catch return;
+        const p = std.fmt.bufPrintSentinel(&buf, "{s}/sprites/sprites_{c}.png", .{ dir, g }, 0) catch return;
         _ = fileio.remove(p.ptr);
     }
     {
-        const p = std.fmt.bufPrintZ(&buf, "{s}/sprites/all_sheets.png", .{dir}) catch return;
+        const p = std.fmt.bufPrintSentinel(&buf, "{s}/sprites/all_sheets.png", .{dir}, 0) catch return;
         _ = fileio.remove(p.ptr);
     }
     for ([_][]const u8{ "/dungeon", "/overworld", "/sprites", "/sound", "" }) |sub| {
-        const p = std.fmt.bufPrintZ(&buf, "{s}{s}", .{ dir, sub }) catch return;
+        const p = std.fmt.bufPrintSentinel(&buf, "{s}{s}", .{ dir, sub }, 0) catch return;
         fileio.removeDir(p.ptr);
     }
 }

@@ -55,7 +55,7 @@ pub export fn snes_loadRom(snes: *Snes, data_in: [*]u8, length_in: c_int) callco
         return false;
     }
     // check headers
-    var headers = [_]CartHeader{.{ .score = -50 }} ** 4;
+    var headers: [4]CartHeader = @splat(.{ .score = -50 });
     if (length >= 0x8000) readHeader(data, 0x7fc0, &headers[0]);
     if (length >= 0x8200) readHeader(data, 0x81c0, &headers[1]);
     if (length >= 0x10000) readHeader(data, 0xffc0, &headers[2]);
@@ -202,7 +202,7 @@ fn writeTestHeader(rom: []u8, loc: usize) void {
 }
 
 test "a well formed LoROM header scores every point available" {
-    var rom = [_]u8{0} ** 0x10000;
+    var rom: [0x10000]u8 = @splat(0);
     writeTestHeader(&rom, 0x7fc0);
     var header = CartHeader{ .score = -50 };
     readHeader(&rom, 0x7fc0, &header);
@@ -219,12 +219,12 @@ test "a well formed LoROM header scores every point available" {
 }
 
 test "garbage scores below a real header" {
-    var rom = [_]u8{0xaa} ** 0x10000;
+    var rom: [0x10000]u8 = @splat(0xaa);
     var header = CartHeader{ .score = -50 };
     readHeader(&rom, 0x7fc0, &header);
     try testing.expect(header.score < 0);
 
-    var good = [_]u8{0} ** 0x10000;
+    var good: [0x10000]u8 = @splat(0);
     writeTestHeader(&good, 0x7fc0);
     var good_header = CartHeader{ .score = -50 };
     readHeader(&good, 0x7fc0, &good_header);
@@ -232,7 +232,7 @@ test "garbage scores below a real header" {
 }
 
 test "unprintable bytes in the name become dots" {
-    var rom = [_]u8{0} ** 0x10000;
+    var rom: [0x10000]u8 = @splat(0);
     writeTestHeader(&rom, 0x7fc0);
     rom[0x7fc0] = 0x01;
     rom[0x7fc1] = 0xff;
@@ -243,7 +243,7 @@ test "unprintable bytes in the name become dots" {
 }
 
 test "a HiROM location is typed as HiROM" {
-    var rom = [_]u8{0} ** 0x20000;
+    var rom: [0x20000]u8 = @splat(0);
     writeTestHeader(&rom, 0xffc0);
     rom[0xffc0 + 0x40 - 0x8000] = 0x78;
     var header = CartHeader{ .score = -50 };
@@ -252,7 +252,7 @@ test "a HiROM location is typed as HiROM" {
 }
 
 test "version 3 headers pick up the maker and game codes" {
-    var rom = [_]u8{0} ** 0x10000;
+    var rom: [0x10000]u8 = @splat(0);
     writeTestHeader(&rom, 0x7fc0);
     rom[0x7fc0 + 0x1a] = 0x33; // maker 0x33 marks a v3 header
     @memcpy(rom[0x7fc0 - 0x10 ..][0..2], "01");

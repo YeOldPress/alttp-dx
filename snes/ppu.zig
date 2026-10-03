@@ -173,7 +173,7 @@ pub export fn ppu_reset(ppu: *Ppu) callconv(.c) void {
 }
 
 pub export fn ppu_saveload(ppu: *Ppu, func: *const SaveLoadFunc, ctx: ?*anyopaque) callconv(.c) void {
-    var tmp = [_]u8{0} ** 556;
+    var tmp: [556]u8 = @splat(0);
 
     func(ctx, &ppu.vram, 0x8000 * 2);
     func(ctx, &tmp, 10);

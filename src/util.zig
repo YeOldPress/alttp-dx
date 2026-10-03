@@ -456,7 +456,7 @@ test "ApplyBps applies source read, target read and source copy" {
 }
 
 test "ApplyBps rejects a patch whose source does not match" {
-    var patch = [_]u8{ 'N', 'O', 'P', 'E' } ++ [_]u8{0} ** 12;
+    var patch = [_]u8{ 'N', 'O', 'P', 'E' } ++ @as([12]u8, @splat(0));
     var out_len: usize = 0;
     try testing.expect(ApplyBps("ABCDEFGH", 8, &patch, patch.len, &out_len) == null);
 }

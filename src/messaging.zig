@@ -2264,8 +2264,8 @@ pub export fn Text_DecodeCmd(a_in: u8, src: [*]const u8) callconv(.c) u32 {
 
 /// Perform initial parsing of the string, expanding words, processing some commands, etc.
 pub export fn Text_LoadCharacterBuffer() callconv(.c) void {
-    const dictionary = util.FindIndexInMemblk(@bitCast(g_zenv.dialogue_blk), 0);
-    const dialogue = util.FindIndexInMemblk(@bitCast(g_zenv.dialogue_blk), 1);
+    const dictionary = util.FindIndexInMemblk(g_zenv.dialogue_blk, 0);
+    const dialogue = util.FindIndexInMemblk(g_zenv.dialogue_blk, 1);
     // Text written by the settings menu comes from there rather than from the
     // game's dialogue.
     const text_str: util.MemBlk = if (settings_menu.customMessage(vars.dialogue_message_index.*)) |custom|
@@ -2569,8 +2569,8 @@ pub export fn VWF_RenderSingle(c: c_int) callconv(.c) void {
         vars.vwf_flag_next_line.* = 0;
     }
 
-    const kFontData = util.FindIndexInMemblk(@bitCast(g_zenv.dialogue_font_blk), 0).ptr.?;
-    const width = util.FindIndexInMemblk(@bitCast(g_zenv.dialogue_font_blk), 1).ptr.?[@intCast(c)];
+    const kFontData = util.FindIndexInMemblk(g_zenv.dialogue_font_blk, 0).ptr.?;
+    const width = util.FindIndexInMemblk(g_zenv.dialogue_font_blk, 1).ptr.?[@intCast(c)];
     std.debug.assert(width <= 8);
 
     const i = vars.vwf_var1.*;
@@ -2831,7 +2831,7 @@ pub export fn RenderText_Refresh() callconv(.c) void {
 
 pub export fn Text_GenerateMessagePointers() callconv(.c) void {
     // This is not actually used. Only for ram compat.
-    const dialogue = util.FindIndexInMemblk(@bitCast(g_zenv.dialogue_blk), 1);
+    const dialogue = util.FindIndexInMemblk(g_zenv.dialogue_blk, 1);
     var p: u32 = 0x1c8000;
     var dst = vars.kTextDialoguePointers;
     var i: usize = 0;

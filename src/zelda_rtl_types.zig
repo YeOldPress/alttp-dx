@@ -3,10 +3,7 @@
 const std = @import("std");
 
 /// types.h
-pub const MemBlk = extern struct {
-    ptr: ?[*]const u8,
-    size: usize,
-};
+pub const MemBlk = @import("util.zig").MemBlk;
 
 /// Must match `typedef struct ZeldaEnv` in zelda_rtl.h. The sub-objects stay
 /// untyped pointers so this file does not have to depend on the snes modules;

@@ -141,8 +141,8 @@ fn testCart(kind: u8, rom: []u8, ram: []u8, snes: *Snes) Cart {
 }
 
 test "LoROM maps bank:8000 to consecutive rom halves" {
-    var rom = [_]u8{0} ** 0x10000; // two 32k banks
-    var ram = [_]u8{0} ** 0x2000;
+    var rom: [0x10000]u8 = @splat(0); // two 32k banks
+    var ram: [0x2000]u8 = @splat(0);
     var snes = std.mem.zeroes(Snes);
     rom[0] = 0xaa;
     rom[0x7fff] = 0xbb;
@@ -155,8 +155,8 @@ test "LoROM maps bank:8000 to consecutive rom halves" {
 }
 
 test "LoROM reads below 8000 come from open bus outside the sram banks" {
-    var rom = [_]u8{0} ** 0x10000;
-    var ram = [_]u8{0} ** 0x2000;
+    var rom: [0x10000]u8 = @splat(0);
+    var ram: [0x2000]u8 = @splat(0);
     var snes = std.mem.zeroes(Snes);
     snes.openBus = 0x42;
     var cart = testCart(1, &rom, &ram, &snes);
@@ -164,8 +164,8 @@ test "LoROM reads below 8000 come from open bus outside the sram banks" {
 }
 
 test "LoROM sram is readable and writable in banks 70-7d" {
-    var rom = [_]u8{0} ** 0x10000;
-    var ram = [_]u8{0} ** 0x2000;
+    var rom: [0x10000]u8 = @splat(0);
+    var ram: [0x2000]u8 = @splat(0);
     var snes = std.mem.zeroes(Snes);
     var cart = testCart(1, &rom, &ram, &snes);
 
@@ -178,8 +178,8 @@ test "LoROM sram is readable and writable in banks 70-7d" {
 }
 
 test "HiROM maps banks to 64k windows and sram to 6000-7fff" {
-    var rom = [_]u8{0} ** 0x20000; // two 64k banks
-    var ram = [_]u8{0} ** 0x2000;
+    var rom: [0x20000]u8 = @splat(0); // two 64k banks
+    var ram: [0x2000]u8 = @splat(0);
     var snes = std.mem.zeroes(Snes);
     snes.openBus = 0x42;
     rom[0x8000] = 0x11;
@@ -199,8 +199,8 @@ test "HiROM maps banks to 64k windows and sram to 6000-7fff" {
 }
 
 test "an unloaded cart reads open bus" {
-    var rom = [_]u8{0} ** 0x100;
-    var ram = [_]u8{0} ** 0x100;
+    var rom: [0x100]u8 = @splat(0);
+    var ram: [0x100]u8 = @splat(0);
     var snes = std.mem.zeroes(Snes);
     snes.openBus = 0x42;
     var cart = testCart(0, &rom, &ram, &snes);

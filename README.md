@@ -35,7 +35,7 @@ Windows everything stays in the game's folder.
 
 ## Building
 
-You need [Zig 0.16.0](https://ziglang.org/download/) and SDL3.
+You need [Zig 0.17.0](https://ziglang.org/download/) and SDL3.
 
 ```sh
 sudo apt install libsdl3-dev   # Ubuntu 25.10 or newer

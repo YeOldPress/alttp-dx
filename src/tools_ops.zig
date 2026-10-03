@@ -166,7 +166,7 @@ pub fn extractDialogue(alloc: std.mem.Allocator, log: Log, rom_path: [:0]const u
     var name_buf: [32]u8 = undefined;
     for ([_]struct { []const u8, []const u8 }{ .{ dialogue.fileName(&name_buf, lang), text }, .{ graphics.fontType(lang).file, font } }) |f| {
         var path_buf: [1024]u8 = undefined;
-        const path = std.fmt.bufPrintZ(&path_buf, "{s}/{s}", .{ dir, f[0] }) catch return false;
+        const path = std.fmt.bufPrintSentinel(&path_buf, "{s}/{s}", .{ dir, f[0] }, 0) catch return false;
         fileio.writeWholeFile(path.ptr, f[1]) catch |e| {
             log.err("Could not write {s}: {s}", .{ path, @errorName(e) });
             return false;

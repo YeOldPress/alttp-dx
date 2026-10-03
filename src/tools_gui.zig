@@ -110,7 +110,7 @@ fn dialogCallback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, filte
     const field: Field = @enumFromInt(@intFromPtr(userdata) - 1);
     if (filelist == null or filelist[0] == null) return; // failed, or cancelled
     const path = std.mem.span(filelist[0]);
-    const copy = std.heap.c_allocator.dupeZ(u8, path) catch return;
+    const copy = std.heap.c_allocator.dupeSentinel(u8, path, 0) catch return;
     c.SDL_LockMutex(g_dialog_lock);
     defer c.SDL_UnlockMutex(g_dialog_lock);
     if (g_dialog_result) |old| std.heap.c_allocator.free(old);
@@ -219,7 +219,7 @@ fn inGameDir(alloc: std.mem.Allocator, name: []const u8) []const u8 {
 }
 
 fn exists(alloc: std.mem.Allocator, path: []const u8) bool {
-    const z = alloc.dupeZ(u8, path) catch return false;
+    const z = alloc.dupeSentinel(u8, path, 0) catch return false;
     defer alloc.free(z);
     return @import("fileio.zig").exists(z.ptr);
 }
@@ -327,7 +327,7 @@ const Ui = struct {
 
 // ------------------------------------------------------------------- pages
 
-const kLangCount = @typeInfo(Language).@"enum".fields.len;
+const kLangCount = @typeInfo(Language).@"enum".field_names.len;
 
 const kContentX = kSidebarW + 32;
 const kContentW = kWindowW - kSidebarW - 64;
@@ -426,13 +426,13 @@ fn drawLanguages(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_
 const Job = enum { build, rom_info, verify, export_files, build_from_files, extract_dialogue };
 
 fn runJob(alloc: std.mem.Allocator, st: *State, job: Job) void {
-    const rom = alloc.dupeZ(u8, st.get(.rom)) catch return;
+    const rom = alloc.dupeSentinel(u8, st.get(.rom), 0) catch return;
     defer alloc.free(rom);
-    const out = alloc.dupeZ(u8, st.get(.out)) catch return;
+    const out = alloc.dupeSentinel(u8, st.get(.out), 0) catch return;
     defer alloc.free(out);
-    const folder = alloc.dupeZ(u8, st.get(.folder)) catch return;
+    const folder = alloc.dupeSentinel(u8, st.get(.folder), 0) catch return;
     defer alloc.free(folder);
-    const lang_rom = alloc.dupeZ(u8, st.get(.lang_rom)) catch return;
+    const lang_rom = alloc.dupeSentinel(u8, st.get(.lang_rom), 0) catch return;
     defer alloc.free(lang_rom);
     defer st.refreshAvailable();
     pushLine(.info, "");
@@ -451,8 +451,8 @@ fn drawSidebar(ui: *Ui, st: *State) void {
     ui.text(20, 24, kAccent, "zelda3");
     ui.text(20, 24 + kLineH, kAccent, "tools");
     var y: f32 = 110;
-    inline for (std.meta.fields(Page)) |f| {
-        const page: Page = @enumFromInt(f.value);
+    inline for (@typeInfo(Page).@"enum".field_values) |value| {
+        const page: Page = @enumFromInt(value);
         const rect = Rect{ .x = 0, .y = y, .w = kSidebarW, .h = 40 };
         const selected = st.page == page;
         if (selected) ui.fill(rect, kPanel) else if (ui.hovered(rect)) ui.fill(rect, kPanelHover);
@@ -519,8 +519,9 @@ pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]co
     defer c.SDL_DestroyRenderer(renderer);
     var st = initialState(alloc);
     if (page_name) |name| {
-        inline for (std.meta.fields(Page)) |f| {
-            if (std.ascii.eqlIgnoreCase(f.name, name)) st.page = @enumFromInt(f.value);
+        const info = @typeInfo(Page).@"enum";
+        inline for (info.field_names, info.field_values) |field_name, value| {
+            if (std.ascii.eqlIgnoreCase(field_name, name)) st.page = @enumFromInt(value);
         }
     }
     var picks: ?[]const u8 = null;

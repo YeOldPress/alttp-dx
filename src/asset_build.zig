@@ -505,7 +505,7 @@ fn encodeLinkSheet(alloc: std.mem.Allocator, sheet: []const u8) ![]u8 {
     for (0..56) |ty| {
         for (0..16) |tx| {
             const offset = ty * 128 * 8 + tx * 8;
-            var b = [_]u8{0} ** 32;
+            var b: [32]u8 = @splat(0);
             for (0..8) |y| {
                 for (0..8) |x| {
                     const v = sheet[offset + y * 128 + x];
@@ -641,7 +641,7 @@ test "the entrance door settings and starting point fields match the reference" 
     try testing.expectEqualSlices(u8, f.contents.find("kStartingPoint_entrance").?, which);
 
     // Starting points have no doorway orientation; the field is all zero.
-    const zeros = [_]u8{0} ** 7;
+    const zeros: [7]u8 = @splat(0);
     try testing.expectEqualSlices(u8, f.contents.find("kStartingPoint_doorwayOrientation").?, &zeros);
 }
 

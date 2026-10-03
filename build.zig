@@ -51,6 +51,17 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    // SDL and the GL loader, translated once and shared, so every module that
+    // touches SDL sees the same types. sdl.zig re-exports it as `c`.
+    const sdl_c = b.addTranslateC(.{
+        .root_source_file = b.path("src/sdl_c.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sdl_c.addIncludePath(b.path("."));
+    addSdlIncludes(b, sdl_c);
+    const sdl_c_mod = sdl_c.createModule();
+
     const exe = b.addExecutable(.{
         .name = "zelda3",
         .root_module = b.createModule(.{
@@ -89,6 +100,7 @@ pub fn build(b: *std.Build) void {
     });
     zig_obj.root_module.addIncludePath(b.path("."));
     zig_obj.root_module.addImport("snes", snes_mod);
+    zig_obj.root_module.addImport("sdl_c", sdl_c_mod);
     zig_obj.root_module.addImport("default_ini", default_ini);
     exe.root_module.addObject(zig_obj);
 
@@ -102,6 +114,7 @@ pub fn build(b: *std.Build) void {
     });
     tests.root_module.addIncludePath(b.path("."));
     tests.root_module.addImport("snes", snes_mod);
+    tests.root_module.addImport("sdl_c", sdl_c_mod);
     tests.root_module.addImport("default_ini", default_ini);
     // Exercise the same C/Zig boundaries as the game while the port is in
     // progress. Real implementations replace the former panic-only stubs.
@@ -145,6 +158,7 @@ pub fn build(b: *std.Build) void {
     });
     menu_tests.root_module.addIncludePath(b.path("."));
     menu_tests.root_module.addImport("default_ini", default_ini);
+    menu_tests.root_module.addImport("sdl_c", sdl_c_mod);
     addSdlIncludes(b, menu_tests.root_module);
     linkSdlLibs(b, menu_tests.root_module);
     test_step.dependOn(&b.addRunArtifact(menu_tests).step);
@@ -204,6 +218,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     tools.root_module.addIncludePath(b.path("."));
+    tools.root_module.addImport("sdl_c", sdl_c_mod);
     addSdlIncludes(b, tools.root_module);
     linkSdlLibs(b, tools.root_module);
     tools.headerpad_max_install_names = target.result.os.tag == .macos;
@@ -211,7 +226,7 @@ pub fn build(b: *std.Build) void {
 
     const tools_run = b.addRunArtifact(tools);
     tools_run.step.dependOn(b.getInstallStep());
-    if (b.args) |args| tools_run.addArgs(args);
+    tools_run.addPassthruArgs();
     b.step("tools", "Build and run zelda3-tools").dependOn(&tools_run.step);
 
     const tools_tests = b.addTest(.{
@@ -223,6 +238,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     tools_tests.root_module.addIncludePath(b.path("."));
+    tools_tests.root_module.addImport("sdl_c", sdl_c_mod);
     addSdlIncludes(b, tools_tests.root_module);
     linkSdlLibs(b, tools_tests.root_module);
     test_step.dependOn(&b.addRunArtifact(tools_tests).step);
@@ -237,7 +253,7 @@ pub fn build(b: *std.Build) void {
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
     const run_step = b.step("run", "Build and run zelda3");
     run_step.dependOn(&run_cmd.step);
 }
@@ -246,8 +262,8 @@ pub fn build(b: *std.Build) void {
 // pkg-config, which also covers Homebrew installing outside the default search
 // path. -Dsdl-include and -Dsdl-lib override that for platforms where
 // pkg-config is not how anyone finds a library, which in practice means
-// Windows.
-fn addSdlIncludes(b: *std.Build, m: *std.Build.Module) void {
+// Windows. `m` is a Module or the TranslateC step that feeds sdl_c.
+fn addSdlIncludes(b: *std.Build, m: anytype) void {
     if (sdl_include) |dir| {
         m.addIncludePath(.{ .cwd_relative = dir });
         return;
@@ -259,10 +275,13 @@ fn addSdlIncludes(b: *std.Build, m: *std.Build.Module) void {
             m.addIncludePath(.{ .cwd_relative = arg[2..] });
         } else if (std.mem.startsWith(u8, arg, "-D")) {
             const body = arg[2..];
-            if (std.mem.indexOfScalar(u8, body, '=')) |eq| {
-                m.addCMacro(body[0..eq], body[eq + 1 ..]);
+            const eq = std.mem.indexOfScalar(u8, body, '=');
+            const name = if (eq) |i| body[0..i] else body;
+            const value = if (eq) |i| body[i + 1 ..] else "1";
+            if (@TypeOf(m) == *std.Build.Step.TranslateC) {
+                m.defineCMacro(name, value);
             } else {
-                m.addCMacro(body, "1");
+                m.addCMacro(name, value);
             }
         }
     }
@@ -291,7 +310,7 @@ fn linkSdlLibs(b: *std.Build, m: *std.Build.Module) void {
 /// Null when pkg-config is missing or knows nothing about sdl3, so the caller
 /// can fall back to a plain -lSDL3 and let the linker look in the usual places.
 fn sdl3PkgConfig(b: *std.Build, arg: []const u8) ?[]const u8 {
-    const exe_path = b.findProgram(&.{"pkg-config"}, &.{}) catch return null;
+    const exe_path = b.findProgram(.{ .names = &.{"pkg-config"} }) orelse return null;
     // A nonzero exit (no sdl3.pc installed) comes back as an error, not a code.
     var code: u8 = undefined;
     return b.runAllowFail(&.{ exe_path, arg, "sdl3" }, &code, .ignore) catch null;

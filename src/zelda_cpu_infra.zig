@@ -770,7 +770,7 @@ test "snes addresses fold into the LoROM image" {
 }
 
 test "a breakpoint patch zeroes exactly one byte" {
-    var rom = [_]u8{0xff} ** 0x100;
+    var rom: [0x100]u8 = @splat(0xff);
     PatchRomBP(&rom, 0x000010);
     try testing.expectEqual(@as(u8, 0), rom[0x10]);
     try testing.expectEqual(@as(u8, 0xff), rom[0x0f]);
@@ -778,7 +778,7 @@ test "a breakpoint patch zeroes exactly one byte" {
 }
 
 test "byte and word patches check the value they replace" {
-    var rom = [_]u8{0} ** 0x100;
+    var rom: [0x100]u8 = @splat(0);
     rom[0x20] = 0xd2;
     PatchRomByte(&rom, 0x000020, 0xd2, 0xcf);
     try testing.expectEqual(@as(u8, 0xcf), rom[0x20]);
@@ -792,7 +792,7 @@ test "byte and word patches check the value they replace" {
 }
 
 test "an array patch writes consecutive bytes" {
-    var rom = [_]u8{0} ** 0x100;
+    var rom: [0x100]u8 = @splat(0);
     PatchRomArray(&rom, 0x000040, &kFixSoItWontDecodeSheetLessThan12);
     try testing.expectEqualSlices(u8, &kFixSoItWontDecodeSheetLessThan12, rom[0x40..0x49]);
     try testing.expectEqual(@as(u8, 0), rom[0x49]);

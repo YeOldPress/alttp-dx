@@ -20,7 +20,7 @@ const Pair = yaml.Pair;
 /// something another bank provides, and isn't printed.
 const Memory = struct {
     bytes: [0x10000]u8 = @splat(0),
-    defined: std.StaticBitSet(0x10000) = .initEmpty(),
+    defined: std.StaticBitSet(0x10000) = .empty,
 
     fn load(rom: Rom, bank_ea: u32) Memory {
         var m = Memory{};

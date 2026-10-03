@@ -1620,7 +1620,7 @@ test "the digit font holds ten 10-row glyphs" {
 
 test "rendering a digit lights the pixels its glyph names" {
     const pitch = 64 * @sizeOf(u32);
-    var fb = [_]u8{0} ** (pitch * 16);
+    var fb: [pitch * 16]u8 = @splat(0);
     RenderDigit(&fb, pitch, 1, 0xffffff, false);
     // Row 0 of '1' is 0x18 == bits 3 and 4.
     const row0: [*]align(1) u32 = @ptrCast(&fb);

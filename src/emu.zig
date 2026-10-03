@@ -158,7 +158,7 @@ pub fn romKind(rom: []const u8) RomKind {
 }
 
 test "seeds are told apart by their header" {
-    var rom = [_]u8{0} ** 0x8000;
+    var rom: [0x8000]u8 = @splat(0);
     @memcpy(rom[0x7fc0..][0..13], "VT mykaDL4lMQ");
     try std.testing.expectEqual(RomKind.randomizer, romKind(&rom));
     @memcpy(rom[0x7fc0..][0..15], "ZELDANODENSETSU");

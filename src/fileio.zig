@@ -77,7 +77,7 @@ pub fn isDir(path: [*:0]const u8) bool {
     if (@import("builtin").os.tag == .windows) {
         // Windows' CRT has no opendir; a file inside a directory's "." does.
         var buf: [4096]u8 = undefined;
-        const probe = std.fmt.bufPrintZ(&buf, "{s}/.", .{std.mem.span(path)}) catch return false;
+        const probe = std.fmt.bufPrintSentinel(&buf, "{s}/.", .{std.mem.span(path)}, 0) catch return false;
         return exists(probe.ptr);
     }
     const d = opendir(path) orelse return false;

@@ -39,8 +39,9 @@ pub const Mode = enum {
     }
 
     pub fn fromName(name: []const u8) ?Mode {
-        inline for (@typeInfo(Mode).@"enum".fields) |f| {
-            if (std.ascii.eqlIgnoreCase(name, f.name)) return @enumFromInt(f.value);
+        const info = @typeInfo(Mode).@"enum";
+        inline for (info.field_names, info.field_values) |field_name, value| {
+            if (std.ascii.eqlIgnoreCase(name, field_name)) return @enumFromInt(value);
         }
         return null;
     }
@@ -403,14 +404,15 @@ fn parseBool(v: []const u8) ?bool {
 
 /// An enum value by name, with - standing in for _ the way the ini writes it.
 fn enumByName(comptime T: type, v: []const u8) ?T {
-    inline for (@typeInfo(T).@"enum".fields) |f| {
-        if (f.name.len == v.len) {
+    const info = @typeInfo(T).@"enum";
+    inline for (info.field_names, info.field_values) |name, value| {
+        if (name.len == v.len) {
             var same = true;
-            for (f.name, v) |a, b| {
+            for (name, v) |a, b| {
                 const bb = if (b == '-') '_' else std.ascii.toLower(b);
                 if (a != bb) same = false;
             }
-            if (same) return @enumFromInt(f.value);
+            if (same) return @enumFromInt(value);
         }
     }
     return null;

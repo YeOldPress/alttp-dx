@@ -1,4 +1,4 @@
-name: Set up Zig 0.16.0
+name: Set up Zig 0.17.0
 description: Downloads Zig from ziglang.org and checks it against a pinned SHA-256.
 
 # Plain shell rather than mlugg/setup-zig, which runs on Node and still
@@ -11,13 +11,13 @@ runs:
     shell: bash
     run: |
       case "$RUNNER_OS-$RUNNER_ARCH" in
-        Linux-X64)   triple=x86_64-linux;  sum=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00 ;;
-        macOS-ARM64) triple=aarch64-macos; sum=b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489 ;;
-        macOS-X64)   triple=x86_64-macos;  sum=0387557ed1877bc6a2e1802c8391953baddba76081876301c522f52977b52ba7 ;;
+        Linux-X64)   triple=x86_64-linux;  sum=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026 ;;
+        macOS-ARM64) triple=aarch64-macos; sum=b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a ;;
+        macOS-X64)   triple=x86_64-macos;  sum=4f9a1c5269aa17ebda5e6d3c2b89d6cbf36f7d2b22a0306e9ab98f25f95529c6 ;;
         *) echo "No Zig checksum for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
       esac
-      name=zig-$triple-0.16.0
-      curl -fsSL --retry 3 -o "$RUNNER_TEMP/$name.tar.xz" "https://ziglang.org/download/0.16.0/$name.tar.xz"
+      name=zig-$triple-0.17.0
+      curl -fsSL --retry 3 -o "$RUNNER_TEMP/$name.tar.xz" "https://ziglang.org/download/0.17.0/$name.tar.xz"
       # macOS has shasum, and a bare Linux container may only have sha256sum.
       if command -v sha256sum >/dev/null; then check="sha256sum -c -"; else check="shasum -a 256 -c -"; fi
       echo "$sum  $RUNNER_TEMP/$name.tar.xz" | $check
@@ -26,10 +26,10 @@ runs:
   - if: ${{ runner.os == 'Windows' }}
     shell: pwsh
     run: |
-      $name = "zig-x86_64-windows-0.16.0"
+      $name = "zig-x86_64-windows-0.17.0"
       $zip = "$env:RUNNER_TEMP\$name.zip"
-      Invoke-WebRequest -Uri "https://ziglang.org/download/0.16.0/$name.zip" -OutFile $zip -MaximumRetryCount 3
-      if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne "68659EB5F1E4EB1437A722F1DD889C5A322C9954607F5EDCF337BC3684A75A7E") {
+      Invoke-WebRequest -Uri "https://ziglang.org/download/0.17.0/$name.zip" -OutFile $zip -MaximumRetryCount 3
+      if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne "B5663F69581DCF391293FBF16C06CB80D81D806545CE618B4D0BAB7F0EB8C428") {
         throw "Zig download failed its checksum"
       }
       Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP

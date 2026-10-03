@@ -55,7 +55,7 @@ pub fn main(init: std.process.Init) !void {
 
     var args: std.ArrayList([:0]const u8) = .empty;
     defer args.deinit(alloc);
-    while (it.next()) |a| try args.append(alloc, try alloc.dupeZ(u8, a));
+    while (it.next()) |a| try args.append(alloc, try alloc.dupeSentinel(u8, a, 0));
 
     if (args.items.len == 0) return gui.run(alloc);
     // Asking for help isn't a mistake, so it isn't an error either.

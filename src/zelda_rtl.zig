@@ -1069,8 +1069,8 @@ pub export fn ZeldaSetLanguage(language: ?[*:0]const u8) callconv(.c) void {
             }
         }
     }
-    g_zenv.dialogue_blk = @bitCast(main_mod.FindInAssetArray(94, found.ptr.?[0])); // kDialogue
-    g_zenv.dialogue_font_blk = @bitCast(main_mod.FindInAssetArray(95, found.ptr.?[1])); // kDialogueFont
+    g_zenv.dialogue_blk = main_mod.FindInAssetArray(94, found.ptr.?[0]); // kDialogue
+    g_zenv.dialogue_font_blk = main_mod.FindInAssetArray(95, found.ptr.?[1]); // kDialogueFont
     g_zenv.dialogue_flags = found.ptr.?[2];
 }
 

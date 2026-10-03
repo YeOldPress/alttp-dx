@@ -99,7 +99,7 @@ pub const Msu1 = struct {
 
     pub fn trackPath(self: *Msu1, out: []u8, n: u16) ?[*:0]const u8 {
         const ext = if (self.format == .opuz) "opuz" else "pcm";
-        const s = std.fmt.bufPrintZ(out, "{s}{d}.{s}", .{ self.prefix[0..self.prefix_len], n, ext }) catch return null;
+        const s = std.fmt.bufPrintSentinel(out, "{s}{d}.{s}", .{ self.prefix[0..self.prefix_len], n, ext }, 0) catch return null;
         return s.ptr;
     }
 

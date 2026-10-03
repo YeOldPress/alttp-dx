@@ -2,15 +2,7 @@
 const std = @import("std");
 const util = @import("util.zig");
 
-const c = @cImport({
-    // translate-c cannot parse arm_neon.h, which SDL pulls in on ARM targets.
-    // SDL2 spelled this guard SDL_DISABLE_ARM_NEON_H.
-    @cDefine("SDL_DISABLE_NEON", "1");
-    // Optimized builds define _FORTIFY_SOURCE, which makes mingw's headers
-    // inline checked wrappers that translate-c turns into unused locals.
-    @cUndef("_FORTIFY_SOURCE");
-    @cInclude("SDL3/SDL.h");
-});
+const c = @import("sdl.zig").c;
 
 extern fn atoi(s: [*:0]const u8) c_int;
 extern fn strtol(s: [*:0]const u8, end: ?*?[*:0]u8, base: c_int) c_long;
@@ -180,7 +172,7 @@ fn ctrl(key: c.SDL_Keycode) u16 {
 /// Commands past the end of this list default to unbound, as in the C
 /// initializer, which stops short of kKeys_Total.
 const kDefaultKbdControls: [kKeys.Total]u16 = blk: {
-    var t = [_]u16{0} ** kKeys.Total;
+    var t: [kKeys.Total]u16 = @splat(0);
     const listed = [_]u16{
         0,
         // Controls
@@ -374,10 +366,10 @@ const KeyMapHashEnt = extern struct {
     next: u16,
 };
 
-var keymap_hash_first = [_]u16{0} ** 255;
+var keymap_hash_first: [255]u16 = @splat(0);
 var keymap_hash: ?[*]KeyMapHashEnt = null;
 var keymap_hash_size: c_int = 0;
-var has_keynameid = [_]bool{false} ** kKeyNameId.len;
+var has_keynameid: [kKeyNameId.len]bool = @splat(false);
 
 fn keyMapHashAdd(key: u16, cmd: u16) bool {
     if (keymap_hash_size & 0xff == 0) {
@@ -463,7 +455,7 @@ const GamepadMapEnt = extern struct {
     next: u16,
 };
 
-var joymap_first = [_]u16{0} ** kGamepadBtn.Count;
+var joymap_first: [kGamepadBtn.Count]u16 = @splat(0);
 var joymap_ents: ?[*]GamepadMapEnt = null;
 var joymap_size: c_int = 0;
 var has_joypad_controls = false;
@@ -860,8 +852,8 @@ pub fn applySetting(section: []const u8, key: []const u8, value: []const u8) boo
         return false;
     var key_buf: [64]u8 = undefined;
     var value_buf: [64]u8 = undefined;
-    const key_z = std.fmt.bufPrintZ(&key_buf, "{s}", .{key}) catch return false;
-    const value_z = std.fmt.bufPrintZ(&value_buf, "{s}", .{value}) catch return false;
+    const key_z = std.fmt.bufPrintSentinel(&key_buf, "{s}", .{key}, 0) catch return false;
+    const value_z = std.fmt.bufPrintSentinel(&value_buf, "{s}", .{value}, 0) catch return false;
     return handleIniConfig(id, key_z.ptr, value_z.ptr);
 }
 

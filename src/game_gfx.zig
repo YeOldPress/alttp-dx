@@ -208,7 +208,7 @@ const Font = struct {
     widths: []const u8,
 
     fn get() ?Font {
-        const blk: util.MemBlk = @bitCast(rtl.g_zenv.dialogue_font_blk);
+        const blk = rtl.g_zenv.dialogue_font_blk;
         if (blk.ptr == null) return null;
         const data = util.FindIndexInMemblk(blk, 0);
         const widths = util.FindIndexInMemblk(blk, 1);
