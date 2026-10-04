@@ -10,6 +10,7 @@ const overworld = @import("overworld.zig");
 const load_gfx = @import("load_gfx.zig");
 const dungeon = @import("dungeon.zig");
 const dungeon_wide = @import("dungeon_wide.zig");
+const overworld_wide = @import("overworld_wide.zig");
 const hud_second_item = @import("hud_second_item.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const features = @import("features.zig");
@@ -289,7 +290,15 @@ fn ConfigureHudSplit(ppu: *const Ppu) void {
 }
 
 fn ConfigurePpuSideSpace() void {
-    const s = widescreenSideSpace(kPpuExtraLeftRight);
+    var s = widescreenSideSpace(kPpuExtraLeftRight);
+    // A one-screen clearing in the woods: the margins are more woods, drawn
+    // by overworld_wide.zig as far as they go. Only the port's own PPU draws
+    // them, so the randomizer's emulator and the sprites' reach past the
+    // screen keep to the area's real edges.
+    if (overworld_wide.inForestArea()) {
+        s.left = kPpuExtraLeftRight;
+        s.right = kPpuExtraLeftRight;
+    }
     ppu_mod.PpuSetExtraSideSpace(zenvPpu(), s.left, s.right, s.bottom);
 }
 
@@ -478,9 +487,15 @@ pub export fn ZeldaDrawPpuFrame(pixel_buffer: [*]u8, pitch: usize, render_flags:
     const height: c_int = if (render_flags & kPpuRenderFlags_Height240 != 0) 240 else 224;
 
     // The circle's HDMA goes on whichever channel the game switched on.
-    // Between dungeon rooms in widescreen, the two rooms' tiles.
-    ppu_mod.g_bg_tile_source = dungeon_wide.tileSource;
-    ppu_mod.g_bg_tile_source_layers = if (ppu.extraLeftRight != 0) dungeon_wide.sourceLayers() else 0;
+    // Between dungeon rooms in widescreen, the two rooms' tiles; in the
+    // Master Sword's grove, the woods past its edges.
+    if (overworld_wide.active(ppu)) {
+        ppu_mod.g_bg_tile_source = overworld_wide.tileSource;
+        ppu_mod.g_bg_tile_source_layers = overworld_wide.sourceLayers();
+    } else {
+        ppu_mod.g_bg_tile_source = dungeon_wide.tileSource;
+        ppu_mod.g_bg_tile_source_layers = if (ppu.extraLeftRight != 0) dungeon_wide.sourceLayers() else 0;
+    }
     defer ppu_mod.g_bg_tile_source_layers = 0;
 
     const spot_chan: ?*const SimpleHdma = if (ppu.extraLeftRight == 0)
