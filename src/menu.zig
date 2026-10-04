@@ -135,6 +135,7 @@ pub const kSettings = [_]Setting{
 
     .{ .section = kSectionMark, .key = "", .label = "SOUND", .kind = .text },
     .{ .section = "Sound", .key = "EnableAudio", .label = "Enable Audio", .kind = .toggle },
+    .{ .section = "Sound", .key = "Volume", .label = "Volume", .kind = .{ .number = .{ .min = 0, .max = 100, .step = 5, .suffix = "%" } } },
     .{ .section = "Sound", .key = "AudioFreq", .label = "Audio Frequency", .kind = .{ .choice = .{
         .values = &.{ "11025", "22050", "32000", "44100", "48000" },
         .labels = &.{ "11 kHz", "22 kHz", "32 kHz", "44 kHz", "48 kHz" },
@@ -707,6 +708,7 @@ pub fn describe(s: Setting) []const u8 {
         .{ "WindowSize", "The window's size when the game opens, as a width and height in pixels such as 1280x720, or Auto to size it from Window Scale. Set it in zelda3.ini." },
         .{ "Shader", "A GLSL shader to draw the picture through, given as the path to a glsl or glslp file. Needs the OpenGL output method. Set it in zelda3.ini." },
         .{ "DimFlashes", "Tone down flashing effects, as the Virtual Console releases did." },
+        .{ "Volume", "How loud the whole game plays, music and sound effects together, MSU music included. Changes as you move it. Shift and plus or minus on the keyboard change it too." },
         .{ "EnableAudio", "Play sound and music at all." },
         .{ "AudioFreq", "The rate the game mixes its sound at. Higher is clearer. MSU audio sets its own." },
         .{ "AudioChannels", "Mono or stereo sound." },

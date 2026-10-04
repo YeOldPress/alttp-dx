@@ -159,7 +159,6 @@ const kDefaultSamples = 2048;
 
 /// SDL3 dropped SDL_MIX_MAXVOLUME along with SDL_MixAudioFormat; the volume is
 /// a stream gain now. The old scale is kept so the printed value reads as it did.
-const kMixMaxVolume: c_int = 128;
 
 const kWindowTitle = "The Legend of Zelda: A Link to the Past";
 
@@ -182,7 +181,6 @@ var g_curr_fps: c_int = 0;
 var g_ppu_render_flags: u32 = 0;
 var g_snes_width: c_int = 0;
 var g_snes_height: c_int = 0;
-var g_sdl_audio_mixer_volume: c_int = kMixMaxVolume;
 var g_renderer_funcs: RendererFuncs = std.mem.zeroes(RendererFuncs);
 var g_gamepad_modifiers: u32 = 0;
 var g_gamepad_last_cmd: [kGamepadBtn_Count]u16 = @splat(0);
@@ -872,7 +870,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         g_audiobuffer = @ptrCast(malloc(@as(usize, @intCast(g_frames_per_block)) * g_audio_channels * @sizeOf(i16)));
         g_audiobuffer_cur = g_audiobuffer;
         g_audiobuffer_end = g_audiobuffer;
-        ApplyAudioVolume();
+        applyVolume();
         // SDL_OpenAudioDeviceStream hands back a paused device.
         _ = c.SDL_ResumeAudioStreamDevice(g_audio_stream);
     }
@@ -1360,21 +1358,28 @@ fn HandleGamepadInput(button: c_int, pressed: bool) void {
         HandleCommand(g_gamepad_last_cmd[@intCast(button)], pressed);
 }
 
+/// The volume keys step the Volume setting itself, 5% at a time, so they and
+/// the settings screens always agree. They don't save it; the settings do.
 fn HandleVolumeAdjustment(volume_adjustment: c_int) void {
     // Upstream can drive the Windows system volume mixer from here
     // instead. This port always adjusts its own mix, on every platform.
-    g_sdl_audio_mixer_volume = intMin(intMax(0, g_sdl_audio_mixer_volume +
-        volume_adjustment * (kMixMaxVolume >> 4)), kMixMaxVolume);
+    const v: c_int = config.g_config.volume;
+    config.g_config.volume = @intCast(intMin(intMax(0, v + volume_adjustment * 5), 100));
+    applyVolume();
+    _ = printf("[Volume]=%i%%\n", @as(c_int, config.g_config.volume));
+}
+
+/// Puts the Volume setting into the mix, which takes it straight away: the
+/// audio stream scales whatever goes through it from the next buffer on.
+pub fn applyVolume() void {
     ApplyAudioVolume();
-    _ = printf("[SDL mixer volume]=%i\n", g_sdl_audio_mixer_volume);
 }
 
 /// The volume used to be folded into each callback by SDL_MixAudioFormat. SDL3
 /// scales the stream itself, with 1.0 meaning untouched samples.
 fn ApplyAudioVolume() void {
     if (g_audio_stream) |stream|
-        _ = c.SDL_SetAudioStreamGain(stream, @as(f32, @floatFromInt(g_sdl_audio_mixer_volume)) /
-            @as(f32, @floatFromInt(kMixMaxVolume)));
+        _ = c.SDL_SetAudioStreamGain(stream, @as(f32, @floatFromInt(@min(config.g_config.volume, 100))) / 100);
 }
 
 /// Approximates atan2(y, x) normalized to the [0,4) range

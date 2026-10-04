@@ -139,6 +139,7 @@ fn appliesLive(s: menu.Setting) bool {
         .{ "Graphics", "NewRenderer" },
         .{ "Graphics", "NoSpriteLimits" },
         .{ "Graphics", "LinearFiltering" },
+        .{ "Sound", "Volume" },
         .{ "Sound", "ResumeMSU" },
         .{ "Sound", "MSUFinishCues" },
     };
@@ -158,6 +159,8 @@ fn applyLive(s: menu.Setting, value: []const u8) void {
         zelda_rtl.g_wanted_zelda_features = config.g_config.features0;
     } else if (std.mem.eql(u8, s.section, "Graphics")) {
         main.applyDisplaySettings();
+    } else if (std.mem.eql(u8, s.section, "Sound")) {
+        main.applyVolume();
     }
 }
 
