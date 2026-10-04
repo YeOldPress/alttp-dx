@@ -243,6 +243,7 @@ pub fn openFromFileSelect() void {
 }
 
 fn open(origin: @TypeOf(g_origin)) bool {
+    releaseIni();
     g_ini = menu.Ini.load(alloc, "zelda3.ini") catch |err| {
         std.debug.print("Could not read zelda3.ini: {s}\n", .{@errorName(err)});
         return false;
@@ -394,24 +395,32 @@ fn close(choice: PauseChoice) void {
     if (g_ini) |*ini| {
         if (g_dirty) {
             ini.save("zelda3.ini") catch |err| std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
+            g_dirty = false;
         }
-        ini.deinit();
     }
-    g_ini = null;
     g_details = false;
     vars.sound_effect_2.* = 18;
     if (g_origin == .game) {
+        // The page it was on is still drawn as it slides away, settings and
+        // all, so they're kept until it's gone.
         g_after_slide = choice;
         g_slide = .out;
     } else {
         g_open = false;
+        releaseIni();
     }
+}
+
+fn releaseIni() void {
+    if (g_ini) |*ini| ini.deinit();
+    g_ini = null;
 }
 
 /// The screen is all the way back up: do what was picked.
 fn finishClose() void {
     g_open = false;
     g_slide = .none;
+    releaseIni();
     switch (g_after_slide) {
         .continue_game, .save_and_continue => {
             vars.choice_in_multiselect_box.* = vars.choice_in_multiselect_box_bak.*;
