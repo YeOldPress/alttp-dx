@@ -501,7 +501,7 @@ pub export fn ZeldaDrawPpuFrame(pixel_buffer: [*]u8, pitch: usize, render_flags:
     // Master Sword's grove, the woods past its edges.
     if (overworld_wide.active(ppu)) {
         g_frame_tile_source = overworld_wide.tileSource;
-        ppu_mod.g_bg_tile_source_layers = overworld_wide.sourceLayers();
+        ppu_mod.g_bg_tile_source_layers = overworld_wide.sourceLayers(ppu);
     } else {
         g_frame_tile_source = dungeon_wide.tileSource;
         ppu_mod.g_bg_tile_source_layers = if (ppu.extraLeftRight != 0) dungeon_wide.sourceLayers() else 0;
