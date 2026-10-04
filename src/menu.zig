@@ -35,26 +35,27 @@ const kRowH = kCell + 4;
 /// Rows of the settings list on screen at once.
 const kVisibleRows = 14;
 
-// A Link to the Past's menu palette: a dark green ground, a gold frame with a
-// lighter top edge and a darker underside, and off-white text.
+// A dark blue ground that deepens toward the top, one rounded card on it with
+// a hairline border and a soft shadow, and a warm gold for whatever's picked.
 const Rgb = struct { r: u8, g: u8, b: u8 };
-const kColorBg = Rgb{ .r = 0x18, .g = 0x38, .b = 0x20 };
-const kColorPanel = Rgb{ .r = 0x00, .g = 0x00, .b = 0x00 };
-const kColorFrame = Rgb{ .r = 0xb8, .g = 0x78, .b = 0x38 };
-const kColorFrameHi = Rgb{ .r = 0xf8, .g = 0xd8, .b = 0x78 };
-const kColorFrameLo = Rgb{ .r = 0x68, .g = 0x48, .b = 0x18 };
-const kColorText = Rgb{ .r = 0xf8, .g = 0xf8, .b = 0xf8 };
-const kColorTextDim = Rgb{ .r = 0x88, .g = 0x98, .b = 0x88 };
-const kColorValue = Rgb{ .r = 0x90, .g = 0xc0, .b = 0xf8 };
-const kColorSelect = Rgb{ .r = 0xf8, .g = 0xd8, .b = 0x78 };
-const kColorRowHi = Rgb{ .r = 0x28, .g = 0x28, .b = 0x50 };
-const kColorLaunchBg = Rgb{ .r = 0x00, .g = 0xe0, .b = 0x18 };
-const kColorLaunchText = Rgb{ .r = 0x00, .g = 0x18, .b = 0x00 };
-const kColorOk = Rgb{ .r = 0x78, .g = 0xe0, .b = 0x88 };
-const kColorWarn = Rgb{ .r = 0xf8, .g = 0xc0, .b = 0x58 };
-const kColorSection = Rgb{ .r = 0x78, .g = 0xd8, .b = 0x98 };
-const kColorRandoBg = Rgb{ .r = 0x58, .g = 0x38, .b = 0xb0 };
-const kColorDisabledBg = Rgb{ .r = 0x30, .g = 0x34, .b = 0x3c };
+const kColorBgTop = Rgb{ .r = 0x0c, .g = 0x10, .b = 0x1a };
+const kColorBgBottom = Rgb{ .r = 0x1c, .g = 0x26, .b = 0x3a };
+const kColorShadow = Rgb{ .r = 0x05, .g = 0x07, .b = 0x0c };
+const kColorPanel = Rgb{ .r = 0x14, .g = 0x1a, .b = 0x27 };
+/// The card's border, the rules under titles, scrollbar tracks.
+const kColorLine = Rgb{ .r = 0x2c, .g = 0x37, .b = 0x4e };
+const kColorText = Rgb{ .r = 0xe8, .g = 0xec, .b = 0xf3 };
+const kColorTextDim = Rgb{ .r = 0x7d, .g = 0x88, .b = 0x9c };
+const kColorValue = Rgb{ .r = 0x8c, .g = 0xb8, .b = 0xff };
+const kColorSelect = Rgb{ .r = 0xf5, .g = 0xc4, .b = 0x51 };
+const kColorRowHi = Rgb{ .r = 0x22, .g = 0x2d, .b = 0x44 };
+const kColorLaunchBg = Rgb{ .r = 0x34, .g = 0xc7, .b = 0x6c };
+const kColorLaunchText = Rgb{ .r = 0x05, .g = 0x24, .b = 0x10 };
+const kColorOk = Rgb{ .r = 0x6c, .g = 0xe0, .b = 0x98 };
+const kColorWarn = Rgb{ .r = 0xf5, .g = 0xb4, .b = 0x5b };
+const kColorSection = Rgb{ .r = 0x5f, .g = 0xd4, .b = 0xa6 };
+const kColorRandoBg = Rgb{ .r = 0x6c, .g = 0x4f, .b = 0xd8 };
+const kColorDisabledBg = Rgb{ .r = 0x2a, .g = 0x30, .b = 0x3d };
 
 // ---------------------------------------------------------------- settings
 
@@ -547,25 +548,100 @@ fn fillRect(r: *c.SDL_Renderer, x: f32, y: f32, w: f32, h: f32, col: Rgb) void {
     _ = c.SDL_RenderFillRect(r, &rect);
 }
 
-/// A recessed gold frame: light along the top and left, dark along the bottom
-/// and right, the way the game's own menu boxes are shaded.
-/// A hollow rectangle. drawFrame paints its interior, so anything drawn
-/// around existing content needs this instead.
-fn drawOutline(r: *c.SDL_Renderer, x: f32, y: f32, w: f32, h: f32, t: f32, col: Rgb) void {
-    fillRect(r, x, y, w, t, col);
-    fillRect(r, x, y + h - t, w, t, col);
-    fillRect(r, x, y, t, h, col);
-    fillRect(r, x + w - t, y, t, h, col);
+/// How far in from the side a rounded rectangle's edge is on row `row` of a
+/// corner `radius` tall, row 0 being the top. A quarter circle, a pixel row at
+/// a time.
+fn cornerInset(radius: f32, row: f32) f32 {
+    const dy = radius - row - 0.5;
+    return radius - @sqrt(@max(0, radius * radius - dy * dy));
 }
 
+/// A filled rectangle with rounded corners, drawn a row at a time through the
+/// corners and as one rectangle between them.
+fn fillRound(r: *c.SDL_Renderer, x: f32, y: f32, w: f32, h: f32, radius: f32, col: Rgb) void {
+    const rad = @min(radius, @min(w, h) / 2);
+    const rows: usize = @intFromFloat(@ceil(rad));
+    for (0..rows) |i| {
+        const row: f32 = @floatFromInt(i);
+        const in = @round(cornerInset(rad, row));
+        fillRect(r, x + in, y + row, w - in * 2, 1, col);
+        fillRect(r, x + in, y + h - 1 - row, w - in * 2, 1, col);
+    }
+    fillRect(r, x, y + @as(f32, @floatFromInt(rows)), w, h - @as(f32, @floatFromInt(rows)) * 2, col);
+}
+
+/// A rounded ring `t` thick, for focus rings and borders around content that
+/// is already drawn.
+fn outlineRound(r: *c.SDL_Renderer, x: f32, y: f32, w: f32, h: f32, radius: f32, t: f32, col: Rgb) void {
+    const rad = @min(radius, @min(w, h) / 2);
+    const inner = @max(0, rad - t);
+    var row: f32 = 0;
+    while (row < h) : (row += 1) {
+        const from_edge = @min(row, h - 1 - row);
+        const out = if (from_edge < rad) @round(cornerInset(rad, from_edge)) else 0;
+        if (from_edge < t) {
+            fillRect(r, x + out, y + row, w - out * 2, 1, col);
+            continue;
+        }
+        const ir = from_edge - t;
+        const in = if (ir < inner) @round(cornerInset(inner, ir)) + t else t;
+        fillRect(r, x + out, y + row, in - out, 1, col);
+        fillRect(r, x + w - in, y + row, in - out, 1, col);
+    }
+}
+
+/// The background: a gradient from top to bottom, in 4-pixel bands.
+fn fillBackground(r: *c.SDL_Renderer) void {
+    const bands = kWindowH / 4;
+    for (0..bands) |i| {
+        const t: f32 = @as(f32, @floatFromInt(i)) / @as(f32, bands - 1);
+        fillRect(r, 0, @as(f32, @floatFromInt(i * 4)), kWindowW, 4, mix(kColorBgTop, kColorBgBottom, t));
+    }
+}
+
+fn mix(a: Rgb, b: Rgb, t: f32) Rgb {
+    const ch = struct {
+        fn f(x: u8, y: u8, k: f32) u8 {
+            const fx: f32 = @floatFromInt(x);
+            const fy: f32 = @floatFromInt(y);
+            return @intFromFloat(@round(fx + (fy - fx) * k));
+        }
+    }.f;
+    return .{ .r = ch(a.r, b.r, t), .g = ch(a.g, b.g, t), .b = ch(a.b, b.b, t) };
+}
+
+/// A card: a rounded panel with a hairline border and a soft shadow under it.
+/// It paints its own interior, which is what blanks the menu behind a modal.
 fn drawFrame(r: *c.SDL_Renderer, x: f32, y: f32, w: f32, h: f32) void {
-    const t = 4.0;
-    fillRect(r, x, y, w, h, kColorFrame);
-    fillRect(r, x, y, w, t, kColorFrameHi);
-    fillRect(r, x, y, t, h, kColorFrameHi);
-    fillRect(r, x, y + h - t, w, t, kColorFrameLo);
-    fillRect(r, x + w - t, y, t, h, kColorFrameLo);
-    fillRect(r, x + t * 2, y + t * 2, w - t * 4, h - t * 4, kColorPanel);
+    fillRound(r, x + 2, y + 6, w, h, 14, kColorShadow);
+    fillRound(r, x, y, w, h, 14, kColorLine);
+    fillRound(r, x + 1, y + 1, w - 2, h - 2, 13, kColorPanel);
+}
+
+/// The selected row of a list: a rounded highlight with a gold bar down its
+/// left side, where the old ">" cursor sat.
+fn drawRowHighlight(r: *c.SDL_Renderer, x: f32, y: f32, w: f32, h: f32) void {
+    fillRound(r, x, y, w, h, 6, kColorRowHi);
+    fillRound(r, x + 4, y + 4, 3, h - 8, 1.5, kColorSelect);
+}
+
+/// How far a button's ring reaches past it: above and at the sides, and
+/// below, where it also takes in the darker band.
+const kRingAbove: f32 = 6;
+const kRingBelow: f32 = 9;
+
+/// A button: rounded, with a darker band along its bottom for depth, and a
+/// gold ring around it when it's the one picked.
+fn drawButton(r: *c.SDL_Renderer, box: Rect, col: Rgb, selected: bool) void {
+    fillRound(r, box.x, box.y + 3, box.w, box.h, 10, mix(col, kColorShadow, 0.55));
+    fillRound(r, box.x, box.y, box.w, box.h, 10, col);
+    if (selected) outlineRound(r, box.x - kRingAbove, box.y - kRingAbove, box.w + kRingAbove * 2, box.h + kRingAbove + kRingBelow, 15, 3, kColorSelect);
+}
+
+/// A thin scrollbar: a track, and a rounded thumb over the part showing.
+fn drawScrollbar(r: *c.SDL_Renderer, track_y: f32, track_h: f32, bar_y: f32, bar_h: f32) void {
+    fillRound(r, kWindowW - 31, track_y, 4, track_h, 2, kColorLine);
+    fillRound(r, kWindowW - 31, bar_y, 4, bar_h, 2, kColorTextDim);
 }
 
 fn drawText(r: *c.SDL_Renderer, x: f32, y: f32, col: Rgb, text: []const u8) void {
@@ -605,6 +681,62 @@ fn firstSelectable(from: usize, to: usize) usize {
     return from;
 }
 
+/// What each setting does, for the info boxes in the start menu and in the
+/// game's own settings. In words both fonts can draw: no colons, slashes or
+/// percent signs, which the game's dialogue font hasn't got.
+pub fn describe(s: Setting) []const u8 {
+    const kDescriptions = [_][2][]const u8{
+        .{ "StartMenu", "Show the start menu, with settings and the ROM and assets, before the game begins. When off, the game starts straight away unless its assets need building." },
+        .{ "Autosave", "Save a snapshot of the game when you quit and pick up from it next time you start." },
+        .{ "DisplayPerfInTitle", "Show the frames per second in the window's title bar." },
+        .{ "ExtendedAspectRatio", "Widen the view past the original 4 by 3 screen, showing more of the world at the sides. 16 by 9 suits most modern screens." },
+        .{ "WidescreenHud", "In widescreen, move the magic meter, item and counters to the left edge and the hearts to the right, instead of leaving them in the middle. Does nothing at 4 by 3." },
+        .{ "WidescreenCamera", "In widescreen, keep the camera far enough from an area's edge that the whole wide picture shows the area, instead of stopping where a 4 by 3 screen would and showing black past it. Does nothing at 4 by 3." },
+        .{ "DisableFrameDelay", "Skip the wait the game does between frames. Only worth it on a display running at exactly 60 hertz." },
+        .{ "Rumble", "How hard the controller shakes when Link is hurt, bombs go off, bosses fall and the screen shakes. 0 turns it off." },
+        .{ "Tracker", "Where the item tracker goes when playing a randomizer seed. Beside the game, over it, in its own window, or nowhere. T switches while playing." },
+        .{ "Fullscreen", "Windowed, fullscreen at the desktop's resolution, or fullscreen with a change of display mode." },
+        .{ "WindowScale", "How many times bigger than the SNES screen the window opens." },
+        .{ "OutputMethod", "How frames reach the screen. SDL suits most machines, SDL-Software can help on a Raspberry Pi, and OpenGL is needed for shaders." },
+        .{ "NewRenderer", "Draw the screen with a faster rewrite of the SNES graphics chip. Turn it off if something looks wrong." },
+        .{ "EnhancedMode7", "Draw the world map and other rotating backgrounds at a higher resolution." },
+        .{ "NoSpriteLimits", "Stop sprites flickering or vanishing when too many share a line of the screen, a limit of the original hardware." },
+        .{ "IgnoreAspectRatio", "Stretch the picture to fill the window instead of keeping its shape." },
+        .{ "LinearFiltering", "Smooth the pixels when the picture is scaled up. Softer, less crisp." },
+        .{ "WindowSize", "The window's size when the game opens, as a width and height in pixels such as 1280x720, or Auto to size it from Window Scale. Set it in zelda3.ini." },
+        .{ "Shader", "A GLSL shader to draw the picture through, given as the path to a glsl or glslp file. Needs the OpenGL output method. Set it in zelda3.ini." },
+        .{ "DimFlashes", "Tone down flashing effects, as the Virtual Console releases did." },
+        .{ "EnableAudio", "Play sound and music at all." },
+        .{ "AudioFreq", "The rate the game mixes its sound at. Higher is clearer. MSU audio sets its own." },
+        .{ "AudioChannels", "Mono or stereo sound." },
+        .{ "AudioSamples", "The sound buffer's size. Smaller means less delay before you hear things, larger helps if the sound crackles." },
+        .{ "EnableMSU", "Play an MSU music pack instead of the SNES music. Deluxe packs give each area its own track, and Opuz packs are compressed." },
+        .{ "MSUVolume", "How loud MSU music plays." },
+        .{ "MSUPath", "Where the MSU pack's files are and how their names begin. The track number and the file type go on the end. Set it in zelda3.ini." },
+        .{ "ResumeMSU", "Pick an overworld area's MSU track up where it left off when you come back to it." },
+        .{ "MSUFinishCues", "Let short MSU music cues, like the mirror warp, play to their end before the next track starts." },
+        .{ "ItemSwitchLR", "Switch items with L and R, and reorder the inventory with Y and a direction. Hold L or R on an item to put it on that button." },
+        .{ "ItemOnX", "A second item on X. Hold X on an item in the item menu to put it there, then press X to use it. A box under your item shows it, and the map moves to L and R pressed together." },
+        .{ "TurnWhileDashing", "Steer while running with the Pegasus Boots." },
+        .{ "MirrorToDarkworld", "Let the Magic Mirror take you to the Dark World as well as back from it." },
+        .{ "CollectItemsWithSword", "Pick up hearts, rupees and other drops by hitting them with the sword." },
+        .{ "BreakPotsWithSword", "Smash pots with a level 2 sword or better." },
+        .{ "DisableLowHealthBeep", "Silence the beeping when Link is low on hearts." },
+        .{ "SkipIntroOnKeypress", "Let a button press skip the opening." },
+        .{ "ShowMaxItemsInYellow", "Show rupees, bombs and arrows in yellow when they're full." },
+        .{ "MoreActiveBombs", "Allow four bombs out at once instead of two." },
+        .{ "CarryMoreRupees", "Hold up to 9999 rupees instead of 999." },
+        .{ "MiscBugFixes", "Fix a number of the original game's bugs that don't change how it plays." },
+        .{ "GameChangingBugFixes", "Fix bugs whose fixes do change how the game plays." },
+        .{ "CancelBirdTravel", "Let X cancel the bird's flight before it takes off." },
+        .{ "DiggingGamePity", "Have the digging game hand over its heart piece after 250 digs without one, instead of leaving it to a 1 in 32 chance a dig. The count is never saved." },
+    };
+    for (kDescriptions) |d| {
+        if (std.mem.eql(u8, d[0], s.key)) return d[1];
+    }
+    return "";
+}
+
 /// A question laid over whatever screen is showing.
 const Modal = enum {
     none,
@@ -612,6 +744,8 @@ const Modal = enum {
     quit,
     /// Asked when Build Assets is chosen, since the ROM arrives by drag.
     rom,
+    /// What the selected setting does, asked for with Y or I.
+    info,
 };
 
 const kQuitChoices = [_][]const u8{ "Quit", "Stay" };
@@ -791,7 +925,7 @@ fn configureJoysticks() void {
 /// one, which is the same place B sits on the Xbox. Routing by position
 /// therefore turns A into cancel on Nintendo hardware - on the main menu,
 /// pressing A closed the launcher.
-fn faceAction(which: c.SDL_JoystickID, button: u8) enum { confirm, back, save, none } {
+fn faceAction(which: c.SDL_JoystickID, button: u8) enum { confirm, back, save, info, none } {
     const pad = c.SDL_GetGamepadFromID(which);
     const label = if (pad != null)
         c.SDL_GetGamepadButtonLabel(pad, button)
@@ -805,6 +939,7 @@ fn faceAction(which: c.SDL_JoystickID, button: u8) enum { confirm, back, save, n
             c.SDL_GAMEPAD_BUTTON_SOUTH => .confirm,
             c.SDL_GAMEPAD_BUTTON_EAST => .back,
             c.SDL_GAMEPAD_BUTTON_WEST => .save,
+            c.SDL_GAMEPAD_BUTTON_NORTH => .info,
             else => .none,
         };
     }
@@ -813,6 +948,8 @@ fn faceAction(which: c.SDL_JoystickID, button: u8) enum { confirm, back, save, n
         c.SDL_GAMEPAD_BUTTON_LABEL_A, c.SDL_GAMEPAD_BUTTON_LABEL_CROSS => .confirm,
         c.SDL_GAMEPAD_BUTTON_LABEL_B, c.SDL_GAMEPAD_BUTTON_LABEL_CIRCLE => .back,
         c.SDL_GAMEPAD_BUTTON_LABEL_X, c.SDL_GAMEPAD_BUTTON_LABEL_SQUARE => .save,
+        // Y for info, as in the game's own settings.
+        c.SDL_GAMEPAD_BUTTON_LABEL_Y, c.SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE => .info,
         else => .none,
     };
 }
@@ -1018,14 +1155,18 @@ pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const 
     if (std.c.getenv("CTL_ROW")) |t| g_ctl_row = std.fmt.parseInt(usize, std.mem.span(t), 10) catch 0;
     if (g_ctl_row >= kCtlVisible) g_ctl_top = g_ctl_row + 1 - kCtlVisible;
     if (std.c.getenv("CAPTURE") != null) g_ctl_capture = g_ctl_row;
-    const cursor = [_]usize{ 0, 0, 0 };
-    const top = [_]usize{ 0, 0, 0 };
-    drawScreen(renderer, &ini, viewOf(screen, if (screen == .main) kMainControls else kMainRandomizer, cursor, top, "", false, .verified, .none, kQuitStay));
+    // LIST_ROW=n picks a row on the lists; INFO=1 has its info box open.
+    const row: usize = if (std.c.getenv("LIST_ROW")) |t| std.fmt.parseInt(usize, std.mem.span(t), 10) catch 0 else 0;
+    const row_top: usize = if (row >= visibleRows(screen)) row + 1 - visibleRows(screen) else 0;
+    const cursor = [_]usize{ row, row, row };
+    const top = [_]usize{ row_top, row_top, row_top };
+    const modal: Modal = if (std.c.getenv("INFO") != null) .info else .none;
+    drawScreen(renderer, &ini, viewOf(screen, if (screen == .main) kMainControls else kMainRandomizer, cursor, top, "", false, .verified, modal, kQuitStay));
     if (!c.SDL_SaveBMP(surface, path)) return error.SaveFailed;
 }
 
 fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
-    fillRect(renderer, 0, 0, kWindowW, kWindowH, kColorBg);
+    fillBackground(renderer);
     drawFrame(renderer, 16, 16, kWindowW - 32, kWindowH - 32);
 
     drawHeader(renderer, v.screen);
@@ -1059,8 +1200,8 @@ fn drawHeader(renderer: *c.SDL_Renderer, screen: Screen) void {
         // everything below starts lower than it used to.
         drawTextCentered(renderer, cx, 36, kColorSelect, "THE LEGEND OF ZELDA", kScale);
         drawTextCentered(renderer, cx, 36 + kRowH, kColorSelect, "A LINK TO THE PAST", kScale);
-        drawTextCentered(renderer, cx, 36 + kRowH * 2, kColorTextDim, "START MENU", kScale);
-        fillRect(renderer, 60, 36 + kRowH * 3 + 6, kWindowW - 120, 2, kColorFrame);
+        drawTextCentered(renderer, cx, 36 + kRowH * 2, kColorTextDim, "ALTTP-DX", kScale);
+        fillRect(renderer, 60, 36 + kRowH * 3 + 7, kWindowW - 120, 1, kColorLine);
         return;
     }
 
@@ -1075,7 +1216,7 @@ fn drawHeader(renderer: *c.SDL_Renderer, screen: Screen) void {
     };
     drawText(renderer, 40, 36, kColorSelect, name);
     drawTextScaled(renderer, kWindowW - 40 - textWidth("ESC BACK", kScale), 36, kColorTextDim, "ESC BACK", kScale);
-    fillRect(renderer, 40, 36 + kRowH, kWindowW - 80, 2, kColorFrame);
+    fillRect(renderer, 40, 36 + kRowH + 1, kWindowW - 80, 1, kColorLine);
 }
 
 /// A rectangle on screen. Drawing and hit testing share these so the two
@@ -1098,7 +1239,10 @@ const kEntryY: f32 = 114;
 const kEntryGap: f32 = 26;
 const kLaunchY: f32 = 242;
 const kLaunchScale: f32 = kScale * 2;
-const kRandoY: f32 = 346;
+const kRandoY: f32 = 352;
+/// From the bottom of Play to the asset state line under it: past the ring
+/// Play gets when it's picked, and a little more.
+const kStateGap: f32 = kRingBelow + 5;
 const kListStartY: f32 = 36 + kRowH + 14;
 const kSeedBoxY: f32 = kListStartY - 4;
 const kSeedBoxH: f32 = kRowH * 4 + 12;
@@ -1124,13 +1268,13 @@ fn launchRect() Rect {
         .x = kWindowW / 2 - w / 2,
         .y = kLaunchY,
         .w = w,
-        .h = 8 * kLaunchScale + 28,
+        .h = 8 * kLaunchScale + 22,
     };
 }
 
 fn randoRect() Rect {
     const w = textWidth(kMainItems[kMainRandomizer], kScale) + 72;
-    return .{ .x = kWindowW / 2 - w / 2, .y = kRandoY, .w = w, .h = 8 * kScale + 20 };
+    return .{ .x = kWindowW / 2 - w / 2, .y = kRandoY, .w = w, .h = 8 * kScale + 14 };
 }
 
 /// The randomizer page's two big buttons.
@@ -1161,8 +1305,7 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
         if (selected) {
             // Sized to the word rather than the window, so the highlight
             // reads as a selection and not as a banner.
-            fillRect(renderer, cx - w / 2 - 20, y - 6, w + 40, kEntryGap - 2, kColorRowHi);
-            drawTextScaled(renderer, cx - w / 2 - 36, y, kColorSelect, ">", kScale);
+            drawRowHighlight(renderer, cx - w / 2 - 28, y - 6, w + 56, kEntryGap - 2);
         }
         drawTextCentered(renderer, cx, y, if (selected) kColorSelect else kColorText, label, kScale);
     }
@@ -1171,24 +1314,22 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     const scale = kLaunchScale;
     const label = kMainItems[kMainLaunch];
     const box = launchRect();
-    const box_w = box.w;
     const box_h = box.h;
-    const box_x = box.x;
     const box_y = box.y;
     const selected = v.cursor == kMainLaunch;
 
     // Green whether or not it is selected - it is the one action the window
     // exists for. Selection is the ring, which has to be an outline: a frame
     // would paint its own interior over the button.
-    fillRect(renderer, box_x, box_y, box_w, box_h, kColorLaunchBg);
-    if (selected) drawOutline(renderer, box_x - 8, box_y - 8, box_w + 16, box_h + 16, 4, kColorFrameHi);
-    drawTextCentered(renderer, cx, box_y + 14, kColorLaunchText, label, scale);
+    drawButton(renderer, box, kColorLaunchBg, selected);
+    drawTextCentered(renderer, cx, box_y + 11, kColorLaunchText, label, scale);
 
     // Whether the game can actually start, said plainly. Presence is not
     // enough - a .dat left over from another build loads and then misbehaves
     // in ways that look like game bugs, so it is checked against the digest
     // the asset builder produces and reported as its own state.
-    const state_y = box_y + box_h + 6;
+    // Clear of the ring round the button when it's picked.
+    const state_y = box_y + box_h + kStateGap;
 
     drawTextCentered(renderer, cx, state_y, v.assets.color(), v.assets.line(), kScale);
     if (v.assets == .missing)
@@ -1197,9 +1338,8 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     // The randomizer: smaller, and a color of its own, since it plays
     // something other than the port.
     const r = randoRect();
-    fillRect(renderer, r.x, r.y, r.w, r.h, kColorRandoBg);
-    if (v.cursor == kMainRandomizer) drawOutline(renderer, r.x - 6, r.y - 6, r.w + 12, r.h + 12, 3, kColorFrameHi);
-    drawTextCentered(renderer, cx, r.y + 10, kColorText, "RANDOMIZER", kScale);
+    drawButton(renderer, r, kColorRandoBg, v.cursor == kMainRandomizer);
+    drawTextCentered(renderer, cx, r.y + 7, kColorText, "RANDOMIZER", kScale);
 }
 
 // ---------------------------------------------------------------- controls
@@ -1282,10 +1422,7 @@ fn drawControls(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
         const r = ctlRowRect(row - g_ctl_top);
         const y = r.y + 3;
         const selected = row == v.cursor;
-        if (selected) {
-            fillRect(renderer, r.x, r.y, r.w, r.h, kColorRowHi);
-            drawText(renderer, 36, y, kColorSelect, ">");
-        }
+        if (selected) drawRowHighlight(renderer, r.x, r.y, r.w, r.h);
         const col = if (selected) kColorSelect else kColorText;
         if (row == kCtlResetRow) {
             drawTextCentered(renderer, kWindowW / 2, y, col, "RESET ALL TO DEFAULTS", kScale);
@@ -1306,8 +1443,7 @@ fn drawControls(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     const track_h = kRowH * kCtlVisible;
     const bar_h = track_h * kCtlVisible / @as(f32, kCtlRows);
     const bar_y = track_y + track_h * @as(f32, @floatFromInt(g_ctl_top)) / @as(f32, kCtlRows);
-    fillRect(renderer, kWindowW - 30, track_y, 4, track_h, kColorFrameLo);
-    fillRect(renderer, kWindowW - 30, bar_y, 4, bar_h, kColorFrameHi);
+    drawScrollbar(renderer, track_y, track_h, bar_y, bar_h);
 }
 
 /// Takes the key or button pressed while a row waits. Returns the status
@@ -1329,8 +1465,7 @@ fn drawHub(renderer: *c.SDL_Renderer, v: View) void {
         const r = hubRect(i);
         const selected = v.cursor == i;
         const soon = i == kHubBuiltIn;
-        fillRect(renderer, r.x, r.y, r.w, r.h, if (soon) kColorDisabledBg else kColorRandoBg);
-        if (selected) drawOutline(renderer, r.x - 8, r.y - 8, r.w + 16, r.h + 16, 4, kColorFrameHi);
+        drawButton(renderer, r, if (soon) kColorDisabledBg else kColorRandoBg, selected);
         drawTextCentered(renderer, cx, r.y + 18, if (soon) kColorTextDim else kColorText, label, kScale);
         const sub = if (soon) "COMING SOON" else "PLAY A SEED FROM ALTTPR.COM";
         drawTextCentered(renderer, cx, r.y + 18 + kRowH + 8, if (soon) kColorWarn else kColorValue, sub, kScale);
@@ -1353,7 +1488,7 @@ fn drawSeedBox(renderer: *c.SDL_Renderer) void {
     const x: f32 = 32;
     const w: f32 = kWindowW - 64;
     const y = kSeedBoxY;
-    drawOutline(renderer, x, y, w, kSeedBoxH, 2, kColorFrameLo);
+    outlineRound(renderer, x, y, w, kSeedBoxH, 10, 1, kColorLine);
     const tx = x + 12;
     const max_w = w - 24;
     const line0 = y + 8;
@@ -1583,7 +1718,7 @@ fn drawList(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
         const selected = p == v.cursor;
         if (at >= kSettings.len) {
             // The page's two buttons, which only work with a seed.
-            if (selected) fillRect(renderer, 32, y - 3, kWindowW - 64, kRowH, kColorRowHi);
+            if (selected) drawRowHighlight(renderer, 32, y - 3, kWindowW - 64, kRowH);
             const label = if (at == kPlayRow) "PLAY THIS SEED" else "SEED DETAILS";
             const col = if (!g_seed_loaded) kColorTextDim else if (selected) kColorSelect else if (at == kPlayRow) kColorOk else kColorText;
             drawTextCentered(renderer, kWindowW / 2, y, col, label, kScale);
@@ -1591,10 +1726,7 @@ fn drawList(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
             drawText(renderer, 40, y, kColorSection, kSettings[at].label);
         } else {
             const s = kSettings[at];
-            if (selected) {
-                fillRect(renderer, 32, y - 3, kWindowW - 64, kRowH, kColorRowHi);
-                drawText(renderer, 36, y, kColorSelect, ">");
-            }
+            if (selected) drawRowHighlight(renderer, 32, y - 3, kWindowW - 64, kRowH);
             drawText(renderer, 56, y, if (selected) kColorSelect else kColorText, s.label);
             var vbuf: [64]u8 = undefined;
             const shown = displayValue(&vbuf, s, ini.values[at] orelse "(missing)");
@@ -1611,10 +1743,60 @@ fn drawList(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
         const nf: f32 = @floatFromInt(n);
         const bar_h = track_h * @as(f32, @floatFromInt(shown)) / nf;
         const bar_y = track_y + track_h * @as(f32, @floatFromInt(v.top)) / nf;
-        fillRect(renderer, kWindowW - 30, track_y, 4, track_h, kColorFrameLo);
-        fillRect(renderer, kWindowW - 30, bar_y, 4, bar_h, kColorFrameHi);
+        drawScrollbar(renderer, track_y, track_h, bar_y, bar_h);
     }
 }
+
+/// The info box: wide, so a description takes few lines.
+const kInfoRect = Rect{ .x = 24, .y = 84, .w = kWindowW - 48, .h = 280 };
+const kInfoPad: f32 = 24;
+/// Characters to a line of the description, in the menu's fixed-width font.
+const kInfoChars: usize = @intFromFloat((kInfoRect.w - kInfoPad * 2) / kCell);
+const kInfoLines = 9;
+
+/// The selected setting's name and what it does.
+fn drawInfo(renderer: *c.SDL_Renderer, v: View) void {
+    const at = rowAt(v.screen, v.cursor);
+    if (at >= kSettings.len or isSection(kSettings[at])) return;
+    const s = kSettings[at];
+    const box = kInfoRect;
+    drawFrame(renderer, box.x, box.y, box.w, box.h);
+    const x = box.x + kInfoPad;
+    drawText(renderer, x, box.y + kInfoPad, kColorSelect, s.label);
+    fillRect(renderer, x, box.y + kInfoPad + kRowH + 2, box.w - kInfoPad * 2, 1, kColorLine);
+
+    var y = box.y + kInfoPad + kRowH + 14;
+    var lines = LineWrap{ .text = describe(s), .width = kInfoChars };
+    var n: usize = 0;
+    while (lines.next()) |line| : (n += 1) {
+        if (n == kInfoLines) break;
+        drawText(renderer, x, y, kColorText, line);
+        y += kRowH;
+    }
+}
+
+/// Splits text into lines of at most `width` characters, at spaces.
+const LineWrap = struct {
+    text: []const u8,
+    width: usize,
+    at: usize = 0,
+
+    fn next(self: *LineWrap) ?[]const u8 {
+        while (self.at < self.text.len and self.text[self.at] == ' ') self.at += 1;
+        if (self.at >= self.text.len) return null;
+        const start = self.at;
+        const rest = self.text[start..];
+        if (rest.len <= self.width) {
+            self.at = self.text.len;
+            return rest;
+        }
+        // The last space that leaves the line short enough, or a hard break
+        // for a word longer than a whole line.
+        const cut = std.mem.lastIndexOfScalar(u8, rest[0 .. self.width + 1], ' ') orelse self.width;
+        self.at = start + cut;
+        return rest[0..cut];
+    }
+};
 
 /// Where the modal's panel sits, and where its two answers sit inside it.
 fn modalRect() Rect {
@@ -1631,6 +1813,7 @@ fn modalChoiceRect(i: usize) Rect {
 }
 
 fn drawModal(renderer: *c.SDL_Renderer, v: View) void {
+    if (v.modal == .info) return drawInfo(renderer, v);
     const box = modalRect();
     const cx = box.x + box.w / 2;
 
@@ -1646,8 +1829,8 @@ fn drawModal(renderer: *c.SDL_Renderer, v: View) void {
             for (kQuitChoices, 0..) |label, i| {
                 const r = modalChoiceRect(i);
                 const selected = i == v.quit_choice;
-                if (selected) fillRect(renderer, r.x, r.y, r.w, r.h, kColorRowHi);
-                drawOutline(renderer, r.x, r.y, r.w, r.h, 2, if (selected) kColorFrameHi else kColorFrameLo);
+                fillRound(renderer, r.x, r.y, r.w, r.h, 8, if (selected) kColorRowHi else kColorPanel);
+                outlineRound(renderer, r.x, r.y, r.w, r.h, 8, if (selected) 2 else 1, if (selected) kColorSelect else kColorLine);
                 drawTextCentered(renderer, r.x + r.w / 2, r.y + 8, if (selected) kColorSelect else kColorText, label, kScale);
             }
         },
@@ -1664,7 +1847,7 @@ fn drawModal(renderer: *c.SDL_Renderer, v: View) void {
                 drawTextCentered(renderer, cx, box.y + 130, kColorTextDim, "B/ESC TO CANCEL", kScale);
             }
         },
-        .none => {},
+        .info, .none => {},
     }
 }
 
@@ -1683,6 +1866,7 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
                 drawText(renderer, 40, footer_y, kColorTextDim, "DROP A FILE ON THE WINDOW");
                 drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "B/ESC CANCEL");
             },
+            .info => drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "A OR B TO CLOSE"),
             .none => {},
         }
         if (v.status.len != 0)
@@ -1697,7 +1881,7 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
         },
         .settings, .features => {
             drawText(renderer, 40, footer_y, kColorTextDim, "CHANGE  LEFT/RIGHT OR A");
-            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "SAVE X/S   BACK B/ESC");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "INFO Y/I   SAVE X/S   BACK B/ESC");
         },
         .hub => {
             drawText(renderer, 40, footer_y, kColorTextDim, "SELECT A/ENTER");
@@ -1893,6 +2077,7 @@ pub fn reportPads() void {
                 .confirm => "select",
                 .back => "back",
                 .save => "save",
+                .info => "info",
                 .none => "-",
             };
             std.debug.print("  {s:<6} labeled {s:<8} does {s}\n", .{ b.pos, printed, does });
@@ -2166,6 +2351,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
         var start = false;
         var back = false;
         var save = false;
+        var info = false;
         var build = false;
         // Presses arrive as events so that a tap shorter than a frame still
         // counts; the poll below only decides when a held direction repeats.
@@ -2280,6 +2466,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         c.SDLK_ESCAPE => back = true,
                         c.SDLK_RETURN, c.SDLK_SPACE => confirm = true,
                         c.SDLK_S => save = true,
+                        c.SDLK_I => info = true,
                         c.SDLK_B => if (screen == .main) {
                             build = true;
                         },
@@ -2308,6 +2495,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                             .confirm => confirm = true,
                             .back => back = true,
                             .save => save = true,
+                            .info => info = true,
                             .none => {},
                         },
                     }
@@ -2391,6 +2579,10 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         }
                     }
                     if (back) modal = .none;
+                },
+                // Anything that means "done" puts it away.
+                .info => if (confirm or back or info or clicked) {
+                    modal = .none;
                 },
                 .none => {},
             }
@@ -2593,7 +2785,10 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
             }
 
             const at = rowAt(screen, list_cursor[li]);
-            if (screen == .alttpr and (start or (confirm and at == kPlayRow))) {
+            if (info and (screen == .settings or screen == .features) and at < kSettings.len) {
+                modal = .info;
+                status = "";
+            } else if (screen == .alttpr and (start or (confirm and at == kPlayRow))) {
                 if (!g_seed_loaded) {
                     status = "DROP A SEED ON THIS WINDOW FIRST";
                 } else {
@@ -2657,6 +2852,35 @@ const testing = std.testing;
 fn scratchName(buf: []u8, base: []const u8, ext: []const u8) ![:0]const u8 {
     const pid: u64 = if (builtin.os.tag == .windows) std.os.windows.GetCurrentProcessId() else @intCast(std.c.getpid());
     return std.fmt.bufPrintSentinel(buf, "zig-cache-{s}-{d}.{s}", .{ base, pid, ext }, 0);
+}
+
+test "every setting on the Settings and Features pages has a description that fits its box" {
+    for (kSettings[0..kRandomizerStart]) |s| {
+        if (isSection(s)) continue;
+        const d = describe(s);
+        if (d.len == 0) {
+            std.debug.print("no description for {s}\n", .{s.key});
+            return error.MissingDescription;
+        }
+        var lines = LineWrap{ .text = d, .width = kInfoChars };
+        var n: usize = 0;
+        while (lines.next()) |line| : (n += 1) try testing.expect(line.len <= kInfoChars);
+        if (n > kInfoLines) {
+            std.debug.print("{s}'s description runs to {d} lines\n", .{ s.key, n });
+            return error.DescriptionTooLong;
+        }
+    }
+    // The box itself stays clear of the footer.
+    const footer_y: f32 = kWindowH - 32 - kRowH * 2 - 6;
+    try testing.expect(kInfoRect.y + kInfoRect.h <= footer_y);
+}
+
+test "lines wrap at spaces and never run long" {
+    var lines = LineWrap{ .text = "one two three four", .width = 9 };
+    try testing.expectEqualStrings("one two", lines.next().?);
+    try testing.expectEqualStrings("three", lines.next().?);
+    try testing.expectEqualStrings("four", lines.next().?);
+    try testing.expectEqual(@as(?[]const u8, null), lines.next());
 }
 
 test "the old data directory moves into an empty new one, and only then" {
@@ -2875,10 +3099,12 @@ test "the on-screen strings fit the window" {
         "QUIT B/ESC",
         "CHANGE  LEFT/RIGHT OR A",
         "SAVE X/S   BACK B/ESC",
+        "INFO Y/I   SAVE X/S   BACK B/ESC",
+        "A OR B TO CLOSE",
         // Headers.
         "THE LEGEND OF ZELDA",
         "A LINK TO THE PAST",
-        "START MENU",
+        "ALTTP-DX",
         "LEFT/RIGHT CHOOSE",
         "A/ENTER CONFIRM   B/ESC CANCEL",
         "DROP A FILE ON THE WINDOW",
@@ -3182,8 +3408,14 @@ test "the Controls screen fits between the header and the footer" {
 
 test "the Randomizer button clears the missing-assets hint and the status line" {
     // Mirrors drawMain: the asset state under Play, then the hint under it.
-    const hint_bottom = launchRect().y + launchRect().h + 6 + kRowH + kCell;
+    const state_y = launchRect().y + launchRect().h + kStateGap;
+    const hint_bottom = state_y + kRowH + kCell;
     try testing.expect(randoRect().y >= hint_bottom);
     const footer_y: f32 = kWindowH - 32 - kRowH * 2 - 6;
     try testing.expect(randoRect().y + randoRect().h <= footer_y - kRowH);
+    // And the rings the buttons get when picked: Play's clears the state
+    // line, and Randomizer's clears the hint and the footer.
+    try testing.expect(launchRect().y + launchRect().h + kRingBelow < state_y);
+    try testing.expect(randoRect().y - kRingAbove >= hint_bottom);
+    try testing.expect(randoRect().y + randoRect().h + kRingBelow <= footer_y);
 }

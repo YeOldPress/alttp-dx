@@ -649,7 +649,7 @@ fn drawDetails(cv: gfx.Canvas) void {
     _ = cv.text(24, 52, fontSafe(&label_buf, s.label), kTextSelected);
 
     var y: i32 = 72;
-    var lines = WordWrap{ .text = describe(s), .width = 208 };
+    var lines = WordWrap{ .text = menu.describe(s), .width = 208 };
     while (lines.next()) |line| : (y += 16) {
         if (y > 150) break;
         _ = cv.text(24, y, line, kTextNormal);
@@ -683,58 +683,6 @@ const WordWrap = struct {
         return self.text[start..end];
     }
 };
-
-/// What each setting does, in words the font can draw: no colons, slashes or
-/// percent signs.
-fn describe(s: menu.Setting) []const u8 {
-    const kDescriptions = [_][2][]const u8{
-        .{ "StartMenu", "Show the start menu, with settings and the ROM and assets, before the game begins. When off, the game starts straight away unless its assets need building." },
-        .{ "Autosave", "Save a snapshot of the game when you quit and pick up from it next time you start." },
-        .{ "DisplayPerfInTitle", "Show the frames per second in the window's title bar." },
-        .{ "ExtendedAspectRatio", "Widen the view past the original 4 by 3 screen, showing more of the world at the sides. 16 by 9 suits most modern screens." },
-        .{ "WidescreenHud", "In widescreen, move the magic meter, item and counters to the left edge and the hearts to the right, instead of leaving them in the middle. Does nothing at 4 by 3." },
-        .{ "WidescreenCamera", "In widescreen, keep the camera far enough from an area's edge that the whole wide picture shows the area, instead of stopping where a 4 by 3 screen would and showing black past it. Does nothing at 4 by 3." },
-        .{ "DisableFrameDelay", "Skip the wait the game does between frames. Only worth it on a display running at exactly 60 hertz." },
-        .{ "Rumble", "How hard the controller shakes when Link is hurt, bombs go off, bosses fall and the screen shakes. 0 turns it off." },
-        .{ "Tracker", "Where the item tracker goes when playing a randomizer seed. Beside the game, over it, in its own window, or nowhere. T switches while playing." },
-        .{ "Fullscreen", "Windowed, fullscreen at the desktop's resolution, or fullscreen with a change of display mode." },
-        .{ "WindowScale", "How many times bigger than the SNES screen the window opens." },
-        .{ "OutputMethod", "How frames reach the screen. SDL suits most machines, SDL-Software can help on a Raspberry Pi, and OpenGL is needed for shaders." },
-        .{ "NewRenderer", "Draw the screen with a faster rewrite of the SNES graphics chip. Turn it off if something looks wrong." },
-        .{ "EnhancedMode7", "Draw the world map and other rotating backgrounds at a higher resolution." },
-        .{ "NoSpriteLimits", "Stop sprites flickering or vanishing when too many share a line of the screen, a limit of the original hardware." },
-        .{ "IgnoreAspectRatio", "Stretch the picture to fill the window instead of keeping its shape." },
-        .{ "LinearFiltering", "Smooth the pixels when the picture is scaled up. Softer, less crisp." },
-        .{ "DimFlashes", "Tone down flashing effects, as the Virtual Console releases did." },
-        .{ "EnableAudio", "Play sound and music at all." },
-        .{ "AudioFreq", "The rate the game mixes its sound at. Higher is clearer. MSU audio sets its own." },
-        .{ "AudioChannels", "Mono or stereo sound." },
-        .{ "AudioSamples", "The sound buffer's size. Smaller means less delay before you hear things, larger helps if the sound crackles." },
-        .{ "EnableMSU", "Play an MSU music pack instead of the SNES music. Deluxe packs give each area its own track, and Opuz packs are compressed." },
-        .{ "MSUVolume", "How loud MSU music plays." },
-        .{ "ResumeMSU", "Pick an overworld area's MSU track up where it left off when you come back to it." },
-        .{ "MSUFinishCues", "Let short MSU music cues, like the mirror warp, play to their end before the next track starts." },
-        .{ "ItemSwitchLR", "Switch items with L and R, and reorder the inventory with Y and a direction. Hold L or R on an item to put it on that button." },
-        .{ "ItemOnX", "A second item on X. Hold X on an item in the item menu to put it there, then press X to use it. A box under your item shows it, and the map moves to L and R pressed together." },
-        .{ "TurnWhileDashing", "Steer while running with the Pegasus Boots." },
-        .{ "MirrorToDarkworld", "Let the Magic Mirror take you to the Dark World as well as back from it." },
-        .{ "CollectItemsWithSword", "Pick up hearts, rupees and other drops by hitting them with the sword." },
-        .{ "BreakPotsWithSword", "Smash pots with a level 2 sword or better." },
-        .{ "DisableLowHealthBeep", "Silence the beeping when Link is low on hearts." },
-        .{ "SkipIntroOnKeypress", "Let a button press skip the opening." },
-        .{ "ShowMaxItemsInYellow", "Show rupees, bombs and arrows in yellow when they're full." },
-        .{ "MoreActiveBombs", "Allow four bombs out at once instead of two." },
-        .{ "CarryMoreRupees", "Hold up to 9999 rupees instead of 999." },
-        .{ "MiscBugFixes", "Fix a number of the original game's bugs that don't change how it plays." },
-        .{ "GameChangingBugFixes", "Fix bugs whose fixes do change how the game plays." },
-        .{ "CancelBirdTravel", "Let X cancel the bird's flight before it takes off." },
-        .{ "DiggingGamePity", "Have the digging game hand over its heart piece after 250 digs without one, instead of leaving it to a 1 in 32 chance a dig. The count is never saved." },
-    };
-    for (kDescriptions) |d| {
-        if (std.mem.eql(u8, d[0], s.key)) return d[1];
-    }
-    return "";
-}
 
 // ---------------------------------------------------------------- controls
 
@@ -918,7 +866,7 @@ test "every editable setting sits on exactly one tab" {
 test "every setting has a description the font can draw" {
     for (kIndex) |si| {
         const s = menu.kSettings[si];
-        const d = describe(s);
+        const d = menu.describe(s);
         if (d.len == 0) {
             std.debug.print("no description for {s}\n", .{s.key});
             return error.MissingDescription;
