@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=alttp-zig
+Name=ALTTP-DX
 Comment=A Link to the Past, reimplemented and ported to Zig
 Exec=zelda3
-Icon=alttp-zig
+Icon=alttp-dx
 Categories=Game;AdventureGame;
 Terminal=false

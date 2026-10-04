@@ -12,6 +12,7 @@ pub extern fn fwrite(ptr: *const anyopaque, size: usize, n: usize, f: *anyopaque
 pub extern fn fseek(f: *anyopaque, off: c_long, whence: c_int) c_int;
 pub extern fn ftell(f: *anyopaque) c_long;
 pub extern fn remove(path: [*:0]const u8) c_int;
+pub extern fn rename(old: [*:0]const u8, new: [*:0]const u8) c_int;
 
 const SEEK_SET = 0;
 const SEEK_END = 2;

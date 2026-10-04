@@ -211,7 +211,7 @@ fn inGameDir(alloc: std.mem.Allocator, name: []const u8) []const u8 {
     const base_z = c.SDL_GetBasePath() orelse return name;
     const base = std.mem.span(base_z);
     if (@import("menu.zig").isPackaged(base)) {
-        const pref = c.SDL_GetPrefPath("", "alttp-zig") orelse return name;
+        const pref = @import("menu.zig").dataDirectory() orelse return name;
         defer c.SDL_free(pref);
         return std.fmt.allocPrint(alloc, "{s}{s}", .{ std.mem.span(pref), name }) catch name;
     }

@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>alttp-zig</string>
+	<string>ALTTP-DX</string>
 	<key>CFBundleDisplayName</key>
-	<string>alttp-zig</string>
+	<string>ALTTP-DX</string>
 	<key>CFBundleIdentifier</key>
-	<string>io.github.yeoldpress.alttp-zig</string>
+	<string>io.github.yeoldpress.alttp-dx</string>
 	<key>CFBundleExecutable</key>
 	<string>zelda3</string>
 	<key>CFBundleIconFile</key>

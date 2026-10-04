@@ -7,7 +7,7 @@
 	<key>CFBundleDisplayName</key>
 	<string>zelda3 tools</string>
 	<key>CFBundleIdentifier</key>
-	<string>io.github.yeoldpress.alttp-zig.tools</string>
+	<string>io.github.yeoldpress.alttp-dx.tools</string>
 	<key>CFBundleExecutable</key>
 	<string>zelda3-tools</string>
 	<key>CFBundleIconFile</key>

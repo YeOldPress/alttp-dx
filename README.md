@@ -1,9 +1,11 @@
-# alttp-zig
+# ALTTP-DX
 
-A Link to the Past, reimplemented from scratch and ported to Zig.
+A Link to the Past, reimplemented from scratch and ported to Zig, with
+widescreen, rumble, MSU packs, a start menu and settings inside the game.
 
-This is a fork of [snesrev/zelda3](https://github.com/snesrev/zelda3), the C
-reimplementation of the whole game. I ported it to Zig and added a start menu,
+It began as a fork of [snesrev/zelda3](https://github.com/snesrev/zelda3), the
+C reimplementation of the whole game, and was called alttp-zig until it grew
+into its own thing. I ported it to Zig and added a start menu,
 a settings screen inside the game, controller rumble, `zelda3-tools` (an asset
 toolbox with a window and a command line), and a way to play
 [alttpr.com](https://alttpr.com) randomizer seeds with a built-in item
@@ -16,22 +18,23 @@ Upstream's Discord: https://discord.gg/AJJbJAzNNJ
 
 ## Downloads
 
-[Releases](https://github.com/YeOldPress/alttp-zig/releases) have two
+[Releases](https://github.com/YeOldPress/alttp-dx/releases) have two
 downloads for each platform, both with SDL3 inside:
 
 | | Game | Tools |
 | --- | --- | --- |
-| macOS 11+, Apple Silicon | `alttp-zig-*-macos-arm64.zip` | `zelda3-tools-*-macos-arm64.zip` |
-| Linux x86_64, glibc 2.35+ | `alttp-zig-*-x86_64.AppImage` | `zelda3-tools-*-x86_64.AppImage` |
-| Windows x86_64 | `alttp-zig-*-windows-x86_64.zip` | `zelda3-tools-*-windows-x86_64.zip` |
+| macOS 11+, Apple Silicon | `alttp-dx-*-macos-arm64.zip` | `zelda3-tools-*-macos-arm64.zip` |
+| Linux x86_64, glibc 2.35+ | `alttp-dx-*-x86_64.AppImage` | `zelda3-tools-*-x86_64.AppImage` |
+| Windows x86_64 | `alttp-dx-*-windows-x86_64.zip` | `zelda3-tools-*-windows-x86_64.zip` |
 
 The game is all you need to play: start it, give it your ROM, press Play. The
 tools are for modding and extra languages.
 
 The Mac app and the AppImage keep `zelda3.ini`, `zelda3_assets.dat` and your
-saves in `~/Library/Application Support/alttp-zig` or
-`~/.local/share/alttp-zig`, and the tools default to the same place. On
-Windows everything stays in the game's folder.
+saves in `~/Library/Application Support/alttp-dx` or
+`~/.local/share/alttp-dx`, and the tools default to the same place. On
+Windows everything stays in the game's folder. Coming from alttp-zig, the
+first start moves the old `alttp-zig` folder over, saves and all.
 
 ## Building
 
@@ -43,8 +46,8 @@ sudo dnf install SDL3-devel    # Fedora
 sudo pacman -S sdl3            # Arch
 brew install sdl3              # macOS
 
-git clone https://github.com/YeOldPress/alttp-zig
-cd alttp-zig
+git clone https://github.com/YeOldPress/alttp-dx
+cd alttp-dx
 zig build run
 ```
 

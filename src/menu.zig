@@ -1911,11 +1911,49 @@ pub fn isPackaged(base: []const u8) bool {
     return false;
 }
 
+/// The per-user data directory's name. The project was alttp-zig before it
+/// was ALTTP-DX, and so was its directory.
+const kDataDirName = "alttp-dx";
+const kOldDataDirName = "alttp-zig";
+
+/// The per-user data directory, with a separator on the end, made if it isn't
+/// there yet. Free it with SDL_free. The first time, an alttp-zig directory
+/// from before the rename is moved over to be it, saves and all.
+pub fn dataDirectory() ?[*:0]u8 {
+    // SDL creates the directory if it is not there yet.
+    const pref = c.SDL_GetPrefPath("", kDataDirName) orelse return null;
+    var buf: [4096]u8 = undefined;
+    if (oldDataDirectory(&buf, std.mem.span(pref))) |old| moveDataDirectory(old, pref);
+    return pref;
+}
+
+/// Moves `old` to be `new`, if `old` is there and `new` is empty. One that
+/// has anything in it stays as it is, and so does `old`: an empty `new`
+/// comes out, and `old` is renamed into its place.
+fn moveDataDirectory(old: [*:0]const u8, new: [*:0]const u8) void {
+    if (!fileio.isDir(old)) return;
+    fileio.removeDir(new);
+    if (fileio.isDir(new)) return;
+    if (fileio.rename(old, new) != 0) {
+        std.debug.print("Could not move {s} to {s}\n", .{ old, new });
+        fileio.makeDir(new) catch {};
+    }
+}
+
+/// The old data directory beside `new`, which SDL gave as ending in the new
+/// name and a separator. Null for anything else.
+fn oldDataDirectory(buf: []u8, new: []const u8) ?[:0]const u8 {
+    const trimmed = std.mem.trimEnd(u8, new, "/\\");
+    if (!std.mem.endsWith(u8, trimmed, kDataDirName)) return null;
+    const parent = trimmed[0 .. trimmed.len - kDataDirName.len];
+    return std.fmt.bufPrintSentinel(buf, "{s}{s}", .{ parent, kOldDataDirName }, 0) catch null;
+}
+
 /// Moves into the directory the game keeps its files in, whatever directory it
 /// was started from, and remembers where to look for a ROM. That is the
 /// executable's own directory for a plain install, or the per-user data
-/// directory (~/Library/Application Support/alttp-zig on macOS,
-/// ~/.local/share/alttp-zig on Linux) for an app bundle or AppImage. A missing
+/// directory (~/Library/Application Support/alttp-dx on macOS,
+/// ~/.local/share/alttp-dx on Linux) for an app bundle or AppImage. A missing
 /// zelda3.ini is written out from the copy built into the game.
 pub fn enterDataDirectory() void {
     var start_dir_buf: [4096]u8 = undefined;
@@ -1924,8 +1962,7 @@ pub fn enterDataDirectory() void {
     if (c.SDL_GetBasePath()) |base_z| {
         const base = std.mem.span(base_z);
         if (isPackaged(base)) {
-            // SDL creates the directory if it is not there yet.
-            if (c.SDL_GetPrefPath("", "alttp-zig")) |pref| {
+            if (dataDirectory()) |pref| {
                 defer c.SDL_free(pref);
                 fileio.setWorkingDirectory(pref) catch {};
             } else {
@@ -2620,6 +2657,43 @@ const testing = std.testing;
 fn scratchName(buf: []u8, base: []const u8, ext: []const u8) ![:0]const u8 {
     const pid: u64 = if (builtin.os.tag == .windows) std.os.windows.GetCurrentProcessId() else @intCast(std.c.getpid());
     return std.fmt.bufPrintSentinel(buf, "zig-cache-{s}-{d}.{s}", .{ base, pid, ext }, 0);
+}
+
+test "the old data directory moves into an empty new one, and only then" {
+    const t = std.testing;
+    const root = ".zig-cache/data-dir-test";
+    const old = root ++ "/alttp-zig";
+    const new = root ++ "/alttp-dx";
+    defer {
+        for ([_][*:0]const u8{ old ++ "/sram.dat", new ++ "/sram.dat", new ++ "/zelda3.ini" }) |f| _ = fileio.remove(f);
+        fileio.removeDir(old);
+        fileio.removeDir(new);
+        fileio.removeDir(root);
+    }
+    try fileio.makeDir(root);
+
+    // Old saves, and the empty new directory SDL makes: they move over.
+    try fileio.makeDir(old);
+    try fileio.writeWholeFile(old ++ "/sram.dat", "save");
+    try fileio.makeDir(new);
+    moveDataDirectory(old, new);
+    try t.expect(!fileio.isDir(old));
+    try t.expect(fileio.exists(new ++ "/sram.dat"));
+
+    // A new directory that's been used already is left alone, old one too.
+    try fileio.makeDir(old);
+    try fileio.writeWholeFile(new ++ "/zelda3.ini", "ini");
+    moveDataDirectory(old, new);
+    try t.expect(fileio.isDir(old));
+    try t.expect(fileio.exists(new ++ "/zelda3.ini"));
+}
+
+test "the old data directory sits beside the new one" {
+    var buf: [256]u8 = undefined;
+    const t = std.testing;
+    try t.expectEqualStrings("/Users/me/Library/Application Support/alttp-zig", oldDataDirectory(&buf, "/Users/me/Library/Application Support/alttp-dx/").?);
+    try t.expectEqualStrings("C:\\Users\\me\\AppData\\Roaming\\alttp-zig", oldDataDirectory(&buf, "C:\\Users\\me\\AppData\\Roaming\\alttp-dx\\").?);
+    try t.expectEqual(@as(?[:0]const u8, null), oldDataDirectory(&buf, "/somewhere/else/"));
 }
 
 test "an untouched ini round trips byte for byte" {
