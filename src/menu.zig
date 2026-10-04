@@ -170,6 +170,7 @@ pub const kSettings = [_]Setting{
     .{ .section = "Features", .key = "GameChangingBugFixes", .label = "Game Changing Fixes", .kind = .toggle },
     .{ .section = "Features", .key = "CancelBirdTravel", .label = "Cancel Bird Travel", .kind = .toggle },
     .{ .section = "Features", .key = "DiggingGamePity", .label = "Digging Game Pity", .note = "HEART PIECE GUARANTEED AFTER 250 DIGS", .kind = .toggle },
+    .{ .section = "Features", .key = "ContinueFromDungeon", .label = "Continue From Dungeon", .kind = .toggle },
 
     // The ALTTPR.COM page, not the lists above: a seed gets its own
     // choices, so trying widescreen on one leaves the normal game alone.
@@ -732,6 +733,7 @@ pub fn describe(s: Setting) []const u8 {
         .{ "MiscBugFixes", "Fix a number of the original game's bugs that don't change how it plays." },
         .{ "GameChangingBugFixes", "Fix bugs whose fixes do change how the game plays." },
         .{ "CancelBirdTravel", "Let X cancel the bird's flight before it takes off." },
+        .{ "ContinueFromDungeon", "Save inside a dungeon and the file starts at that dungeon's entrance when you continue it, the way it does when you fall in battle, instead of asking for Link's House, the Sanctuary or the mountain cave." },
         .{ "DiggingGamePity", "Have the digging game hand over its heart piece after 250 digs without one, instead of leaving it to a 1 in 32 chance a dig. The count is never saved." },
     };
     for (kDescriptions) |d| {

@@ -103,6 +103,7 @@ const kFeatures0_SwitchLRLimit: u32 = 32768;
 const kFeatures0_DimFlashes: u32 = 65536;
 const kFeatures0_ItemOnX: u32 = 131072;
 const kFeatures0_DiggingGamePity: u32 = 262144;
+const kFeatures0_ContinueFromDungeon: u32 = 524288;
 /// Whether zelda3.ini said anything about ItemOnX. Files from before it
 /// existed had the second item on X as part of ItemSwitchLR, so without a
 /// say of its own it follows that.
@@ -1065,6 +1066,7 @@ fn handleFeatures(key: [*:0]const u8, value: [*:0]u8) bool {
         .{ "GameChangingBugFixes", kFeatures0_GameChangingBugFixes },
         .{ "CancelBirdTravel", kFeatures0_CancelBirdTravel },
         .{ "DiggingGamePity", kFeatures0_DiggingGamePity },
+        .{ "ContinueFromDungeon", kFeatures0_ContinueFromDungeon },
     };
     if (util.StringEqualsNoCase(key, "ItemOnX")) g_item_on_x_set = true;
     inline for (bits) |bit| {
@@ -1112,6 +1114,8 @@ fn parseOneConfigFile(filename: [*:0]const u8, depth: c_int) bool {
 export fn ParseConfigFile(filename_in: ?[*:0]const u8) callconv(.c) void {
     g_config.msuvolume = 100; // default msu volume, 100%
     g_config.volume = 100;
+    // On unless an ini says otherwise, older ones without the line included.
+    g_config.features0 |= kFeatures0_ContinueFromDungeon;
     g_config.rumble = 100;
     g_config.msu_finish_cues = true;
 

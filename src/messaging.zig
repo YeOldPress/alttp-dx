@@ -317,7 +317,59 @@ pub export fn SaveGameFile() callconv(.c) void {
     vars.word_7EF4FE.* = t;
     std.mem.writeInt(u16, (sram + offs + 0x4fe)[0..2], t, .little);
     std.mem.writeInt(u16, (sram + offs + 0x4fe + 0xf00)[0..2], t, .little);
+    noteDungeonSave(sram, (srm_var1().* >> 1) - 1, t);
     rtl.ZeldaWriteSram();
+}
+
+// ------------------------------------------------- Continue From Dungeon
+//
+// A file saved inside a dungeon can start at that dungeon's entrance when
+// it's continued. The entrance goes in the save memory past the three files
+// and their copies, which end at 0x1e00, and short of 0x1ffe, which says
+// which file is open: 8 bytes a file, "DX", the entrance, and the checksum of
+// the save it belongs to. A save that isn't in a dungeon clears it, and one
+// whose checksum doesn't match (erased, copied, started afresh) ignores it.
+// The files themselves keep the original layout, so a cartridge or another
+// emulator loads them as it always did.
+
+const kDungeonSaveRecords = 0x1f00;
+
+fn dungeonSaveRecord(sram: [*]u8, slot: usize) *[8]u8 {
+    return (sram + kDungeonSaveRecords + slot * 8)[0..8];
+}
+
+/// Whether the place Link is would be where falling in battle restarts him:
+/// inside a dungeon, without Zelda in tow, past the opening.
+fn inDungeonForContinue() bool {
+    return vars.player_is_indoors.* != 0 and
+        @as(u8, @truncate(vars.cur_palace_index_x2.*)) != 0xff and
+        vars.follower_indicator.* != 1 and
+        vars.sram_progress_indicator.* >= 2;
+}
+
+fn noteDungeonSave(sram: [*]u8, slot: usize, checksum: u16) void {
+    if (features.enhanced_features0.* & features.kFeatures0_ContinueFromDungeon == 0) return;
+    if (slot >= 3) return;
+    const rec = dungeonSaveRecord(sram, slot);
+    if (!inDungeonForContinue()) {
+        @memset(rec, 0);
+        return;
+    }
+    rec.* = .{ 'D', 'X', vars.which_entrance.*, 0, 0, 0, 0, 0 };
+    std.mem.writeInt(u16, rec[4..6], checksum, .little);
+}
+
+/// The entrance a file just loaded was saved in, if it was saved in a
+/// dungeon and that's to be where it continues.
+pub fn dungeonContinueEntrance() ?u8 {
+    if (features.enhanced_features0.* & features.kFeatures0_ContinueFromDungeon == 0) return null;
+    if (vars.sram_progress_indicator.* < 2 or vars.follower_indicator.* == 1) return null;
+    const slot = (srm_var1().* >> 1) -% 1;
+    if (slot >= 3) return null;
+    const rec = dungeonSaveRecord(g_zenv.sram.?, slot);
+    if (rec[0] != 'D' or rec[1] != 'X') return null;
+    if (std.mem.readInt(u16, rec[4..6], .little) != vars.word_7EF4FE.*) return null;
+    return rec[2];
 }
 
 pub export fn TransferMode7Characters() callconv(.c) void {
@@ -2993,6 +3045,45 @@ pub export fn DisplaySelectMenu() callconv(.c) void {
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
+
+test "a dungeon save is remembered for its own file, and only that save" {
+    var sram: [0x2000]u8 = @splat(0);
+    const saved_sram = g_zenv.sram;
+    const saved_features = features.enhanced_features0.*;
+    defer {
+        g_zenv.sram = saved_sram;
+        features.enhanced_features0.* = saved_features;
+    }
+    g_zenv.sram = &sram;
+    features.enhanced_features0.* = features.kFeatures0_ContinueFromDungeon;
+    std.mem.writeInt(u16, sram[0x1ffe..][0..2], 2 * 2, .little); // file 2 open
+
+    // In a dungeon, past the opening, nobody following.
+    vars.player_is_indoors.* = 1;
+    vars.cur_palace_index_x2.* = 4;
+    vars.follower_indicator.* = 0;
+    vars.sram_progress_indicator.* = 2;
+    vars.which_entrance.* = 0x37;
+    noteDungeonSave(&sram, 1, 0x1234);
+    vars.word_7EF4FE.* = 0x1234;
+    try testing.expectEqual(@as(?u8, 0x37), dungeonContinueEntrance());
+
+    // A different save in that file (erased, copied, started over): ignored.
+    vars.word_7EF4FE.* = 0x4321;
+    try testing.expectEqual(@as(?u8, null), dungeonContinueEntrance());
+
+    // Saved outside a dungeon: the record goes.
+    vars.word_7EF4FE.* = 0x1234;
+    vars.player_is_indoors.* = 0;
+    noteDungeonSave(&sram, 1, 0x1234);
+    try testing.expectEqual(@as(?u8, null), dungeonContinueEntrance());
+
+    // With the feature off nothing past the files is written at all.
+    features.enhanced_features0.* = 0;
+    vars.player_is_indoors.* = 1;
+    noteDungeonSave(&sram, 1, 0x1234);
+    for (sram[kDungeonSaveRecords..0x1ffe]) |b| try testing.expectEqual(@as(u8, 0), b);
+}
 
 test "the text command encoding round-trips" {
     // TEXTCMD_MK packs param, command and the multibyte flag into one word.

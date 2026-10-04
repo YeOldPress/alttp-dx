@@ -2,6 +2,7 @@
 //! setup, item receipt, sound effect panning and a handful of cutscene modules.
 const std = @import("std");
 const vars = @import("variables.zig");
+const messaging = @import("messaging.zig");
 const rtl = @import("zelda_rtl.zig");
 const audio = @import("audio.zig");
 const select_file = @import("select_file.zig");
@@ -656,6 +657,15 @@ pub export fn Module05_LoadFile() callconv(.c) void { // 828136
     vars.sprite_gfx_subset_3.* = 70;
     vars.word_7E02CD.* = 0x200;
     vars.virq_trigger.* = 48;
+    // Saved inside a dungeon: back in through its entrance, as after falling
+    // in battle there, rather than the choice of places to start.
+    if (messaging.dungeonContinueEntrance()) |entrance| {
+        vars.which_entrance.* = entrance;
+        vars.player_is_indoors.* = 1;
+        vars.death_var4.* = 0;
+        LoadDungeonRoomRebuildHUD();
+        return;
+    }
     if (vars.savegame_is_darkworld.* != 0) {
         if (vars.player_is_indoors.* != 0) {
             LoadDungeonRoomRebuildHUD();

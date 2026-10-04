@@ -45,6 +45,9 @@ pub const kFeatures0_ItemOnX: u32 = 131072;
 /// The digging game hands its heart piece over once you've gone long enough
 /// without one, rather than leaving it entirely to the dice.
 pub const kFeatures0_DiggingGamePity: u32 = 262144;
+/// A file saved inside a dungeon starts at that dungeon's entrance when it's
+/// continued, instead of asking for Link's House, the Sanctuary or the cave.
+pub const kFeatures0_ContinueFromDungeon: u32 = 524288;
 
 pub const enhanced_features0: *align(1) u32 = @ptrCast(&g_ram[0x64c]);
 pub const msu_curr_sample: *align(1) u32 = @ptrCast(&g_ram[0x650]);
@@ -80,7 +83,7 @@ test "the feature bits are distinct single bits" {
         kFeatures0_MiscBugFixes,          kFeatures0_CancelBirdTravel,
         kFeatures0_GameChangingBugFixes,  kFeatures0_SwitchLRLimit,
         kFeatures0_DimFlashes,            kFeatures0_ItemOnX,
-        kFeatures0_DiggingGamePity,
+        kFeatures0_DiggingGamePity,       kFeatures0_ContinueFromDungeon,
     };
     var seen: u32 = 0;
     for (all) |bit| {
