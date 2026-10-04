@@ -2438,7 +2438,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     }
     defer c.SDL_Quit();
 
-    const window = c.SDL_CreateWindow("The Legend of Zelda: A Link to the Past", kWindowW, kWindowH, 0) orelse {
+    const window = c.SDL_CreateWindow("The Legend of Zelda: A Link to the Past DX", kWindowW, kWindowH, 0) orelse {
         std.debug.print("Failed to create window: {s}\n", .{c.SDL_GetError()});
         return error.SdlWindow;
     };

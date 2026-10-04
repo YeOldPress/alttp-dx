@@ -63,6 +63,16 @@ pub const Canvas = struct {
         }
     }
 
+    /// The color already at a pixel of the frame, as 0x00RRGGBB, or black off
+    /// the edge.
+    pub fn get(self: Canvas, x: i32, y_: i32) u32 {
+        const fx = x + self.originX();
+        const y = y_ + self.oy;
+        if (fx < 0 or y < 0 or fx >= self.width or y >= self.height) return 0;
+        const row: [*]align(1) const u32 = @ptrCast(self.pixels + @as(usize, @intCast(y)) * self.scale * self.pitch);
+        return row[@as(usize, @intCast(fx)) * self.scale] & 0xffffff;
+    }
+
     /// Darkens the whole frame, game and all, to a quarter of its brightness.
     /// Moved up by `oy`, only the part a sliding menu covers is darkened.
     pub fn dim(self: Canvas) void {

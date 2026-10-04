@@ -10,6 +10,7 @@ const audio = @import("audio.zig");
 const rumble = @import("rumble.zig");
 const menu = @import("menu.zig");
 const settings_menu = @import("settings_menu.zig");
+const title_dx = @import("title_dx.zig");
 const rando = @import("rando.zig");
 const tracker = @import("tracker.zig");
 const frame_capture = @import("frame_capture.zig");
@@ -160,7 +161,7 @@ const kDefaultSamples = 2048;
 /// SDL3 dropped SDL_MIX_MAXVOLUME along with SDL_MixAudioFormat; the volume is
 /// a stream gain now. The old scale is kept so the printed value reads as it did.
 
-const kWindowTitle = "The Legend of Zelda: A Link to the Past";
+const kWindowTitle = "The Legend of Zelda: A Link to the Past DX";
 
 var g_win_flags: c.SDL_WindowFlags = c.SDL_WINDOW_RESIZABLE;
 var g_window: ?*c.SDL_Window = null;
@@ -408,6 +409,7 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
     defer std.heap.c_allocator.free(pixels);
     // One pixel per SNES pixel, so no 4x Mode 7.
     ZeldaDrawPpuFrame(@ptrCast(pixels.ptr), width * 4, g_ppu_render_flags & ~kPpuRenderFlags_4x4Mode7);
+    title_dx.drawOver(@ptrCast(pixels.ptr), width * 4, width, height, 1);
     settings_menu.drawOver(@ptrCast(pixels.ptr), width * 4, width, height, 1);
     frame_capture.writeBmp(out, pixels, width, height) catch |err| {
         std.debug.print("--render: could not write {s}: {s}\n", .{ out, @errorName(err) });
@@ -451,6 +453,7 @@ fn DrawPpuFrameWithPerf() void {
     } else {
         ZeldaDrawPpuFrame(pixel_buffer, @intCast(pitch), g_ppu_render_flags);
     }
+    title_dx.drawOver(pixel_buffer, @intCast(pitch), @intCast(g_snes_width), @intCast(g_snes_height), @intCast(render_scale));
     settings_menu.drawOver(pixel_buffer, @intCast(pitch), @intCast(g_snes_width), @intCast(g_snes_height), @intCast(render_scale));
     if (g_display_perf)
         RenderNumber(pixel_buffer + @as(usize, @intCast(pitch * render_scale)), @intCast(pitch), g_curr_fps, render_scale == 4);
