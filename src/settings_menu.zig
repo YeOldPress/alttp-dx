@@ -34,6 +34,7 @@ const hud = @import("hud_tables.zig");
 const pad_art = @import("pad_art.zig");
 const controls = @import("controls.zig");
 const c = @import("sdl.zig").c;
+const Ppu = @import("snes").ppu_types.Ppu;
 
 /// Off while the game is being compared against the original, whose Select
 /// button brings up its own text box.
@@ -288,12 +289,14 @@ pub fn update() void {
         .none => {},
         .in => {
             g_slide_y = @min(0, g_slide_y + kSlideStep);
+            moveHud();
             if (g_slide_y == 0) g_slide = .none;
             return;
         },
         .out => {
-            g_slide_y -= kSlideStep;
-            if (g_slide_y <= -kSlideHeight) finishClose();
+            g_slide_y = @max(-kSlideHeight, g_slide_y - kSlideStep);
+            moveHud();
+            if (g_slide_y == -kSlideHeight) finishClose();
             return;
         },
     }
@@ -417,6 +420,55 @@ fn close(choice: PauseChoice) void {
 fn releaseIni() void {
     if (g_ini) |*ini| ini.deinit();
     g_ini = null;
+}
+
+/// The HUD goes down off the bottom of the screen as the menu comes down, and
+/// back up as it goes, the way it does for the inventory: the same scroll of
+/// BG3, the layer the HUD's on, that Start uses, kept in step with the slide.
+fn moveHud() void {
+    const down: i16 = @intCast(g_slide_y + kSlideHeight);
+    vars.BG3VOFS_copy2.* = @bitCast(-down);
+}
+
+/// BG3 holds more than the HUD: the inventory, the dialogue and whatever else
+/// drew there last sit in its rows past the screen's bottom, out of sight at
+/// the HUD's usual scroll. Scrolled down with the menu, they'd come into view
+/// above the HUD, so while it's moved the layer shows its first rows, the
+/// HUD's, and nothing else.
+const kHudRows = 8;
+
+/// A tile of BG3's with nothing in it, to show in place of everything that
+/// isn't the HUD. Found afresh each frame the HUD is moved, since what's
+/// loaded where can change.
+var g_blank_bg3: ?u16 = null;
+
+fn findBlankBg3Tile(ppu: *const Ppu) ?u16 {
+    const base: usize = ppu.bgLayer[2].tileAdr;
+    var tile: usize = 0;
+    // 2 bits a pixel, so 8 words a tile.
+    outer: while (tile < 1024) : (tile += 1) {
+        for (0..8) |i| {
+            if (ppu.vram[(base + tile * 8 + i) & 0x7fff] != 0) continue :outer;
+        }
+        return @intCast(tile);
+    }
+    return null;
+}
+
+/// The BG3 layer bit, for the PPU's tile source, while the HUD is moved.
+pub fn hudLayers(ppu: *const Ppu) u8 {
+    if (!g_open or g_origin != .game or vars.BG3VOFS_copy2.* == 0) return 0;
+    g_blank_bg3 = findBlankBg3Tile(ppu);
+    return if (g_blank_bg3 != null) 0b100 else 0;
+}
+
+/// BG3's tile at (x, y) of its scrolled tilemap space: the HUD's own rows as
+/// VRAM has them, and a blank tile for every other row.
+pub fn hudTile(ppu: *const Ppu, x: u32, y: u32) ?u16 {
+    _ = x;
+    const rows: u32 = if (ppu.bgLayer[2].tilemapHigher) 64 else 32;
+    if ((y >> 3) % rows < kHudRows) return null;
+    return g_blank_bg3;
 }
 
 /// The screen is all the way back up: do what was picked.
