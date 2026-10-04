@@ -171,6 +171,7 @@ extern fn RevivalFairy_Main() void;
 // dungeon.c
 extern fn Dungeon_ApproachFixedColor_variable(a: u8) void;
 extern fn Dungeon_FlagRoomData_Quadrants() void;
+extern fn SaveDungeonKeys() void;
 extern fn Dungeon_PrepareNextRoomQuadrantUpload() void;
 extern fn Dungeon_PushBlock_Handler() void;
 extern fn OrientLampLightCone() void;
@@ -427,8 +428,6 @@ pub export fn Module0E_0B_SaveMenu() callconv(.c) void {
     if (vars.submodule_index.* == 0) {
         vars.subsubmodule_index.* = 0;
         vars.nmi_load_bg_from_vram.* = 1;
-        if (settings_menu.afterBoxClosed())
-            return;
         if (vars.choice_in_multiselect_box.* != 0) {
             vars.sound_effect_ambient.* = 15;
             vars.main_module_index.* = 23;
@@ -839,6 +838,18 @@ pub export fn GameOver_SaveAndOrContinue() callconv(.c) void {
     vars.sound_effect_1.* = 44;
     // Only death with save/continue or save/quit counts as a death
     Death_Func15(vars.subsubmodule_index.* != 2);
+}
+
+/// Save and Continue: writes the file the way Save and Quit does, current
+/// room and dungeon keys included, but leaves Link where he is, health and
+/// all, instead of sending him back to the start.
+pub fn SaveGameInPlace() void {
+    if (vars.sram_progress_indicator.* == 0) return;
+    if (vars.player_is_indoors.* != 0) {
+        Dungeon_FlagRoomData_Quadrants();
+        SaveDungeonKeys();
+    }
+    SaveGameFile();
 }
 
 pub export fn Death_Func15(count_as_death: bool) callconv(.c) void {
@@ -2266,12 +2277,7 @@ pub export fn Text_DecodeCmd(a_in: u8, src: [*]const u8) callconv(.c) u32 {
 pub export fn Text_LoadCharacterBuffer() callconv(.c) void {
     const dictionary = util.FindIndexInMemblk(g_zenv.dialogue_blk, 0);
     const dialogue = util.FindIndexInMemblk(g_zenv.dialogue_blk, 1);
-    // Text written by the settings menu comes from there rather than from the
-    // game's dialogue.
-    const text_str: util.MemBlk = if (settings_menu.customMessage(vars.dialogue_message_index.*)) |custom|
-        .{ .ptr = custom.ptr, .size = custom.len }
-    else
-        util.FindIndexInMemblk(dialogue, vars.dialogue_message_index.*);
+    const text_str = util.FindIndexInMemblk(dialogue, vars.dialogue_message_index.*);
     var src = text_str.ptr.?;
     const src_end = src + text_str.size;
     var dst = vars.messaging_text_buffer;
@@ -2970,12 +2976,14 @@ pub export fn Death_PrepFaint() callconv(.c) void {
 
 pub export fn DisplaySelectMenu() callconv(.c) void {
     vars.choice_in_multiselect_box_bak.* = vars.choice_in_multiselect_box.*;
-    // Continue Game, Save and Quit, and this port's Settings when it can be
-    // offered; the game's own two-choice message otherwise.
-    vars.dialogue_message_index.* = if (settings_menu.offerSelectMenu()) settings_menu.kMsgCustom else 0x186;
-    const bak = vars.main_module_index.*;
-    misc.Main_ShowTextMessage();
-    vars.main_module_index.* = bak;
+    // This port's pause and settings screen slides down in place of the
+    // game's Continue Game / Save and Quit box, when it can.
+    if (!settings_menu.openFromSelect()) {
+        vars.dialogue_message_index.* = 0x186;
+        const bak = vars.main_module_index.*;
+        misc.Main_ShowTextMessage();
+        vars.main_module_index.* = bak;
+    }
     vars.subsubmodule_index.* = 0;
     vars.submodule_index.* = 11;
     vars.saved_module_for_menu.* = vars.main_module_index.*;

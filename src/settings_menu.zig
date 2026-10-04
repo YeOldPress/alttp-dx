@@ -1,12 +1,16 @@
 //! Settings inside the game, behind Select.
 //!
-//! Select normally offers Continue Game or Save and Quit. This adds Settings
-//! as a third choice, and the file select screen gets a SETTINGS option too;
-//! either opens a full settings screen in the style of the
-//! inventory: the same framed boxes, item icons for tabs, hearts for switches,
-//! the dialogue font for the words. L and R change tab, Up and Down pick a
-//! setting, Left, Right and A change it, and B saves zelda3.ini and goes back
-//! to the game.
+//! Select normally brings up a text box offering Continue Game or Save and
+//! Quit. Here it slides this whole screen down instead, the way Start brings
+//! the inventory down, with a first page of Continue, Save and Continue, and
+//! Save and Quit, and the settings on the pages after it. The file select
+//! screen's SETTINGS option opens the same screen without that first page
+//! and without the slide.
+//!
+//! It's drawn in the style of the inventory: the same framed boxes, item
+//! icons for tabs, hearts for switches, the dialogue font for the words. L
+//! and R change page, Up and Down pick a setting, Left, Right and A change
+//! it, and B saves zelda3.ini and goes back to the game.
 //!
 //! The last tab, Controls, maps the SNES pad's twelve buttons to keys and
 //! gamepad buttons, with a line drawing of the pad to show which is which.
@@ -21,9 +25,9 @@ const std = @import("std");
 const vars = @import("variables.zig");
 const config = @import("config.zig");
 const menu = @import("menu.zig");
-const text_tables = @import("asset_text_tables.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const zelda_rtl = @import("zelda_rtl.zig");
+const messaging = @import("messaging.zig");
 const main = @import("main.zig");
 const gfx = @import("game_gfx.zig");
 const hud = @import("hud_tables.zig");
@@ -31,22 +35,13 @@ const pad_art = @import("pad_art.zig");
 const controls = @import("controls.zig");
 const c = @import("sdl.zig").c;
 
-/// Off while the game is being compared against the original, which never had
-/// a third choice on the Select menu.
+/// Off while the game is being compared against the original, whose Select
+/// button brings up its own text box.
 pub var enabled = true;
-
-/// The message number the text engine is given for the Select menu's text.
-/// Real messages stop a little past 0x180, so nothing in the game lands on it.
-pub const kMsgCustom: u16 = 0xf000;
-
-/// The first byte of a command in the US dialogue encoding.
-const kCommandStart = 0x67;
-
-/// The choice Choose3 leaves for the Settings line of the Select menu.
-const kSelectSettings = 2;
 
 const kJoypadH_B: u8 = 0x80;
 const kJoypadH_Y: u8 = 0x40;
+const kJoypadH_Select: u8 = 0x20;
 const kJoypadH_Start: u8 = 0x10;
 const kJoypadH_Up: u8 = 0x08;
 const kJoypadH_Down: u8 = 0x04;
@@ -166,72 +161,6 @@ fn applyLive(s: menu.Setting, value: []const u8) void {
     }
 }
 
-// ------------------------------------------------------------ the Select menu
-
-var g_msg_buf: [128]u8 = undefined;
-var g_msg_len: usize = 0;
-var g_offered = false;
-
-/// Encodes text spelled the way the dialogue dump spells it, commands and
-/// pictures in brackets, into the bytes the text engine reads. No dictionary,
-/// so it means the same whichever language's dictionary is loaded.
-fn encode(out: []u8, s: []const u8) error{ UnknownCharacter, UnknownCommand, NoSpace }![]const u8 {
-    var n: usize = 0;
-    var i: usize = 0;
-    while (i < s.len) {
-        if (s[i] == '[') {
-            const end = std.mem.indexOfScalarPos(u8, s, i, ']') orelse return error.UnknownCommand;
-            const token = s[i .. end + 1];
-            i = end + 1;
-            if (gfx.glyphIndex(token)) |a| {
-                if (n == out.len) return error.NoSpace;
-                out[n] = a;
-                n += 1;
-                continue;
-            }
-            const inner = token[1 .. token.len - 1];
-            const sp = std.mem.indexOfScalar(u8, inner, ' ');
-            const name = if (sp) |p| inner[0..p] else inner;
-            const idx = for (text_tables.kCommandNames, 0..) |cmd, ci| {
-                if (std.mem.eql(u8, cmd, name)) break ci;
-            } else return error.UnknownCommand;
-            if (n + 2 > out.len) return error.NoSpace;
-            out[n] = @intCast(idx + kCommandStart);
-            n += 1;
-            if (sp) |p| {
-                out[n] = std.fmt.parseInt(u8, inner[p + 1 ..], 10) catch return error.UnknownCommand;
-                n += 1;
-            }
-        } else {
-            const a = gfx.glyphIndex(s[i .. i + 1]) orelse return error.UnknownCharacter;
-            if (n == out.len) return error.NoSpace;
-            out[n] = a;
-            n += 1;
-            i += 1;
-        }
-    }
-    return out[0..n];
-}
-
-const kSelectText = "[Speed 00]>Continue Game[2]  Save and Quit[3]  Settings[Choose3]";
-
-/// The Select menu's text with Settings added, when that can be offered.
-/// False leaves the game's own two-choice message alone. The text is in the
-/// US encoding, the only one written here.
-pub fn offerSelectMenu() bool {
-    g_offered = enabled and rtl.g_zenv.dialogue_flags & 1 == 0;
-    if (!g_offered) return false;
-    const bytes = encode(&g_msg_buf, kSelectText) catch return false;
-    g_msg_len = bytes.len;
-    return true;
-}
-
-/// The bytes for kMsgCustom, or null for any other message number.
-pub fn customMessage(index: u16) ?[]const u8 {
-    if (index != kMsgCustom) return null;
-    return g_msg_buf[0..g_msg_len];
-}
-
 // ------------------------------------------------------------------ the screen
 
 var g_open = false;
@@ -248,37 +177,69 @@ var g_held: u32 = 0;
 /// The details box for the selected setting is up.
 var g_details = false;
 
+/// Which page is showing. Opened from Select, page 0 is the pause page and
+/// the settings tabs follow it; from the file select screen there is no pause
+/// page and page 0 is the first tab.
+var g_page: usize = 0;
+/// The picked line on the pause page.
+var g_pause_row: usize = 0;
+
+/// Opened from Select, the screen comes down from the top of the screen and
+/// goes back up, 8 pixels a frame like the inventory does.
+var g_slide: enum { none, in, out } = .none;
+var g_slide_y: i32 = 0;
+const kSlideHeight = 224;
+const kSlideStep = 8;
+/// What to do once the screen has gone back up.
+var g_after_slide: PauseChoice = .continue_game;
+
+const PauseChoice = enum { continue_game, save_and_continue, save_and_quit };
+const kPauseLabels = [_][]const u8{ "Continue", "Save and Continue", "Save and Quit" };
+
+/// The Lamp, for the pause page's tab.
+const kPauseIcon = hud.kHudItemTorch[1].v;
+
+fn hasPausePage() bool {
+    return g_origin == .game;
+}
+
+fn pageCount() usize {
+    return kTabCount + @intFromBool(hasPausePage());
+}
+
+fn onPausePage() bool {
+    return hasPausePage() and g_page == 0;
+}
+
+/// The settings tab on show, or the Controls tab, numbered as kTabs does.
+/// Meaningless on the pause page.
+fn currentTab() usize {
+    return g_page - @intFromBool(hasPausePage());
+}
+
 const kVisibleRows = 7;
 
 pub fn isOpen() bool {
     return g_open;
 }
 
-/// Called when the Select menu's box closes. True when Settings was picked
-/// and the screen is now open; false hands the choice back to the game's own
-/// Continue and Save and Quit.
-pub fn afterBoxClosed() bool {
-    const picked = g_offered and vars.choice_in_multiselect_box.* == kSelectSettings;
-    g_offered = false;
-    if (!picked) return false;
-
-    if (!open(.game)) {
-        vars.choice_in_multiselect_box.* = vars.choice_in_multiselect_box_bak.*;
-        return true;
-    }
-    // Back into the save menu's module, which runs update() for as long as
-    // the screen is up. The box has already closed and put the game's own
-    // display back.
-    vars.main_module_index.* = 14;
-    vars.submodule_index.* = 11;
-    vars.subsubmodule_index.* = 0;
+/// Select pressed in the game. True when the screen is opening, in which
+/// case the caller puts the game in its save menu module, which runs
+/// update() for as long as the screen is up; false leaves Select to the
+/// game's own text box.
+pub fn openFromSelect() bool {
+    if (!enabled or !open(.game)) return false;
+    g_page = 0;
+    g_slide_y = -kSlideHeight;
+    g_slide = .in;
+    vars.sound_effect_2.* = 17;
     return true;
 }
 
 /// Opens the screen over the file select screen, which keeps running under it
 /// and hands update() the pad while it's up.
 pub fn openFromFileSelect() void {
-    _ = open(.file_select);
+    if (open(.file_select)) g_page = g_tab;
 }
 
 fn open(origin: @TypeOf(g_origin)) bool {
@@ -291,6 +252,9 @@ fn open(origin: @TypeOf(g_origin)) bool {
     g_open = true;
     g_details = false;
     g_dirty = false;
+    g_slide = .none;
+    g_slide_y = 0;
+    g_pause_row = 0;
     g_row = 0;
     g_top = 0;
     g_held = 0;
@@ -316,6 +280,19 @@ fn repeatStep(held: bool) bool {
 /// Runs in place of the save menu each frame the screen is up.
 pub fn update() void {
     g_frame +%= 1;
+    switch (g_slide) {
+        .none => {},
+        .in => {
+            g_slide_y = @min(0, g_slide_y + kSlideStep);
+            if (g_slide_y == 0) g_slide = .none;
+            return;
+        },
+        .out => {
+            g_slide_y -= kSlideStep;
+            if (g_slide_y <= -kSlideHeight) finishClose();
+            return;
+        },
+    }
     const pressed_h = vars.filtered_joypad_H.*;
     const pressed_l = vars.filtered_joypad_L.*;
     const held_h = vars.joypad1H_last.*;
@@ -333,6 +310,8 @@ pub fn update() void {
         if (g_capture_frames > kCaptureFrames) cancelCapture();
         return;
     }
+    // Select put it up, so Select takes it down again, from any page.
+    if (g_origin == .game and pressed_h & kJoypadH_Select != 0) return close(.continue_game);
 
     if (g_details) {
         if (pressed_h & (kJoypadH_B | kJoypadH_Y | kJoypadH_Start) != 0 or pressed_l & kJoypadL_A != 0) {
@@ -341,16 +320,17 @@ pub fn update() void {
         }
         return;
     }
-    if (pressed_h & kJoypadH_Y != 0 and g_tab != kControlsTab) {
+    if (pressed_h & kJoypadH_Y != 0 and !onPausePage() and currentTab() != kControlsTab) {
         g_details = true;
         vars.sound_effect_2.* = 32;
         return;
     }
 
-    if (pressed_h & (kJoypadH_B | kJoypadH_Start) != 0) return close();
+    if (pressed_h & (kJoypadH_B | kJoypadH_Start) != 0) return close(.continue_game);
 
     if (pressed_l & (kJoypadL_L | kJoypadL_R) != 0) {
-        g_tab = if (pressed_l & kJoypadL_R != 0) (g_tab + 1) % kTabCount else (g_tab + kTabCount - 1) % kTabCount;
+        const n = pageCount();
+        g_page = if (pressed_l & kJoypadL_R != 0) (g_page + 1) % n else (g_page + n - 1) % n;
         g_row = 0;
         g_top = 0;
         vars.sound_effect_2.* = 32;
@@ -359,6 +339,8 @@ pub fn update() void {
 
     const dirs = held_h & (kJoypadH_Up | kJoypadH_Down | kJoypadH_Left | kJoypadH_Right);
     const step = repeatStep(dirs != 0);
+    if (onPausePage()) return pauseUpdate(step, dirs, pressed_l);
+    g_tab = currentTab();
     if (g_tab == kControlsTab) return controlsUpdate(step, dirs, pressed_l);
     const count = kTabs[g_tab].count;
     if (step and dirs & kJoypadH_Up != 0) {
@@ -389,9 +371,26 @@ fn change(dir: i32) void {
     vars.sound_effect_1.* = 43;
 }
 
+fn pauseUpdate(step: bool, dirs: u8, pressed_l: u8) void {
+    if (step and dirs & kJoypadH_Up != 0) {
+        g_pause_row = (g_pause_row + kPauseLabels.len - 1) % kPauseLabels.len;
+        vars.sound_effect_2.* = 32;
+    } else if (step and dirs & kJoypadH_Down != 0) {
+        g_pause_row = (g_pause_row + 1) % kPauseLabels.len;
+        vars.sound_effect_2.* = 32;
+    } else if (pressed_l & kJoypadL_A != 0) {
+        // The chime the game's own Continue / Save and Quit box makes.
+        vars.sound_effect_1.* = 43;
+        const choice: PauseChoice = @fromBackingInt(@intCast(g_pause_row));
+        if (choice == .save_and_continue) messaging.SaveGameInPlace();
+        close(choice);
+    }
+}
+
 /// Saves what changed and goes back where the screen was opened from: the
-/// game, as Continue would, or the file select screen, which never left.
-fn close() void {
+/// game, once the screen has gone back up, or the file select screen, which
+/// never left.
+fn close(choice: PauseChoice) void {
     if (g_ini) |*ini| {
         if (g_dirty) {
             ini.save("zelda3.ini") catch |err| std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
@@ -399,12 +398,35 @@ fn close() void {
         ini.deinit();
     }
     g_ini = null;
-    g_open = false;
+    g_details = false;
     vars.sound_effect_2.* = 18;
     if (g_origin == .game) {
-        vars.choice_in_multiselect_box.* = vars.choice_in_multiselect_box_bak.*;
-        vars.main_module_index.* = vars.saved_module_for_menu.*;
-        vars.submodule_index.* = 0;
+        g_after_slide = choice;
+        g_slide = .out;
+    } else {
+        g_open = false;
+    }
+}
+
+/// The screen is all the way back up: do what was picked.
+fn finishClose() void {
+    g_open = false;
+    g_slide = .none;
+    switch (g_after_slide) {
+        .continue_game, .save_and_continue => {
+            vars.choice_in_multiselect_box.* = vars.choice_in_multiselect_box_bak.*;
+            vars.main_module_index.* = vars.saved_module_for_menu.*;
+            vars.submodule_index.* = 0;
+        },
+        // What the game's own box does on its second line.
+        .save_and_quit => {
+            vars.choice_in_multiselect_box.* = 1;
+            vars.sound_effect_ambient.* = 15;
+            vars.main_module_index.* = 23;
+            vars.submodule_index.* = 1;
+            vars.index_of_changable_dungeon_objs[0] = 0;
+            vars.index_of_changable_dungeon_objs[1] = 0;
+        },
     }
 }
 
@@ -465,20 +487,33 @@ fn fontSafe(out: []u8, s: []const u8) []const u8 {
 /// Draws the screen over a finished frame, when it's open.
 pub fn drawOver(pixels: [*]u8, pitch: usize, width: usize, height: usize, scale: usize) void {
     if (!g_open) return;
-    const cv = gfx.Canvas{ .pixels = pixels, .pitch = pitch, .width = width, .height = height, .scale = scale };
+    const cv = gfx.Canvas{ .pixels = pixels, .pitch = pitch, .width = width, .height = height, .scale = scale, .oy = g_slide_y };
     loadTextColors();
-    cv.dim();
+    // In the game the menu sits straight over the world, the way the
+    // inventory does. The file select screen keeps its darkened backdrop.
+    if (g_origin == .file_select) cv.dim();
     drawTabs(cv);
-    if (g_details) drawDetails(cv) else if (g_tab == kControlsTab) drawControls(cv) else drawList(cv);
+    if (onPausePage()) {
+        drawPause(cv);
+    } else {
+        g_tab = currentTab();
+        if (g_details) drawDetails(cv) else if (g_tab == kControlsTab) drawControls(cv) else drawList(cv);
+    }
     drawFooter(cv);
 }
 
 fn drawTabs(cv: gfx.Canvas) void {
     cv.box(8, 4, 30, 5, kFramePalette);
-    for (0..kTabCount) |i| {
-        const x: i32 = 30 + @as(i32, @intCast(i)) * 44;
-        cv.icon(x, 16, if (i < kTabs.len) kTabs[i].icon else kControlsIcon);
-        if (i == g_tab and g_frame & 0x10 != 0) drawRing(cv, x, 16);
+    // Spread across the same span however many there are, which keeps the
+    // file select screen's five where they always were.
+    const n = pageCount();
+    const spacing: i32 = @intCast(176 / (n - 1));
+    for (0..n) |page| {
+        const x: i32 = 30 + @as(i32, @intCast(page)) * spacing;
+        const offset = @intFromBool(hasPausePage());
+        const icon = if (page < offset) kPauseIcon else if (page - offset < kTabs.len) kTabs[page - offset].icon else kControlsIcon;
+        cv.icon(x, 16, icon);
+        if (page == g_page and g_frame & 0x10 != 0) drawRing(cv, x, 16);
     }
     // Which button moves between them.
     _ = cv.text(14, 16, "L", kTextDim);
@@ -576,14 +611,27 @@ fn drawValue(cv: gfx.Canvas, right: i32, y: i32, s: menu.Setting, value: []const
     }
 }
 
+fn drawPause(cv: gfx.Canvas) void {
+    cv.box(8, 46, 30, 18, kFramePalette);
+    _ = cv.text(24, 52, "Paused", kTextSelected);
+    for (kPauseLabels, 0..) |label, i| {
+        const y: i32 = 86 + @as(i32, @intCast(i)) * 24;
+        const selected = i == g_pause_row;
+        if (selected) cv.fill(18, y - 1, 212, 16, kRowHighlight);
+        _ = cv.text(124 - @divTrunc(gfx.textWidth(label), 2), y, label, if (selected) kTextSelected else kTextNormal);
+    }
+}
+
 fn drawFooter(cv: gfx.Canvas) void {
     const hint = if (g_note.len != 0)
         g_note
+    else if (onPausePage())
+        "[Up][Down] Choose  [A] OK  L R Settings"
     else if (g_capture != null)
         "Press a key or a button, or Esc to cancel"
     else if (g_details)
         "[B] Back"
-    else if (g_tab == kControlsTab)
+    else if (currentTab() == kControlsTab)
         "[Up][Down] Choose  [A] Change  [B] Done"
     else
         "[Up][Down] Choose  [Left][Right] Change  [Y] Info  [B] Done";
@@ -843,12 +891,19 @@ fn drawPad(cv: gfx.Canvas, ox: i32, oy: i32, lit: ?usize) void {
 
 const testing = std.testing;
 
-test "the Select menu text encodes" {
-    var out: [128]u8 = undefined;
-    const bytes = try encode(&out, kSelectText);
-    try testing.expectEqual(@as(u8, 0), bytes[1]); // [Speed 00]'s parameter
-    try testing.expectEqual(gfx.glyphIndex(">").?, bytes[2]);
-    try testing.expectError(error.UnknownCharacter, encode(&out, "100%"));
+test "the pause page's words are all in the font" {
+    for (kPauseLabels ++ [_][]const u8{ "Paused", "OK", "Settings" }) |text| {
+        for (text) |ch| try testing.expect(gfx.glyphIndex(&.{ch}) != null);
+    }
+}
+
+test "the tabs fit the box with and without the pause page" {
+    for ([_]usize{ kTabCount, kTabCount + 1 }) |n| {
+        const spacing = 176 / (n - 1);
+        try testing.expect(30 + (n - 1) * spacing + 16 <= 232);
+    }
+    // The file select screen's tabs stay where they were.
+    try testing.expectEqual(@as(usize, 44), 176 / (kTabCount - 1));
 }
 
 test "every editable setting sits on exactly one tab" {

@@ -42,6 +42,9 @@ pub const Canvas = struct {
     height: usize,
     /// 1, or 4 when Mode 7 is being drawn at four times the size.
     scale: usize,
+    /// How far down everything drawn is moved, for a menu sliding in from
+    /// above. Negative is higher up.
+    oy: i32 = 0,
 
     /// Where x = 0 of the 256 wide screen sits, so that a widescreen frame
     /// keeps the menu in the middle.
@@ -49,8 +52,9 @@ pub const Canvas = struct {
         return @intCast((self.width - 256) / 2);
     }
 
-    fn put(self: Canvas, x: i32, y: i32, rgb: u32) void {
+    fn put(self: Canvas, x: i32, y_: i32, rgb: u32) void {
         const fx = x + self.originX();
+        const y = y_ + self.oy;
         if (fx < 0 or y < 0 or fx >= self.width or y >= self.height) return;
         const s = self.scale;
         for (0..s) |dy| {
@@ -60,8 +64,10 @@ pub const Canvas = struct {
     }
 
     /// Darkens the whole frame, game and all, to a quarter of its brightness.
+    /// Moved up by `oy`, only the part a sliding menu covers is darkened.
     pub fn dim(self: Canvas) void {
-        for (0..self.height * self.scale) |y| {
+        const bottom: usize = @intCast(std.math.clamp(@as(i32, @intCast(self.height)) + self.oy, 0, @as(i32, @intCast(self.height))));
+        for (0..bottom * self.scale) |y| {
             const row: [*]align(1) u32 = @ptrCast(self.pixels + y * self.pitch);
             for (0..self.width * self.scale) |x| row[x] = (row[x] >> 2) & 0x3f3f3f;
         }
@@ -69,8 +75,9 @@ pub const Canvas = struct {
 
     /// Paints a band across the whole frame, widescreen margins included, so
     /// text laid over it isn't fighting whatever the dimmed screen has there.
-    pub fn band(self: Canvas, y: i32, h: i32, rgb: u32) void {
+    pub fn band(self: Canvas, y_: i32, h: i32, rgb: u32) void {
         const s = self.scale;
+        const y = y_ + self.oy;
         const top: usize = @intCast(@max(0, y));
         const bottom: usize = @min(self.height, @as(usize, @intCast(@max(0, y + h))));
         for (top * s..bottom * s) |py| {
