@@ -30,6 +30,7 @@ comptime {
     _ = @import("src/game_gfx.zig");
     _ = @import("src/zelda_rtl.zig");
     _ = @import("src/overworld_wide.zig");
+    _ = @import("src/msu_import.zig");
     _ = @import("src/misc.zig");
     _ = @import("src/attract.zig");
     _ = @import("src/player_oam.zig");

@@ -11,6 +11,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const fileio = @import("fileio.zig");
+const msu_import = @import("msu_import.zig");
 const rom_mod = @import("rom.zig");
 const asset_all = @import("asset_all.zig");
 const c = @import("sdl.zig").c;
@@ -746,7 +747,11 @@ const Modal = enum {
     rom,
     /// What the selected setting does, asked for with Y or I.
     info,
+    /// Where an MSU-1 pack comes from: dropped on the window, or picked.
+    msu,
 };
+
+const kMsuChoices = [_][]const u8{ "Folder", "Zip File" };
 
 const kQuitChoices = [_][]const u8{ "Quit", "Stay" };
 /// Stay is the default, so pressing the button again backs out rather than
@@ -835,12 +840,109 @@ fn visibleRows(screen: Screen) usize {
     return if (screen == .alttpr) 9 else kVisibleRows;
 }
 
-const kMainItems = [_][]const u8{ "Settings", "Features", "Controls", "Save Settings", "Build Assets", "Play", "Randomizer" };
+const kMainItems = [_][]const u8{ "Settings", "Features", "Controls", "Save Settings", "Build Assets", "Import MSU-1", "Play", "Randomizer" };
 const kMainControls = 2;
 const kMainSave = 3;
 const kMainBuild = 4;
-const kMainLaunch = 5;
-const kMainRandomizer = 6;
+/// Only there while MSU audio is on: there's no pack to want otherwise.
+const kMainImport = 5;
+const kMainLaunch = 6;
+const kMainRandomizer = 7;
+
+/// Whether MSU audio is on in the ini, which brings Import MSU-1 onto the
+/// main page. Set from the ini every frame, so it follows the setting.
+var g_msu_on = false;
+
+fn msuOnIn(ini: *const Ini) bool {
+    const i = settingIndex("Sound", "EnableMSU") orelse return false;
+    const v = std.mem.trim(u8, ini.values[i] orelse "", " \t");
+    return v.len != 0 and !std.mem.eql(u8, v, "0") and !std.ascii.eqlIgnoreCase(v, "false");
+}
+
+/// Where MSU tracks go, as the ini has it.
+fn msuPathIn(ini: *const Ini) []const u8 {
+    const i = settingIndex("Sound", "MSUPath") orelse return "msu/alttp_msu-";
+    const v = std.mem.trim(u8, ini.values[i] orelse "", " \t");
+    return if (v.len == 0) "msu/alttp_msu-" else v;
+}
+
+fn mainShown(i: usize) bool {
+    return i != kMainImport or g_msu_on;
+}
+
+/// Which of the MSU dialog's two buttons is picked: a folder, or a zip.
+var g_msu_choice: usize = 0;
+
+/// The system picker answers on a thread of its own; the answer waits here,
+/// under a lock, for the menu's loop to pick it up.
+var g_msu_pick_lock: ?*c.SDL_Mutex = null;
+var g_msu_pick: ?[:0]u8 = null;
+
+fn msuPickCallback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, filter: c_int) callconv(.c) void {
+    _ = .{ userdata, filter };
+    if (filelist == null or filelist[0] == null) return; // failed, or cancelled
+    const copy = std.heap.c_allocator.dupeSentinel(u8, std.mem.span(filelist[0]), 0) catch return;
+    c.SDL_LockMutex(g_msu_pick_lock);
+    defer c.SDL_UnlockMutex(g_msu_pick_lock);
+    if (g_msu_pick) |old| std.heap.c_allocator.free(old);
+    g_msu_pick = copy;
+}
+
+const kZipFilters = [_]c.SDL_DialogFileFilter{.{ .name = "MSU-1 pack", .pattern = "zip" }};
+
+fn openMsuPicker(window: *c.SDL_Window, zip: bool) void {
+    if (g_msu_pick_lock == null) g_msu_pick_lock = c.SDL_CreateMutex();
+    if (zip) {
+        c.SDL_ShowOpenFileDialog(msuPickCallback, null, window, &kZipFilters, kZipFilters.len, null, false);
+    } else {
+        c.SDL_ShowOpenFolderDialog(msuPickCallback, null, window, null, false);
+    }
+}
+
+/// The picker's answer, once it's come. The caller frees it.
+fn takeMsuPick() ?[:0]u8 {
+    if (g_msu_pick_lock == null) return null;
+    c.SDL_LockMutex(g_msu_pick_lock);
+    defer c.SDL_UnlockMutex(g_msu_pick_lock);
+    const p = g_msu_pick;
+    g_msu_pick = null;
+    return p;
+}
+
+/// Whether a dropped path looks like an MSU-1 pack: a folder, or a zip.
+fn looksLikeMsuPack(path: [:0]const u8) bool {
+    return fileio.isDir(path.ptr) or std.ascii.endsWithIgnoreCase(path, ".zip");
+}
+
+/// What the status line says while a pack goes in and once it has.
+var g_msu_status_buf: [64]u8 = undefined;
+
+/// Redraws the menu as each track goes in, so the window doesn't sit
+/// frozen through a pack that can run to a gigabyte or two.
+const MsuProgress = struct {
+    renderer: *c.SDL_Renderer,
+    ini: *const Ini,
+    view: View,
+
+    fn update(ctx: *anyopaque, done: usize, total: usize) void {
+        const self: *MsuProgress = @ptrCast(@alignCast(ctx));
+        c.SDL_PumpEvents();
+        self.view.status = std.fmt.bufPrint(&g_msu_status_buf, "IMPORTING TRACK {d} OF {d}", .{ @min(done + 1, total), total }) catch "IMPORTING";
+        drawScreen(self.renderer, self.ini, self.view);
+    }
+};
+
+/// Installs the pack at `path` where the ini's MSUPath says, and says how
+/// that went.
+fn importMsu(alloc: std.mem.Allocator, renderer: *c.SDL_Renderer, ini: *const Ini, view: View, path: [:0]const u8) []const u8 {
+    var shown = view;
+    shown.status = "READING MSU-1 PACK...";
+    drawScreen(renderer, ini, shown);
+    var ctx = MsuProgress{ .renderer = renderer, .ini = ini, .view = view };
+    const n = msu_import.importPack(alloc, path, msuPathIn(ini), .{ .ctx = &ctx, .f = MsuProgress.update }) catch |err|
+        return msu_import.describe(err);
+    return std.fmt.bufPrint(&g_msu_status_buf, "IMPORTED {d} MSU-1 TRACKS", .{n}) catch "IMPORTED";
+}
 
 /// The randomizer page's two choices. Only one exists yet.
 const kHubItems = [_][]const u8{ "BUILT-IN RANDOMIZER", "ALTTPR.COM RANDOMIZER" };
@@ -1160,7 +1262,8 @@ pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const 
     const row_top: usize = if (row >= visibleRows(screen)) row + 1 - visibleRows(screen) else 0;
     const cursor = [_]usize{ row, row, row };
     const top = [_]usize{ row_top, row_top, row_top };
-    const modal: Modal = if (std.c.getenv("INFO") != null) .info else .none;
+    const modal: Modal = if (std.c.getenv("INFO") != null) .info else if (std.c.getenv("MSU_IMPORT") != null) .msu else .none;
+    g_msu_on = msuOnIn(&ini);
     drawScreen(renderer, &ini, viewOf(screen, if (screen == .main) kMainControls else kMainRandomizer, cursor, top, "", false, .verified, modal, kQuitStay));
     if (!c.SDL_SaveBMP(surface, path)) return error.SaveFailed;
 }
@@ -1236,9 +1339,23 @@ const Rect = struct {
 
 // The menu's group of entries, then the Launch button below them, and the
 // Randomizer button under that.
-const kEntryY: f32 = 114;
-const kEntryGap: f32 = 26;
 const kLaunchY: f32 = 242;
+
+/// Where the entries above Play go: five of them spaced out, or six a little
+/// closer together when Import MSU-1 is there, ending in the same place.
+const EntryLayout = struct { y: f32, gap: f32, pad: f32 };
+fn entryLayout() EntryLayout {
+    return if (g_msu_on) .{ .y = 108, .gap = 22, .pad = 3 } else .{ .y = 114, .gap = 26, .pad = 6 };
+}
+
+/// An entry's place among the ones showing.
+fn entrySlot(i: usize) f32 {
+    var slot: usize = 0;
+    for (0..i) |j| {
+        if (mainShown(j)) slot += 1;
+    }
+    return @floatFromInt(slot);
+}
 const kLaunchScale: f32 = kScale * 2;
 const kRandoY: f32 = 352;
 /// From the bottom of Play to the asset state line under it: past the ring
@@ -1258,9 +1375,12 @@ const kEmuNote = [_][]const u8{
 fn mainEntryRect(i: usize) Rect {
     if (i == kMainLaunch) return launchRect();
     if (i == kMainRandomizer) return randoRect();
+    // A hidden entry takes no room and catches no clicks.
+    if (!mainShown(i)) return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     // Wider than the highlight, so aiming at a short word still lands.
-    const y = kEntryY + kEntryGap * @as(f32, @floatFromInt(i));
-    return .{ .x = kWindowW / 2 - 150, .y = y - 6, .w = 300, .h = kEntryGap };
+    const l = entryLayout();
+    const y = l.y + l.gap * entrySlot(i);
+    return .{ .x = kWindowW / 2 - 150, .y = y - l.pad, .w = 300, .h = l.gap };
 }
 
 fn launchRect() Rect {
@@ -1298,15 +1418,17 @@ fn listRowAt(v: View, py: f32) ?usize {
 fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     const cx: f32 = kWindowW / 2;
 
+    const l = entryLayout();
     for (kMainItems[0..kMainLaunch], 0..) |label, i| {
-        const y = kEntryY + kEntryGap * @as(f32, @floatFromInt(i));
+        if (!mainShown(i)) continue;
+        const y = l.y + l.gap * entrySlot(i);
         const selected = i == v.cursor;
         const w = textWidth(label, kScale);
 
         if (selected) {
             // Sized to the word rather than the window, so the highlight
             // reads as a selection and not as a banner.
-            drawRowHighlight(renderer, cx - w / 2 - 28, y - 6, w + 56, kEntryGap - 2);
+            drawRowHighlight(renderer, cx - w / 2 - 28, y - l.pad, w + 56, l.gap - 2);
         }
         drawTextCentered(renderer, cx, y, if (selected) kColorSelect else kColorText, label, kScale);
     }
@@ -1848,6 +1970,19 @@ fn drawModal(renderer: *c.SDL_Renderer, v: View) void {
                 drawTextCentered(renderer, cx, box.y + 130, kColorTextDim, "B/ESC TO CANCEL", kScale);
             }
         },
+        .msu => {
+            drawTextCentered(renderer, cx, box.y + 22, kColorSelect, "IMPORT AN MSU-1 PACK", kScale);
+            drawTextCentered(renderer, cx, box.y + 22 + kRowH, kColorTextDim, "DROP A FOLDER OR .ZIP HERE,", kScale);
+            drawTextCentered(renderer, cx, box.y + 22 + kRowH * 2, kColorTextDim, "OR BROWSE FOR ONE", kScale);
+            drawTextCentered(renderer, cx, box.y + 22 + kRowH * 3, kColorWarn, "REPLACES THE PACK YOU HAVE", 1);
+            for (kMsuChoices, 0..) |label, i| {
+                const r = modalChoiceRect(i);
+                const selected = i == g_msu_choice;
+                fillRound(renderer, r.x, r.y, r.w, r.h, 8, if (selected) kColorRowHi else kColorPanel);
+                outlineRound(renderer, r.x, r.y, r.w, r.h, 8, if (selected) 2 else 1, if (selected) kColorSelect else kColorLine);
+                drawTextCentered(renderer, r.x + r.w / 2, r.y + 8, if (selected) kColorSelect else kColorText, label, kScale);
+            }
+        },
         .info, .none => {},
     }
 }
@@ -1868,6 +2003,10 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
                 drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "B/ESC CANCEL");
             },
             .info => drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "A OR B TO CLOSE"),
+            .msu => {
+                drawText(renderer, 40, footer_y, kColorTextDim, "LEFT/RIGHT CHOOSE");
+                drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "A/ENTER BROWSE   B/ESC CANCEL");
+            },
             .none => {},
         }
         if (v.status.len != 0)
@@ -2421,6 +2560,15 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                             // The main menu's drops are for the port's assets.
                             handled = true;
                             status = "SEEDS GO ON THE RANDOMIZER PAGE";
+                        } else if (modal == .msu or looksLikeMsuPack(span)) {
+                            // A folder or a zip is an MSU-1 pack, not a ROM.
+                            handled = true;
+                            if (!g_msu_on) {
+                                status = "TURN ON MSU AUDIO TO IMPORT A PACK";
+                            } else {
+                                status = importMsu(alloc, renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice), span);
+                                if (std.mem.startsWith(u8, status, "IMPORTED")) modal = .none;
+                            }
                         }
                     }
                     if (!handled) if (event.drop.data) |path| {
@@ -2542,6 +2690,21 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
             }
         }
 
+        // Import MSU-1 comes and goes with the setting; the cursor can't be
+        // left on it once it's gone.
+        g_msu_on = msuOnIn(&ini);
+        if (!mainShown(main_cursor)) main_cursor = kMainLaunch;
+        if (modal == .msu and !g_msu_on) modal = .none;
+
+        // A folder or zip picked in the system's own dialog.
+        if (takeMsuPick()) |path| {
+            defer std.heap.c_allocator.free(path);
+            if (g_msu_on) {
+                status = importMsu(alloc, renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice), path);
+                if (std.mem.startsWith(u8, status, "IMPORTED")) modal = .none;
+            }
+        }
+
         // A question on top of the screen takes the input until answered.
         if (modal != .none) {
             switch (modal) {
@@ -2585,6 +2748,28 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 .info => if (confirm or back or info or clicked) {
                     modal = .none;
                 },
+                // Folder or Zip File opens the system's picker for one; a
+                // drop on the window (above) works without it.
+                .msu => {
+                    if (hovered) {
+                        for (0..kMsuChoices.len) |i| {
+                            if (modalChoiceRect(i).contains(hover_x, hover_y)) g_msu_choice = i;
+                        }
+                    }
+                    const step = if (adjust != 0) adjust else move;
+                    if (step != 0) g_msu_choice = 1 - g_msu_choice;
+                    var over_choice = false;
+                    if (clicked) {
+                        for (0..kMsuChoices.len) |i| {
+                            if (modalChoiceRect(i).contains(hover_x, hover_y)) {
+                                g_msu_choice = i;
+                                over_choice = true;
+                            }
+                        }
+                    }
+                    if (confirm or over_choice) openMsuPicker(window, g_msu_choice == 1);
+                    if (back) modal = .none;
+                },
                 .none => {},
             }
         } else if (screen == .main) {
@@ -2614,10 +2799,14 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
             }
 
             if (move != 0) {
-                // Down from Play reaches Randomizer, the last one.
+                // Down from Play reaches Randomizer, the last one. Import
+                // MSU-1 is stepped over while it isn't showing.
                 const n: i32 = @intCast(kMainItems.len);
                 var at: i32 = @intCast(main_cursor);
-                at = @mod(at + move + n, n);
+                while (true) {
+                    at = @mod(at + move + n, n);
+                    if (mainShown(@intCast(at))) break;
+                }
                 main_cursor = @intCast(at);
                 status = "";
             }
@@ -2638,6 +2827,11 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                     kMainSave => save = true,
                     kMainBuild => {
                         modal = .rom;
+                        status = "";
+                    },
+                    kMainImport => {
+                        modal = .msu;
+                        g_msu_choice = 0;
                         status = "";
                     },
                     kMainRandomizer => {
@@ -2853,6 +3047,11 @@ const testing = std.testing;
 fn scratchName(buf: []u8, base: []const u8, ext: []const u8) ![:0]const u8 {
     const pid: u64 = if (builtin.os.tag == .windows) std.os.windows.GetCurrentProcessId() else @intCast(std.c.getpid());
     return std.fmt.bufPrintSentinel(buf, "zig-cache-{s}-{d}.{s}", .{ base, pid, ext }, 0);
+}
+
+test {
+    // The MSU-1 importer's own tests, with the start menu that uses it.
+    _ = msu_import;
 }
 
 test "every setting on the Settings and Features pages has a description that fits its box" {
@@ -3102,6 +3301,10 @@ test "the on-screen strings fit the window" {
         "SAVE X/S   BACK B/ESC",
         "INFO Y/I   SAVE X/S   BACK B/ESC",
         "A OR B TO CLOSE",
+        "A/ENTER BROWSE   B/ESC CANCEL",
+        "IMPORT AN MSU-1 PACK",
+        "DROP A FOLDER OR .ZIP HERE,",
+        "TURN ON MSU AUDIO TO IMPORT A PACK",
         // Headers.
         "THE LEGEND OF ZELDA",
         "A LINK TO THE PAST DX",
@@ -3295,23 +3498,35 @@ test "clickable areas line up with what is drawn" {
     // Hit testing and drawing share their geometry, but they can still be
     // wrong together, so check the shape of it: rows in order, no overlaps,
     // and the launch button below the entries rather than on top of one.
-    var prev = mainEntryRect(0);
-    try testing.expect(prev.w > 0 and prev.h > 0);
+    // With MSU audio off and on: Import MSU-1 shows only with it on, and
+    // the entries close up to make room for it.
+    defer g_msu_on = false;
+    for ([_]bool{ false, true }) |msu| {
+        g_msu_on = msu;
+        try testing.expectEqual(msu, mainShown(kMainImport));
+        var prev = mainEntryRect(0);
+        try testing.expect(prev.w > 0 and prev.h > 0);
 
-    for (1..kMainItems.len) |i| {
-        const r = mainEntryRect(i);
-        testing.expect(r.y >= prev.y + prev.h) catch |err| {
-            std.debug.print("entry {d} at y={d} overlaps the one above ending at {d}\n", .{ i, r.y, prev.y + prev.h });
-            return err;
-        };
-        prev = r;
-    }
+        for (1..kMainItems.len) |i| {
+            if (!mainShown(i)) continue;
+            const r = mainEntryRect(i);
+            testing.expect(r.y >= prev.y + prev.h) catch |err| {
+                std.debug.print("msu {}: entry {d} at y={d} overlaps the one above ending at {d}\n", .{ msu, i, r.y, prev.y + prev.h });
+                return err;
+            };
+            prev = r;
+        }
 
-    // Everything stays inside the frame.
-    for (0..kMainItems.len) |i| {
-        const r = mainEntryRect(i);
-        try testing.expect(r.x >= 16 and r.x + r.w <= kWindowW - 16);
-        try testing.expect(r.y >= 16 and r.y + r.h <= kWindowH - 16);
+        // Everything stays inside the frame, and below the title's rule.
+        for (0..kMainItems.len) |i| {
+            if (!mainShown(i)) continue;
+            const r = mainEntryRect(i);
+            try testing.expect(r.x >= 16 and r.x + r.w <= kWindowW - 16);
+            try testing.expect(r.y >= 36 + kRowH * 3 + 8 and r.y + r.h <= kWindowH - 16);
+        }
+        // And the last entry's highlight clears Play's ring.
+        const last: usize = if (msu) kMainImport else kMainBuild;
+        try testing.expect(mainEntryRect(last).y + entryLayout().gap - 2 <= kLaunchY - kRingAbove);
     }
 }
 

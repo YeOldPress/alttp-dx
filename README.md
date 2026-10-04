@@ -101,6 +101,11 @@ Point `MSUPath` in `zelda3.ini` at a pack and set `EnableMSU`:
 Deluxe packs have a track per place rather than per song; only use them with
 a deluxe pack. MSU needs `AudioChannels = 2` and sets the audio rate itself.
 
+With MSU on, **Import MSU-1** in the start menu installs a pack for you: drop
+its folder or `.zip` on the window, or browse for it. It finds the tracks
+whatever the pack calls them, copies them to `MSUPath`, and replaces the pack
+that was there.
+
 ## Randomizer
 
 Generate a seed on [alttpr.com](https://alttpr.com) from the Japanese 1.0 ROM,
