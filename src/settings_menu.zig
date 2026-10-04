@@ -41,6 +41,7 @@ pub var enabled = true;
 
 const kJoypadH_B: u8 = 0x80;
 const kJoypadH_Y: u8 = 0x40;
+const kJoypadH_Select: u8 = 0x20;
 const kJoypadH_Start: u8 = 0x10;
 const kJoypadH_Up: u8 = 0x08;
 const kJoypadH_Down: u8 = 0x04;
@@ -309,6 +310,8 @@ pub fn update() void {
         if (g_capture_frames > kCaptureFrames) cancelCapture();
         return;
     }
+    // Select put it up, so Select takes it down again, from any page.
+    if (g_origin == .game and pressed_h & kJoypadH_Select != 0) return close(.continue_game);
 
     if (g_details) {
         if (pressed_h & (kJoypadH_B | kJoypadH_Y | kJoypadH_Start) != 0 or pressed_l & kJoypadL_A != 0) {
@@ -376,6 +379,8 @@ fn pauseUpdate(step: bool, dirs: u8, pressed_l: u8) void {
         g_pause_row = (g_pause_row + 1) % kPauseLabels.len;
         vars.sound_effect_2.* = 32;
     } else if (pressed_l & kJoypadL_A != 0) {
+        // The chime the game's own Continue / Save and Quit box makes.
+        vars.sound_effect_1.* = 43;
         const choice: PauseChoice = @fromBackingInt(@intCast(g_pause_row));
         if (choice == .save_and_continue) messaging.SaveGameInPlace();
         close(choice);
@@ -484,7 +489,9 @@ pub fn drawOver(pixels: [*]u8, pitch: usize, width: usize, height: usize, scale:
     if (!g_open) return;
     const cv = gfx.Canvas{ .pixels = pixels, .pitch = pitch, .width = width, .height = height, .scale = scale, .oy = g_slide_y };
     loadTextColors();
-    cv.dim();
+    // In the game the menu sits straight over the world, the way the
+    // inventory does. The file select screen keeps its darkened backdrop.
+    if (g_origin == .file_select) cv.dim();
     drawTabs(cv);
     if (onPausePage()) {
         drawPause(cv);
