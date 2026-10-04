@@ -16,17 +16,63 @@ on:
     - src/menu.zig
     - src/tools_*.zig
     - build.zig
+  # Nightly test builds of dev, published as one rolling pre-release. They
+  # never become "Latest"; only a v* tag makes a real release.
+  schedule:
+  - cron: '0 7 * * *'
   workflow_dispatch:
+    inputs:
+      nightly:
+        description: Build dev and publish it as the nightly now
+        type: boolean
+        default: false
+
+env:
+  NIGHTLY_BRANCH: dev
 
 jobs:
+  # What this run builds and what the files are called: the tag for a
+  # release, "nightly" for a nightly, the branch name for anything else.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.plan.outputs.name }}
+      ref: ${{ steps.plan.outputs.ref }}
+      nightly: ${{ steps.plan.outputs.nightly }}
+      skip: ${{ steps.plan.outputs.skip }}
+    steps:
+    - id: plan
+      env:
+        EVENT: ${{ github.event_name }}
+        WANT_NIGHTLY: ${{ inputs.nightly }}
+        REPO: https://github.com/${{ github.repository }}
+      run: |
+        if [ "$EVENT" = schedule ] || [ "$WANT_NIGHTLY" = true ]; then
+          ref=$(git ls-remote "$REPO" "refs/heads/$NIGHTLY_BRANCH" | cut -f1)
+          last=$(git ls-remote "$REPO" refs/tags/nightly | cut -f1)
+          # The schedule leaves a quiet night alone; asking by hand always builds.
+          skip=false
+          if [ "$EVENT" = schedule ] && [ "$ref" = "$last" ]; then
+            echo "$NIGHTLY_BRANCH is still at $ref, which is already the nightly."
+            skip=true
+          fi
+          { echo name=nightly; echo ref=$ref; echo nightly=true; echo skip=$skip; } >> "$GITHUB_OUTPUT"
+        else
+          { echo name=${{ github.ref_name }}; echo ref=${{ github.sha }}; echo nightly=false; echo skip=false; } >> "$GITHUB_OUTPUT"
+        fi
+
   # An app bundle is read-only as far as the game is concerned, so the ini,
   # assets and saves go in ~/Library/Application Support/alttp-zig; the
   # game sees it is inside a bundle and moves there itself.
   package-mac:
     name: package for Mac
+    needs: plan
+    if: ${{ needs.plan.outputs.skip != 'true' }}
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v7
+      with:
+        ref: ${{ needs.plan.outputs.ref }}
     - uses: ./.github/actions/setup-zig
     # Homebrew's SDL3, like a native zig build, only runs on the macOS the
     # runner has. Both are built for macOS 11 instead, to match Info.plist.
@@ -46,13 +92,15 @@ jobs:
     # The game and the asset tools each get a bundle; both keep their
     # files in the same data directory.
     - name: Make the app bundles
+      env:
+        VERSION: ${{ needs.plan.outputs.name }}
       run: |
         bundle() { # bundle NAME EXECUTABLE PLIST
           app=$1.app/Contents
           mkdir -p $app/MacOS $app/Resources
           cp out/bin/$2 $app/MacOS/
           cp LICENSE.txt src/platform/macos/AppIcon.icns $app/Resources/
-          sed "s/@VERSION@/${GITHUB_REF_NAME#v}/" src/platform/macos/$3 > $app/Info.plist
+          sed "s/@VERSION@/${VERSION#v}/" src/platform/macos/$3 > $app/Info.plist
           # SDL3 goes inside, and the executable gets pointed at it.
           cp sdl3/lib/libSDL3.0.dylib $app/MacOS/
           chmod u+w $app/MacOS/libSDL3.0.dylib
@@ -85,14 +133,14 @@ jobs:
     # Two downloads: the game, and the tools for modding and languages.
     - name: Archive
       run: |
-        ditto -c -k --keepParent alttp-zig.app alttp-zig-${{ github.ref_name }}-macos-arm64.zip
-        ditto -c -k --keepParent zelda3-tools.app zelda3-tools-${{ github.ref_name }}-macos-arm64.zip
+        ditto -c -k --keepParent alttp-zig.app alttp-zig-${{ needs.plan.outputs.name }}-macos-arm64.zip
+        ditto -c -k --keepParent zelda3-tools.app zelda3-tools-${{ needs.plan.outputs.name }}-macos-arm64.zip
     - uses: actions/upload-artifact@v7
       with:
         name: Mac
         path: |
-          alttp-zig-${{ github.ref_name }}-macos-arm64.zip
-          zelda3-tools-${{ github.ref_name }}-macos-arm64.zip
+          alttp-zig-${{ needs.plan.outputs.name }}-macos-arm64.zip
+          zelda3-tools-${{ needs.plan.outputs.name }}-macos-arm64.zip
 
   # Built in an Ubuntu 22.04 container so the AppImage asks for no newer glibc
   # than 2.35. Distro SDL3 packages link against a newer one, so SDL3 is built
@@ -100,6 +148,8 @@ jobs:
   # time, so the one .so covers whatever the desktop turns out to have.
   package-linux:
     name: package for Linux
+    needs: plan
+    if: ${{ needs.plan.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     container: ubuntu:22.04
     steps:
@@ -115,6 +165,8 @@ jobs:
           libxkbcommon-dev libwayland-dev libdecor-0-dev libdrm-dev libgbm-dev \
           libgl1-mesa-dev libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev libudev-dev
     - uses: actions/checkout@v7
+      with:
+        ref: ${{ needs.plan.outputs.ref }}
     - uses: ./.github/actions/setup-zig
     - name: Build SDL3
       run: |
@@ -144,30 +196,34 @@ jobs:
           cp src/platform/linux/alttp-zig.png $dir/$1.png
           chmod +x $dir/AppRun
           # No FUSE in a container, so the tool unpacks itself instead of mounting.
-          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool $dir $1-${{ github.ref_name }}-x86_64.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool $dir $1-${{ needs.plan.outputs.name }}-x86_64.AppImage
         }
         appimage alttp-zig zelda3 src/platform/linux
         appimage zelda3-tools zelda3-tools src/platform/linux/tools
     - name: Check the AppImages start
       run: |
         # The game should settle in the data directory and write its ini there.
-        dir=$(APPIMAGE_EXTRACT_AND_RUN=1 ./alttp-zig-${{ github.ref_name }}-x86_64.AppImage --data-dir)
+        dir=$(APPIMAGE_EXTRACT_AND_RUN=1 ./alttp-zig-${{ needs.plan.outputs.name }}-x86_64.AppImage --data-dir)
         echo "data directory: $dir"
         case "$dir" in *".local/share/alttp-zig") ;; *) exit 1 ;; esac
         test -f "$dir/zelda3.ini"
-        APPIMAGE_EXTRACT_AND_RUN=1 ./zelda3-tools-${{ github.ref_name }}-x86_64.AppImage help
+        APPIMAGE_EXTRACT_AND_RUN=1 ./zelda3-tools-${{ needs.plan.outputs.name }}-x86_64.AppImage help
     - uses: actions/upload-artifact@v7
       with:
         name: Linux
         path: |
-          alttp-zig-${{ github.ref_name }}-x86_64.AppImage
-          zelda3-tools-${{ github.ref_name }}-x86_64.AppImage
+          alttp-zig-${{ needs.plan.outputs.name }}-x86_64.AppImage
+          zelda3-tools-${{ needs.plan.outputs.name }}-x86_64.AppImage
 
   package-windows:
     name: package for Windows
+    needs: plan
+    if: ${{ needs.plan.outputs.skip != 'true' }}
     runs-on: windows-latest
     steps:
     - uses: actions/checkout@v7
+      with:
+        ref: ${{ needs.plan.outputs.ref }}
     - uses: ./.github/actions/setup-zig
     - name: Install SDL3
       shell: pwsh
@@ -186,8 +242,8 @@ jobs:
         New-Item -ItemType Directory pkg\alttp-zig, pkg\zelda3-tools | Out-Null
         Copy-Item out\bin\zelda3.exe, "$env:SDL3_ROOT\bin\SDL3.dll", zelda3.ini, README.md, LICENSE.txt pkg\alttp-zig\
         Copy-Item out\bin\zelda3-tools.exe, "$env:SDL3_ROOT\bin\SDL3.dll", LICENSE.txt pkg\zelda3-tools\
-        Compress-Archive pkg\alttp-zig "alttp-zig-${{ github.ref_name }}-windows-x86_64.zip"
-        Compress-Archive pkg\zelda3-tools "zelda3-tools-${{ github.ref_name }}-windows-x86_64.zip"
+        Compress-Archive pkg\alttp-zig "alttp-zig-${{ needs.plan.outputs.name }}-windows-x86_64.zip"
+        Compress-Archive pkg\zelda3-tools "zelda3-tools-${{ needs.plan.outputs.name }}-windows-x86_64.zip"
     - name: Check the tools start
       shell: pwsh
       run: |
@@ -197,8 +253,8 @@ jobs:
       with:
         name: Windows
         path: |
-          alttp-zig-${{ github.ref_name }}-windows-x86_64.zip
-          zelda3-tools-${{ github.ref_name }}-windows-x86_64.zip
+          alttp-zig-${{ needs.plan.outputs.name }}-windows-x86_64.zip
+          zelda3-tools-${{ needs.plan.outputs.name }}-windows-x86_64.zip
 
   release:
     name: publish
@@ -220,3 +276,43 @@ jobs:
         notes=.github/release-notes/${{ github.ref_name }}.md
         if [ -f "$notes" ]; then set -- --notes-file "$notes"; else set -- --generate-notes; fi
         gh release create ${{ github.ref_name }} dist/* --title "${{ github.ref_name }}" --verify-tag "$@"
+
+  # The rolling nightly: the "nightly" tag moves to the commit just built and
+  # the pre-release under it is replaced, files, notes and all.
+  nightly:
+    name: publish nightly
+    needs: [plan, package-mac, package-linux, package-windows]
+    if: ${{ needs.plan.outputs.nightly == 'true' && needs.plan.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    concurrency: nightly
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{ needs.plan.outputs.ref }}
+        fetch-depth: 0
+    - uses: actions/download-artifact@v8
+      with:
+        path: dist
+        merge-multiple: true
+    - name: Publish
+      env:
+        GH_TOKEN: ${{ github.token }}
+        SHA: ${{ needs.plan.outputs.ref }}
+      run: |
+        short=${SHA:0:7}
+        since=$(git describe --tags --abbrev=0 --match 'v*' "$SHA" 2>/dev/null || true)
+        {
+          echo "A test build of \`$NIGHTLY_BRANCH\` at $short, built $(date -u +%Y-%m-%d). Things here are new and may be broken; the latest real release is the one to play."
+          echo
+          if [ -n "$since" ]; then
+            echo "## Since $since"
+            git log --format='- %s' "$since..$SHA" | head -n 50
+          fi
+        } > notes.md
+        git tag -f nightly "$SHA"
+        git push -f origin refs/tags/nightly
+        gh release delete nightly --yes 2>/dev/null || true
+        gh release create nightly dist/* --verify-tag --prerelease --latest=false \
+          --title "Nightly $(date -u +%Y-%m-%d) ($short)" --notes-file notes.md
