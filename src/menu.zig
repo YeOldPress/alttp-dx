@@ -1196,11 +1196,12 @@ fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
 fn drawHeader(renderer: *c.SDL_Renderer, screen: Screen) void {
     const cx: f32 = kWindowW / 2;
     if (screen == .main) {
-        // The game's own title, then what this program is. Three lines, so
-        // everything below starts lower than it used to.
+        // The game's own title with this port's DX on the end, then what
+        // this screen is. Three lines, so everything below starts lower than
+        // it used to.
         drawTextCentered(renderer, cx, 36, kColorSelect, "THE LEGEND OF ZELDA", kScale);
-        drawTextCentered(renderer, cx, 36 + kRowH, kColorSelect, "A LINK TO THE PAST", kScale);
-        drawTextCentered(renderer, cx, 36 + kRowH * 2, kColorTextDim, "ALTTP-DX", kScale);
+        drawTextCentered(renderer, cx, 36 + kRowH, kColorSelect, "A LINK TO THE PAST DX", kScale);
+        drawTextCentered(renderer, cx, 36 + kRowH * 2, kColorTextDim, "START MENU", kScale);
         fillRect(renderer, 60, 36 + kRowH * 3 + 7, kWindowW - 120, 1, kColorLine);
         return;
     }
@@ -3103,8 +3104,8 @@ test "the on-screen strings fit the window" {
         "A OR B TO CLOSE",
         // Headers.
         "THE LEGEND OF ZELDA",
-        "A LINK TO THE PAST",
-        "ALTTP-DX",
+        "A LINK TO THE PAST DX",
+        "START MENU",
         "LEFT/RIGHT CHOOSE",
         "A/ENTER CONFIRM   B/ESC CANCEL",
         "DROP A FILE ON THE WINDOW",
