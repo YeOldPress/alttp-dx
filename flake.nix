@@ -18,7 +18,7 @@
         devShells.default = 
           with pkgs;
           mkShell {
-            nativeBuildInputs = [ zig pkg-config ];
+            nativeBuildInputs = [ pkgs.zig_0_17 pkg-config ];
             buildInputs = [ sdl3 ];
             LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;
           };
@@ -30,7 +30,7 @@
             name = "zelda3";
             src = ./.;
 
-            nativeBuildInputs = [ zig.hook pkg-config makeWrapper ];
+            nativeBuildInputs = [ pkgs.zig_0_17 pkg-config makeWrapper ];
             buildInputs = [ sdl3 ];
 
             zigBuildFlags = [
