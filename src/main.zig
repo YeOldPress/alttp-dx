@@ -175,6 +175,36 @@ var g_paused: bool = false;
 var g_turbo: bool = false;
 var g_replay_turbo: bool = true;
 var g_cursor: bool = true;
+/// In a window the pointer goes away once it's been still this long, and
+/// comes back the moment it moves. Fullscreen hides it the whole time.
+const kCursorIdleMs = 2000;
+var g_cursor_moved_at: u64 = 0;
+var g_cursor_idle = false;
+
+/// The pointer moved or clicked: show it again if it was hidden for idling.
+fn cursorMoved() void {
+    g_cursor_moved_at = c.SDL_GetTicks();
+    if (g_cursor_idle) {
+        g_cursor_idle = false;
+        if (g_cursor) _ = c.SDL_ShowCursor();
+    }
+}
+
+fn hideIdleCursor() void {
+    if (!g_cursor or g_cursor_idle) return;
+    if (c.SDL_GetTicks() - g_cursor_moved_at < kCursorIdleMs) return;
+    g_cursor_idle = true;
+    _ = c.SDL_HideCursor();
+}
+
+/// Fullscreen came or went: the pointer shows in a window, starting its
+/// idle time over, and stays hidden fullscreen.
+fn setCursorWanted(want: bool) void {
+    g_cursor = want;
+    g_cursor_idle = false;
+    g_cursor_moved_at = c.SDL_GetTicks();
+    _ = if (want) c.SDL_ShowCursor() else c.SDL_HideCursor();
+}
 var g_current_window_scale: u8 = 0;
 var g_gamepad_buttons: u8 = 0;
 var g_input1_state: c_int = 0;
@@ -957,7 +987,9 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
                     if ((c.SDL_GetModState() & c.SDL_KMOD_CTRL) != 0 and event.wheel.y != 0)
                         ChangeWindowScale(if (event.wheel.y > 0) 1 else -1);
                 },
+                c.SDL_EVENT_MOUSE_MOTION => cursorMoved(),
                 c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                    cursorMoved();
                     if (event.button.button == c.SDL_BUTTON_LEFT and event.button.down and event.button.clicks == 2) {
                         if ((g_win_flags & c.SDL_WINDOW_FULLSCREEN) == 0 and
                             (c.SDL_GetModState() & c.SDL_KMOD_SHIFT) != 0)
@@ -977,6 +1009,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
                 else => {},
             }
         }
+        hideIdleCursor();
 
         if (g_quit_requested)
             running = false;
@@ -1164,8 +1197,7 @@ pub fn applyDisplaySettings() void {
     if (want_full != ((g_win_flags & c.SDL_WINDOW_FULLSCREEN) != 0)) {
         g_win_flags ^= c.SDL_WINDOW_FULLSCREEN;
         _ = c.SDL_SetWindowFullscreen(g_window, want_full);
-        g_cursor = !want_full;
-        _ = if (g_cursor) c.SDL_ShowCursor() else c.SDL_HideCursor();
+        setCursorWanted(!want_full);
     }
     const live = kPpuRenderFlags_NewRenderer | kPpuRenderFlags_NoSpriteLimits;
     g_ppu_render_flags = g_ppu_render_flags & ~live |
@@ -1273,9 +1305,7 @@ fn HandleCommand_Locked(j: u32, pressed: bool) void {
             kKeys_Fullscreen => {
                 g_win_flags ^= c.SDL_WINDOW_FULLSCREEN;
                 _ = c.SDL_SetWindowFullscreen(g_window, (g_win_flags & c.SDL_WINDOW_FULLSCREEN) != 0);
-                g_cursor = !g_cursor;
-                // SDL3 split SDL_ShowCursor(toggle) into two argument-less calls.
-                _ = if (g_cursor) c.SDL_ShowCursor() else c.SDL_HideCursor();
+                setCursorWanted(!g_cursor);
             },
             kKeys_Reset => ZeldaReset(true),
             kKeys_Pause => g_paused = !g_paused,
