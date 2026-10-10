@@ -29,6 +29,11 @@ comptime {
     _ = @import("src/frame_capture.zig");
     _ = @import("src/game_gfx.zig");
     _ = @import("src/zelda_rtl.zig");
+    _ = @import("src/overworld_wide.zig");
+    _ = @import("src/msu_import.zig");
+    _ = @import("src/title_dx.zig");
+    _ = @import("src/achievements.zig");
+    _ = @import("src/achievement_list.zig");
     _ = @import("src/misc.zig");
     _ = @import("src/attract.zig");
     _ = @import("src/player_oam.zig");

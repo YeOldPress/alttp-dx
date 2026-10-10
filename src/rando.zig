@@ -344,7 +344,7 @@ fn closeWindow() void {
 fn openWindow() bool {
     if (g_window != null) return true;
     g_window_w = @intCast(panelW());
-    const w = c.SDL_CreateWindow("alttp-zig tracker", g_window_w, kGameH, c.SDL_WINDOW_RESIZABLE) orelse return false;
+    const w = c.SDL_CreateWindow("ALTTP-DX tracker", g_window_w, kGameH, c.SDL_WINDOW_RESIZABLE) orelse return false;
     const r = c.SDL_CreateRenderer(w, null) orelse {
         c.SDL_DestroyWindow(w);
         return false;

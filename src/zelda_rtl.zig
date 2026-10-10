@@ -10,6 +10,8 @@ const overworld = @import("overworld.zig");
 const load_gfx = @import("load_gfx.zig");
 const dungeon = @import("dungeon.zig");
 const dungeon_wide = @import("dungeon_wide.zig");
+const overworld_wide = @import("overworld_wide.zig");
+const settings_menu = @import("settings_menu.zig");
 const hud_second_item = @import("hud_second_item.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const features = @import("features.zig");
@@ -289,7 +291,15 @@ fn ConfigureHudSplit(ppu: *const Ppu) void {
 }
 
 fn ConfigurePpuSideSpace() void {
-    const s = widescreenSideSpace(kPpuExtraLeftRight);
+    var s = widescreenSideSpace(kPpuExtraLeftRight);
+    // A one-screen clearing in the woods: the margins are more woods, drawn
+    // by overworld_wide.zig as far as they go. Only the port's own PPU draws
+    // them, so the randomizer's emulator and the sprites' reach past the
+    // screen keep to the area's real edges.
+    if (overworld_wide.inForestArea()) {
+        s.left = kPpuExtraLeftRight;
+        s.right = kPpuExtraLeftRight;
+    }
     ppu_mod.PpuSetExtraSideSpace(zenvPpu(), s.left, s.right, s.bottom);
 }
 
@@ -445,6 +455,15 @@ fn spotlightWideWindow(c: *const SimpleHdma) ?ppu_mod.WideWindow {
     return .{ .left = w.left, .right = w.right };
 }
 
+/// Whichever source BG1 and BG2 have this frame: the widescreen dungeon rooms,
+/// or the woods past the Master Sword's grove.
+var g_frame_tile_source: ppu_mod.BgTileSource = dungeon_wide.tileSource;
+
+fn frameTileSource(ppu: *const Ppu, layer: u32, x: u32, y: u32) ?u16 {
+    if (layer == 2) return settings_menu.hudTile(ppu, x, y);
+    return g_frame_tile_source(ppu, layer, x, y);
+}
+
 pub export fn ZeldaDrawPpuFrame(pixel_buffer: [*]u8, pitch: usize, render_flags: u32) callconv(.c) void {
     var hdma_chans: [2]SimpleHdma = undefined;
     const ppu = zenvPpu();
@@ -478,9 +497,18 @@ pub export fn ZeldaDrawPpuFrame(pixel_buffer: [*]u8, pitch: usize, render_flags:
     const height: c_int = if (render_flags & kPpuRenderFlags_Height240 != 0) 240 else 224;
 
     // The circle's HDMA goes on whichever channel the game switched on.
-    // Between dungeon rooms in widescreen, the two rooms' tiles.
-    ppu_mod.g_bg_tile_source = dungeon_wide.tileSource;
-    ppu_mod.g_bg_tile_source_layers = if (ppu.extraLeftRight != 0) dungeon_wide.sourceLayers() else 0;
+    // Between dungeon rooms in widescreen, the two rooms' tiles; in the
+    // Master Sword's grove, the woods past its edges.
+    if (overworld_wide.active(ppu)) {
+        g_frame_tile_source = overworld_wide.tileSource;
+        ppu_mod.g_bg_tile_source_layers = overworld_wide.sourceLayers(ppu);
+    } else {
+        g_frame_tile_source = dungeon_wide.tileSource;
+        ppu_mod.g_bg_tile_source_layers = if (ppu.extraLeftRight != 0) dungeon_wide.sourceLayers() else 0;
+    }
+    // The Select menu, with the HUD moved down, has BG3 to itself.
+    ppu_mod.g_bg_tile_source_layers |= settings_menu.hudLayers(ppu);
+    ppu_mod.g_bg_tile_source = frameTileSource;
     defer ppu_mod.g_bg_tile_source_layers = 0;
 
     const spot_chan: ?*const SimpleHdma = if (ppu.extraLeftRight == 0)

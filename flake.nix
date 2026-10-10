@@ -1,5 +1,5 @@
 {
-  description = "alttp-zig flake";
+  description = "ALTTP-DX flake";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -40,7 +40,9 @@
 
             postFixup = ''
               wrapProgram $out/bin/zelda3 \
-                --run 'dataDir="''${XDG_DATA_HOME:-$HOME/.local/share}/alttp-zig"' \
+                --run 'dataDir="''${XDG_DATA_HOME:-$HOME/.local/share}/alttp-dx"' \
+                --run 'oldDir="''${XDG_DATA_HOME:-$HOME/.local/share}/alttp-zig"' \
+                --run '[ -d "$oldDir" ] && [ ! -e "$dataDir" ] && mv "$oldDir" "$dataDir"' \
                 --run 'mkdir -p "$dataDir"' \
                 --run 'cd "$dataDir"' \
                 --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs }

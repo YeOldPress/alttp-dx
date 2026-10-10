@@ -171,6 +171,7 @@ extern fn RevivalFairy_Main() void;
 // dungeon.c
 extern fn Dungeon_ApproachFixedColor_variable(a: u8) void;
 extern fn Dungeon_FlagRoomData_Quadrants() void;
+extern fn SaveDungeonKeys() void;
 extern fn Dungeon_PrepareNextRoomQuadrantUpload() void;
 extern fn Dungeon_PushBlock_Handler() void;
 extern fn OrientLampLightCone() void;
@@ -316,7 +317,59 @@ pub export fn SaveGameFile() callconv(.c) void {
     vars.word_7EF4FE.* = t;
     std.mem.writeInt(u16, (sram + offs + 0x4fe)[0..2], t, .little);
     std.mem.writeInt(u16, (sram + offs + 0x4fe + 0xf00)[0..2], t, .little);
+    noteDungeonSave(sram, (srm_var1().* >> 1) - 1, t);
     rtl.ZeldaWriteSram();
+}
+
+// ------------------------------------------------- Continue From Dungeon
+//
+// A file saved inside a dungeon can start at that dungeon's entrance when
+// it's continued. The entrance goes in the save memory past the three files
+// and their copies, which end at 0x1e00, and short of 0x1ffe, which says
+// which file is open: 8 bytes a file, "DX", the entrance, and the checksum of
+// the save it belongs to. A save that isn't in a dungeon clears it, and one
+// whose checksum doesn't match (erased, copied, started afresh) ignores it.
+// The files themselves keep the original layout, so a cartridge or another
+// emulator loads them as it always did.
+
+const kDungeonSaveRecords = 0x1f00;
+
+fn dungeonSaveRecord(sram: [*]u8, slot: usize) *[8]u8 {
+    return (sram + kDungeonSaveRecords + slot * 8)[0..8];
+}
+
+/// Whether the place Link is would be where falling in battle restarts him:
+/// inside a dungeon, without Zelda in tow, past the opening.
+fn inDungeonForContinue() bool {
+    return vars.player_is_indoors.* != 0 and
+        @as(u8, @truncate(vars.cur_palace_index_x2.*)) != 0xff and
+        vars.follower_indicator.* != 1 and
+        vars.sram_progress_indicator.* >= 2;
+}
+
+fn noteDungeonSave(sram: [*]u8, slot: usize, checksum: u16) void {
+    if (features.enhanced_features0.* & features.kFeatures0_ContinueFromDungeon == 0) return;
+    if (slot >= 3) return;
+    const rec = dungeonSaveRecord(sram, slot);
+    if (!inDungeonForContinue()) {
+        @memset(rec, 0);
+        return;
+    }
+    rec.* = .{ 'D', 'X', vars.which_entrance.*, 0, 0, 0, 0, 0 };
+    std.mem.writeInt(u16, rec[4..6], checksum, .little);
+}
+
+/// The entrance a file just loaded was saved in, if it was saved in a
+/// dungeon and that's to be where it continues.
+pub fn dungeonContinueEntrance() ?u8 {
+    if (features.enhanced_features0.* & features.kFeatures0_ContinueFromDungeon == 0) return null;
+    if (vars.sram_progress_indicator.* < 2 or vars.follower_indicator.* == 1) return null;
+    const slot = (srm_var1().* >> 1) -% 1;
+    if (slot >= 3) return null;
+    const rec = dungeonSaveRecord(g_zenv.sram.?, slot);
+    if (rec[0] != 'D' or rec[1] != 'X') return null;
+    if (std.mem.readInt(u16, rec[4..6], .little) != vars.word_7EF4FE.*) return null;
+    return rec[2];
 }
 
 pub export fn TransferMode7Characters() callconv(.c) void {
@@ -427,8 +480,6 @@ pub export fn Module0E_0B_SaveMenu() callconv(.c) void {
     if (vars.submodule_index.* == 0) {
         vars.subsubmodule_index.* = 0;
         vars.nmi_load_bg_from_vram.* = 1;
-        if (settings_menu.afterBoxClosed())
-            return;
         if (vars.choice_in_multiselect_box.* != 0) {
             vars.sound_effect_ambient.* = 15;
             vars.main_module_index.* = 23;
@@ -839,6 +890,18 @@ pub export fn GameOver_SaveAndOrContinue() callconv(.c) void {
     vars.sound_effect_1.* = 44;
     // Only death with save/continue or save/quit counts as a death
     Death_Func15(vars.subsubmodule_index.* != 2);
+}
+
+/// Save and Continue: writes the file the way Save and Quit does, current
+/// room and dungeon keys included, but leaves Link where he is, health and
+/// all, instead of sending him back to the start.
+pub fn SaveGameInPlace() void {
+    if (vars.sram_progress_indicator.* == 0) return;
+    if (vars.player_is_indoors.* != 0) {
+        Dungeon_FlagRoomData_Quadrants();
+        SaveDungeonKeys();
+    }
+    SaveGameFile();
 }
 
 pub export fn Death_Func15(count_as_death: bool) callconv(.c) void {
@@ -2266,12 +2329,7 @@ pub export fn Text_DecodeCmd(a_in: u8, src: [*]const u8) callconv(.c) u32 {
 pub export fn Text_LoadCharacterBuffer() callconv(.c) void {
     const dictionary = util.FindIndexInMemblk(g_zenv.dialogue_blk, 0);
     const dialogue = util.FindIndexInMemblk(g_zenv.dialogue_blk, 1);
-    // Text written by the settings menu comes from there rather than from the
-    // game's dialogue.
-    const text_str: util.MemBlk = if (settings_menu.customMessage(vars.dialogue_message_index.*)) |custom|
-        .{ .ptr = custom.ptr, .size = custom.len }
-    else
-        util.FindIndexInMemblk(dialogue, vars.dialogue_message_index.*);
+    const text_str = util.FindIndexInMemblk(dialogue, vars.dialogue_message_index.*);
     var src = text_str.ptr.?;
     const src_end = src + text_str.size;
     var dst = vars.messaging_text_buffer;
@@ -2970,12 +3028,14 @@ pub export fn Death_PrepFaint() callconv(.c) void {
 
 pub export fn DisplaySelectMenu() callconv(.c) void {
     vars.choice_in_multiselect_box_bak.* = vars.choice_in_multiselect_box.*;
-    // Continue Game, Save and Quit, and this port's Settings when it can be
-    // offered; the game's own two-choice message otherwise.
-    vars.dialogue_message_index.* = if (settings_menu.offerSelectMenu()) settings_menu.kMsgCustom else 0x186;
-    const bak = vars.main_module_index.*;
-    misc.Main_ShowTextMessage();
-    vars.main_module_index.* = bak;
+    // This port's pause and settings screen slides down in place of the
+    // game's Continue Game / Save and Quit box, when it can.
+    if (!settings_menu.openFromSelect()) {
+        vars.dialogue_message_index.* = 0x186;
+        const bak = vars.main_module_index.*;
+        misc.Main_ShowTextMessage();
+        vars.main_module_index.* = bak;
+    }
     vars.subsubmodule_index.* = 0;
     vars.submodule_index.* = 11;
     vars.saved_module_for_menu.* = vars.main_module_index.*;
@@ -2985,6 +3045,45 @@ pub export fn DisplaySelectMenu() callconv(.c) void {
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
+
+test "a dungeon save is remembered for its own file, and only that save" {
+    var sram: [0x2000]u8 = @splat(0);
+    const saved_sram = g_zenv.sram;
+    const saved_features = features.enhanced_features0.*;
+    defer {
+        g_zenv.sram = saved_sram;
+        features.enhanced_features0.* = saved_features;
+    }
+    g_zenv.sram = &sram;
+    features.enhanced_features0.* = features.kFeatures0_ContinueFromDungeon;
+    std.mem.writeInt(u16, sram[0x1ffe..][0..2], 2 * 2, .little); // file 2 open
+
+    // In a dungeon, past the opening, nobody following.
+    vars.player_is_indoors.* = 1;
+    vars.cur_palace_index_x2.* = 4;
+    vars.follower_indicator.* = 0;
+    vars.sram_progress_indicator.* = 2;
+    vars.which_entrance.* = 0x37;
+    noteDungeonSave(&sram, 1, 0x1234);
+    vars.word_7EF4FE.* = 0x1234;
+    try testing.expectEqual(@as(?u8, 0x37), dungeonContinueEntrance());
+
+    // A different save in that file (erased, copied, started over): ignored.
+    vars.word_7EF4FE.* = 0x4321;
+    try testing.expectEqual(@as(?u8, null), dungeonContinueEntrance());
+
+    // Saved outside a dungeon: the record goes.
+    vars.word_7EF4FE.* = 0x1234;
+    vars.player_is_indoors.* = 0;
+    noteDungeonSave(&sram, 1, 0x1234);
+    try testing.expectEqual(@as(?u8, null), dungeonContinueEntrance());
+
+    // With the feature off nothing past the files is written at all.
+    features.enhanced_features0.* = 0;
+    vars.player_is_indoors.* = 1;
+    noteDungeonSave(&sram, 1, 0x1234);
+    for (sram[kDungeonSaveRecords..0x1ffe]) |b| try testing.expectEqual(@as(u8, 0), b);
+}
 
 test "the text command encoding round-trips" {
     // TEXTCMD_MK packs param, command and the multibyte flag into one word.

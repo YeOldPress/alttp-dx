@@ -103,6 +103,7 @@ const kFeatures0_SwitchLRLimit: u32 = 32768;
 const kFeatures0_DimFlashes: u32 = 65536;
 const kFeatures0_ItemOnX: u32 = 131072;
 const kFeatures0_DiggingGamePity: u32 = 262144;
+const kFeatures0_ContinueFromDungeon: u32 = 524288;
 /// Whether zelda3.ini said anything about ItemOnX. Files from before it
 /// existed had the second item on X as part of ItemSwitchLR, so without a
 /// say of its own it follows that.
@@ -133,6 +134,9 @@ pub const Config = extern struct {
     msu_finish_cues: bool,
     disable_frame_delay: bool,
     msuvolume: u8,
+    /// The whole game's volume, music and effects and MSU together, in
+    /// percent. Changes take hold straight away.
+    volume: u8,
     /// Controller rumble strength as a percentage; 0 turns it off.
     rumble: u8,
     features0: u32,
@@ -966,6 +970,9 @@ fn handleSound(key: [*:0]const u8, value: [*:0]u8) bool {
     } else if (util.StringEqualsNoCase(key, "MSUPath")) {
         g_config.msu_path = value;
         return true;
+    } else if (util.StringEqualsNoCase(key, "Volume")) {
+        g_config.volume = @intCast(std.math.clamp(atoi(value), 0, 100));
+        return true;
     } else if (util.StringEqualsNoCase(key, "MSUVolume")) {
         g_config.msuvolume = @truncate(@as(c_uint, @bitCast(atoi(value))));
         return true;
@@ -1059,6 +1066,7 @@ fn handleFeatures(key: [*:0]const u8, value: [*:0]u8) bool {
         .{ "GameChangingBugFixes", kFeatures0_GameChangingBugFixes },
         .{ "CancelBirdTravel", kFeatures0_CancelBirdTravel },
         .{ "DiggingGamePity", kFeatures0_DiggingGamePity },
+        .{ "ContinueFromDungeon", kFeatures0_ContinueFromDungeon },
     };
     if (util.StringEqualsNoCase(key, "ItemOnX")) g_item_on_x_set = true;
     inline for (bits) |bit| {
@@ -1105,6 +1113,9 @@ fn parseOneConfigFile(filename: [*:0]const u8, depth: c_int) bool {
 
 export fn ParseConfigFile(filename_in: ?[*:0]const u8) callconv(.c) void {
     g_config.msuvolume = 100; // default msu volume, 100%
+    g_config.volume = 100;
+    // On unless an ini says otherwise, older ones without the line included.
+    g_config.features0 |= kFeatures0_ContinueFromDungeon;
     g_config.rumble = 100;
     g_config.msu_finish_cues = true;
 
@@ -1120,6 +1131,19 @@ export fn ParseConfigFile(filename_in: ?[*:0]const u8) callconv(.c) void {
 }
 
 const testing = std.testing;
+
+test "Volume reads as a percentage and stays between 0 and 100" {
+    const saved = g_config.volume;
+    defer g_config.volume = saved;
+    try testing.expect(applySetting("Sound", "Volume", "80%"));
+    try testing.expectEqual(@as(u8, 80), g_config.volume);
+    try testing.expect(applySetting("Sound", "Volume", "35"));
+    try testing.expectEqual(@as(u8, 35), g_config.volume);
+    try testing.expect(applySetting("Sound", "Volume", "150"));
+    try testing.expectEqual(@as(u8, 100), g_config.volume);
+    try testing.expect(applySetting("Sound", "Volume", "-5"));
+    try testing.expectEqual(@as(u8, 0), g_config.volume);
+}
 
 test "ParseBool accepts the documented spellings" {
     var out: bool = undefined;

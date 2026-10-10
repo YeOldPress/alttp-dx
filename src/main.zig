@@ -10,6 +10,8 @@ const audio = @import("audio.zig");
 const rumble = @import("rumble.zig");
 const menu = @import("menu.zig");
 const settings_menu = @import("settings_menu.zig");
+const title_dx = @import("title_dx.zig");
+const achievements = @import("achievements.zig");
 const rando = @import("rando.zig");
 const tracker = @import("tracker.zig");
 const frame_capture = @import("frame_capture.zig");
@@ -159,9 +161,8 @@ const kDefaultSamples = 2048;
 
 /// SDL3 dropped SDL_MIX_MAXVOLUME along with SDL_MixAudioFormat; the volume is
 /// a stream gain now. The old scale is kept so the printed value reads as it did.
-const kMixMaxVolume: c_int = 128;
 
-const kWindowTitle = "The Legend of Zelda: A Link to the Past";
+const kWindowTitle = "The Legend of Zelda: A Link to the Past DX";
 
 var g_win_flags: c.SDL_WindowFlags = c.SDL_WINDOW_RESIZABLE;
 var g_window: ?*c.SDL_Window = null;
@@ -174,6 +175,36 @@ var g_paused: bool = false;
 var g_turbo: bool = false;
 var g_replay_turbo: bool = true;
 var g_cursor: bool = true;
+/// In a window the pointer goes away once it's been still this long, and
+/// comes back the moment it moves. Fullscreen hides it the whole time.
+const kCursorIdleMs = 2000;
+var g_cursor_moved_at: u64 = 0;
+var g_cursor_idle = false;
+
+/// The pointer moved or clicked: show it again if it was hidden for idling.
+fn cursorMoved() void {
+    g_cursor_moved_at = c.SDL_GetTicks();
+    if (g_cursor_idle) {
+        g_cursor_idle = false;
+        if (g_cursor) _ = c.SDL_ShowCursor();
+    }
+}
+
+fn hideIdleCursor() void {
+    if (!g_cursor or g_cursor_idle) return;
+    if (c.SDL_GetTicks() - g_cursor_moved_at < kCursorIdleMs) return;
+    g_cursor_idle = true;
+    _ = c.SDL_HideCursor();
+}
+
+/// Fullscreen came or went: the pointer shows in a window, starting its
+/// idle time over, and stays hidden fullscreen.
+fn setCursorWanted(want: bool) void {
+    g_cursor = want;
+    g_cursor_idle = false;
+    g_cursor_moved_at = c.SDL_GetTicks();
+    _ = if (want) c.SDL_ShowCursor() else c.SDL_HideCursor();
+}
 var g_current_window_scale: u8 = 0;
 var g_gamepad_buttons: u8 = 0;
 var g_input1_state: c_int = 0;
@@ -182,7 +213,6 @@ var g_curr_fps: c_int = 0;
 var g_ppu_render_flags: u32 = 0;
 var g_snes_width: c_int = 0;
 var g_snes_height: c_int = 0;
-var g_sdl_audio_mixer_volume: c_int = kMixMaxVolume;
 var g_renderer_funcs: RendererFuncs = std.mem.zeroes(RendererFuncs);
 var g_gamepad_modifiers: u32 = 0;
 var g_gamepad_last_cmd: [kGamepadBtn_Count]u16 = @splat(0);
@@ -410,6 +440,7 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
     defer std.heap.c_allocator.free(pixels);
     // One pixel per SNES pixel, so no 4x Mode 7.
     ZeldaDrawPpuFrame(@ptrCast(pixels.ptr), width * 4, g_ppu_render_flags & ~kPpuRenderFlags_4x4Mode7);
+    title_dx.drawOver(@ptrCast(pixels.ptr), width * 4, width, height, 1);
     settings_menu.drawOver(@ptrCast(pixels.ptr), width * 4, width, height, 1);
     frame_capture.writeBmp(out, pixels, width, height) catch |err| {
         std.debug.print("--render: could not write {s}: {s}\n", .{ out, @errorName(err) });
@@ -453,7 +484,10 @@ fn DrawPpuFrameWithPerf() void {
     } else {
         ZeldaDrawPpuFrame(pixel_buffer, @intCast(pitch), g_ppu_render_flags);
     }
+    title_dx.drawOver(pixel_buffer, @intCast(pitch), @intCast(g_snes_width), @intCast(g_snes_height), @intCast(render_scale));
     settings_menu.drawOver(pixel_buffer, @intCast(pitch), @intCast(g_snes_width), @intCast(g_snes_height), @intCast(render_scale));
+    achievements.hidden = settings_menu.isOpen();
+    achievements.drawOver(pixel_buffer, @intCast(pitch), @intCast(g_snes_width), @intCast(g_snes_height), @intCast(render_scale));
     if (g_display_perf)
         RenderNumber(pixel_buffer + @as(usize, @intCast(pitch * render_scale)), @intCast(pitch), g_curr_fps, render_scale == 4);
     g_renderer_funcs.EndDraw.?();
@@ -872,7 +906,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         g_audiobuffer = @ptrCast(malloc(@as(usize, @intCast(g_frames_per_block)) * g_audio_channels * @sizeOf(i16)));
         g_audiobuffer_cur = g_audiobuffer;
         g_audiobuffer_end = g_audiobuffer;
-        ApplyAudioVolume();
+        applyVolume();
         // SDL_OpenAudioDeviceStream hands back a paused device.
         _ = c.SDL_ResumeAudioStreamDevice(g_audio_stream);
     }
@@ -885,6 +919,8 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     }
 
     makeSaveDir();
+    // Not while the game is being compared against the original.
+    if (settings_menu.enabled) achievements.init(std.heap.c_allocator);
 
     // A seed keeps its own save beside it; this is the port's.
     if (!rando.g_active) ZeldaReadSram();
@@ -951,7 +987,9 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
                     if ((c.SDL_GetModState() & c.SDL_KMOD_CTRL) != 0 and event.wheel.y != 0)
                         ChangeWindowScale(if (event.wheel.y > 0) 1 else -1);
                 },
+                c.SDL_EVENT_MOUSE_MOTION => cursorMoved(),
                 c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                    cursorMoved();
                     if (event.button.button == c.SDL_BUTTON_LEFT and event.button.down and event.button.clicks == 2) {
                         if ((g_win_flags & c.SDL_WINDOW_FULLSCREEN) == 0 and
                             (c.SDL_GetModState() & c.SDL_KMOD_SHIFT) != 0)
@@ -971,6 +1009,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
                 else => {},
             }
         }
+        hideIdleCursor();
 
         if (g_quit_requested)
             running = false;
@@ -1008,7 +1047,10 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
             // The seed's ram is mirrored where the rumble looks for the port's.
             const sfx = rando.soundEffects();
             rumble.afterFrame(sfx[0], sfx[1]);
-        } else rumble.afterFrame(audio.lastSoundEffect1(), audio.lastSoundEffect2());
+        } else {
+            rumble.afterFrame(audio.lastSoundEffect1(), audio.lastSoundEffect2());
+            achievements.afterFrame();
+        }
 
         frameCtr +%= 1;
 
@@ -1155,8 +1197,7 @@ pub fn applyDisplaySettings() void {
     if (want_full != ((g_win_flags & c.SDL_WINDOW_FULLSCREEN) != 0)) {
         g_win_flags ^= c.SDL_WINDOW_FULLSCREEN;
         _ = c.SDL_SetWindowFullscreen(g_window, want_full);
-        g_cursor = !want_full;
-        _ = if (g_cursor) c.SDL_ShowCursor() else c.SDL_HideCursor();
+        setCursorWanted(!want_full);
     }
     const live = kPpuRenderFlags_NewRenderer | kPpuRenderFlags_NoSpriteLimits;
     g_ppu_render_flags = g_ppu_render_flags & ~live |
@@ -1240,6 +1281,9 @@ fn HandleCommand_Locked(j: u32, pressed: bool) void {
     // rumble would otherwise take for a hit.
     if (j <= kKeys_ReplayRef_Last or j == kKeys_Reset)
         rumble.reset();
+    // A cheat: achievements wait for a fresh start. Snapshots are fine.
+    if (j >= kKeys_CheatLife and j <= kKeys_CheatWalkThroughWalls)
+        achievements.noteAssist();
     if (j <= kKeys_Load_Last) {
         SaveLoadSlot(kSaveLoad_Load, @intCast(j - kKeys_Load));
     } else if (j <= kKeys_Save_Last) {
@@ -1261,9 +1305,7 @@ fn HandleCommand_Locked(j: u32, pressed: bool) void {
             kKeys_Fullscreen => {
                 g_win_flags ^= c.SDL_WINDOW_FULLSCREEN;
                 _ = c.SDL_SetWindowFullscreen(g_window, (g_win_flags & c.SDL_WINDOW_FULLSCREEN) != 0);
-                g_cursor = !g_cursor;
-                // SDL3 split SDL_ShowCursor(toggle) into two argument-less calls.
-                _ = if (g_cursor) c.SDL_ShowCursor() else c.SDL_HideCursor();
+                setCursorWanted(!g_cursor);
             },
             kKeys_Reset => ZeldaReset(true),
             kKeys_Pause => g_paused = !g_paused,
@@ -1360,21 +1402,28 @@ fn HandleGamepadInput(button: c_int, pressed: bool) void {
         HandleCommand(g_gamepad_last_cmd[@intCast(button)], pressed);
 }
 
+/// The volume keys step the Volume setting itself, 5% at a time, so they and
+/// the settings screens always agree. They don't save it; the settings do.
 fn HandleVolumeAdjustment(volume_adjustment: c_int) void {
     // Upstream can drive the Windows system volume mixer from here
     // instead. This port always adjusts its own mix, on every platform.
-    g_sdl_audio_mixer_volume = intMin(intMax(0, g_sdl_audio_mixer_volume +
-        volume_adjustment * (kMixMaxVolume >> 4)), kMixMaxVolume);
+    const v: c_int = config.g_config.volume;
+    config.g_config.volume = @intCast(intMin(intMax(0, v + volume_adjustment * 5), 100));
+    applyVolume();
+    _ = printf("[Volume]=%i%%\n", @as(c_int, config.g_config.volume));
+}
+
+/// Puts the Volume setting into the mix, which takes it straight away: the
+/// audio stream scales whatever goes through it from the next buffer on.
+pub fn applyVolume() void {
     ApplyAudioVolume();
-    _ = printf("[SDL mixer volume]=%i\n", g_sdl_audio_mixer_volume);
 }
 
 /// The volume used to be folded into each callback by SDL_MixAudioFormat. SDL3
 /// scales the stream itself, with 1.0 meaning untouched samples.
 fn ApplyAudioVolume() void {
     if (g_audio_stream) |stream|
-        _ = c.SDL_SetAudioStreamGain(stream, @as(f32, @floatFromInt(g_sdl_audio_mixer_volume)) /
-            @as(f32, @floatFromInt(kMixMaxVolume)));
+        _ = c.SDL_SetAudioStreamGain(stream, @as(f32, @floatFromInt(@min(config.g_config.volume, 100))) / 100);
 }
 
 /// Approximates atan2(y, x) normalized to the [0,4) range
