@@ -16,7 +16,8 @@ For working on ALTTP-DX rather than playing it.
   place of the chapter starts from your own quick-save slot n instead. A script
   is steps of frames and the buttons held for them: `60,1:start,20,1:select,30`.
 - `zelda3 --menu-shot <screen> <out.bmp> [seed]` draws a start menu screen
-  with no window. `LIST_ROW=n` picks a row on the lists, `INFO=1` opens the
+  (`main`, `settings`, `features`, `controls`, `achievements`, `hub`,
+  `alttpr`, `details`) with no window. `LIST_ROW=n` picks a row on the lists, `INFO=1` opens the
   info box, `CTL_ROW=n` and `CAPTURE=1` set up the Controls screen.
 - `zelda3 seed.sfc` opens a randomizer seed on its page in the start menu.
 - `zelda3 --seed-info seed.sfc` prints what a seed says about itself,

@@ -11,6 +11,8 @@ with the extras a modern re-release would have.
 - **MSU-1** music packs, including deluxe packs and compressed `.opuz` packs
 - **Settings everywhere:** a start menu before the game, and the same settings
   inside it, each with a description
+- **Achievements:** 47 of them, from the story to the secrets to a few
+  challenges, with a banner when one unlocks
 - **Quality of life:** item switching with L and R, a second item on X, Save
   and Continue, and optional gameplay tweaks and bug fixes
 - **Randomizer:** play [alttpr.com](https://alttpr.com) seeds with an item
@@ -86,6 +88,18 @@ the settings too.
 </table>
 
 Most settings take effect straight away. The ones that can't say so.
+
+### Achievements
+
+There are 47 achievements: the story, collecting things, the side quests and
+secrets, and a few challenges, such as beating a boss without being hit. Each
+one unlocks with a banner at the top of the screen. The list is in the start
+menu and on the last page of the Select menu, with what each one asks for.
+
+They count across all three save files and are kept in
+`saves/achievements.txt`. Loading a save that's already far along unlocks
+everything it has done. Cheats pause them until you're back at the title or
+the file select, and randomizer seeds don't count.
 
 ### MSU-1
 

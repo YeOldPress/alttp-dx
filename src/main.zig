@@ -11,6 +11,7 @@ const rumble = @import("rumble.zig");
 const menu = @import("menu.zig");
 const settings_menu = @import("settings_menu.zig");
 const title_dx = @import("title_dx.zig");
+const achievements = @import("achievements.zig");
 const rando = @import("rando.zig");
 const tracker = @import("tracker.zig");
 const frame_capture = @import("frame_capture.zig");
@@ -455,6 +456,8 @@ fn DrawPpuFrameWithPerf() void {
     }
     title_dx.drawOver(pixel_buffer, @intCast(pitch), @intCast(g_snes_width), @intCast(g_snes_height), @intCast(render_scale));
     settings_menu.drawOver(pixel_buffer, @intCast(pitch), @intCast(g_snes_width), @intCast(g_snes_height), @intCast(render_scale));
+    achievements.hidden = settings_menu.isOpen();
+    achievements.drawOver(pixel_buffer, @intCast(pitch), @intCast(g_snes_width), @intCast(g_snes_height), @intCast(render_scale));
     if (g_display_perf)
         RenderNumber(pixel_buffer + @as(usize, @intCast(pitch * render_scale)), @intCast(pitch), g_curr_fps, render_scale == 4);
     g_renderer_funcs.EndDraw.?();
@@ -886,6 +889,8 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     }
 
     makeSaveDir();
+    // Not while the game is being compared against the original.
+    if (settings_menu.enabled) achievements.init(std.heap.c_allocator);
 
     // A seed keeps its own save beside it; this is the port's.
     if (!rando.g_active) ZeldaReadSram();
@@ -1009,7 +1014,10 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
             // The seed's ram is mirrored where the rumble looks for the port's.
             const sfx = rando.soundEffects();
             rumble.afterFrame(sfx[0], sfx[1]);
-        } else rumble.afterFrame(audio.lastSoundEffect1(), audio.lastSoundEffect2());
+        } else {
+            rumble.afterFrame(audio.lastSoundEffect1(), audio.lastSoundEffect2());
+            achievements.afterFrame();
+        }
 
         frameCtr +%= 1;
 
@@ -1241,6 +1249,9 @@ fn HandleCommand_Locked(j: u32, pressed: bool) void {
     // rumble would otherwise take for a hit.
     if (j <= kKeys_ReplayRef_Last or j == kKeys_Reset)
         rumble.reset();
+    // A cheat: achievements wait for a fresh start. Snapshots are fine.
+    if (j >= kKeys_CheatLife and j <= kKeys_CheatWalkThroughWalls)
+        achievements.noteAssist();
     if (j <= kKeys_Load_Last) {
         SaveLoadSlot(kSaveLoad_Load, @intCast(j - kKeys_Load));
     } else if (j <= kKeys_Save_Last) {

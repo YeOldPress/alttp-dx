@@ -19,6 +19,7 @@ const seed_info = @import("seed_info.zig");
 const config = @import("config.zig");
 const controls = @import("controls.zig");
 const pad_art = @import("pad_art.zig");
+const achievement_list = @import("achievement_list.zig");
 
 /// The zelda3.ini this build shipped with, written out whenever there is no
 /// ini to be found, so a fresh folder or data directory still starts.
@@ -765,7 +766,7 @@ const kQuitStay = 1;
 /// The launcher is a short menu and the screens it opens: the two lists of
 /// settings, and the randomizer's pages (a choice of randomizer, then the
 /// ALTTPR.COM page seeds are dropped on, and what a seed says about itself).
-const Screen = enum { main, settings, features, controls, hub, alttpr, details };
+const Screen = enum { main, settings, features, controls, achievements, hub, alttpr, details };
 
 /// Where the FEATURES heading sits, so the two lists are slices of the one
 /// schema instead of separate tables that could drift out of step with it.
@@ -805,7 +806,7 @@ fn screenRange(screen: Screen) struct { from: usize, to: usize } {
         .settings => .{ .from = 0, .to = kFeaturesStart },
         .features => .{ .from = kFeaturesStart, .to = kRandomizerStart },
         .alttpr => .{ .from = kRandomizerStart, .to = kControlsStart },
-        .main, .controls, .hub, .details => .{ .from = 0, .to = 0 },
+        .main, .controls, .achievements, .hub, .details => .{ .from = 0, .to = 0 },
     };
 }
 
@@ -844,14 +845,15 @@ fn visibleRows(screen: Screen) usize {
     return if (screen == .alttpr) 9 else kVisibleRows;
 }
 
-const kMainItems = [_][]const u8{ "Settings", "Features", "Controls", "Save Settings", "Build Assets", "Import MSU-1", "Play", "Randomizer" };
+const kMainItems = [_][]const u8{ "Settings", "Features", "Controls", "Achievements", "Save Settings", "Build Assets", "Import MSU-1", "Play", "Randomizer" };
 const kMainControls = 2;
-const kMainSave = 3;
-const kMainBuild = 4;
+const kMainAchievements = 3;
+const kMainSave = 4;
+const kMainBuild = 5;
 /// Only there while MSU audio is on: there's no pack to want otherwise.
-const kMainImport = 5;
-const kMainLaunch = 6;
-const kMainRandomizer = 7;
+const kMainImport = 6;
+const kMainLaunch = 7;
+const kMainRandomizer = 8;
 
 /// Whether MSU audio is on in the ini, which brings Import MSU-1 onto the
 /// main page. Set from the ini every frame, so it follows the setting.
@@ -1207,7 +1209,7 @@ const View = struct {
 
 fn listIndex(sc: Screen) usize {
     return switch (sc) {
-        .main, .settings, .controls, .hub, .details => 0,
+        .main, .settings, .controls, .achievements, .hub, .details => 0,
         .features => 1,
         .alttpr => 2,
     };
@@ -1234,6 +1236,7 @@ fn viewOf(
             .main => main_cursor,
             .hub => g_hub_cursor,
             .controls => g_ctl_row,
+            .achievements => g_ach_row,
             else => list_cursor[li],
         },
         .details_top = g_details_top,
@@ -1268,6 +1271,11 @@ pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const 
     const top = [_]usize{ row_top, row_top, row_top };
     const modal: Modal = if (std.c.getenv("INFO") != null) .info else if (std.c.getenv("MSU_IMPORT") != null) .msu else .none;
     g_msu_on = msuOnIn(&ini);
+    if (screen == .achievements) {
+        g_ach_unlocked = achievement_list.Unlocked.load(alloc);
+        g_ach_row = row;
+        if (row >= kAchVisible) g_ach_top = row + 1 - kAchVisible;
+    }
     drawScreen(renderer, &ini, viewOf(screen, if (screen == .main) kMainControls else kMainRandomizer, cursor, top, "", false, .verified, modal, kQuitStay));
     if (!c.SDL_SaveBMP(surface, path)) return error.SaveFailed;
 }
@@ -1282,6 +1290,7 @@ fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
         .main => drawMain(renderer, v),
         .hub => drawHub(renderer, v),
         .controls => drawControls(renderer, ini, v),
+        .achievements => drawAchievements(renderer, v),
         .details => {
             setMsuGamePath(ini);
             drawDetails(renderer, v);
@@ -1318,6 +1327,7 @@ fn drawHeader(renderer: *c.SDL_Renderer, screen: Screen) void {
         .features => "FEATURES",
         .hub => "RANDOMIZER",
         .controls => "CONTROLS",
+        .achievements => "ACHIEVEMENTS",
         .alttpr => "ALTTPR.COM",
         .details => "SEED DETAILS",
         .main => unreachable,
@@ -1345,11 +1355,11 @@ const Rect = struct {
 // Randomizer button under that.
 const kLaunchY: f32 = 242;
 
-/// Where the entries above Play go: five of them spaced out, or six a little
-/// closer together when Import MSU-1 is there, ending in the same place.
+/// Where the entries above Play go: six of them, or seven a little closer
+/// together when Import MSU-1 is there, ending in the same place.
 const EntryLayout = struct { y: f32, gap: f32, pad: f32 };
 fn entryLayout() EntryLayout {
-    return if (g_msu_on) .{ .y = 108, .gap = 22, .pad = 3 } else .{ .y = 114, .gap = 26, .pad = 6 };
+    return if (g_msu_on) .{ .y = 106, .gap = 18, .pad = 1 } else .{ .y = 106, .gap = 22, .pad = 2 };
 }
 
 /// An entry's place among the ones showing.
@@ -1467,6 +1477,63 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     const r = randoRect();
     drawButton(renderer, r, kColorRandoBg, v.cursor == kMainRandomizer);
     drawTextCentered(renderer, cx, r.y + 7, kColorText, "RANDOMIZER", kScale);
+}
+
+// ------------------------------------------------------------ achievements
+
+/// What's been unlocked, read from the file each time the screen opens.
+var g_ach_unlocked: achievement_list.Unlocked = .{};
+var g_ach_row: usize = 0;
+var g_ach_top: usize = 0;
+
+const kAchRows = achievement_list.kList.len;
+const kAchVisible = 11;
+/// Under the list, what the picked one asks for.
+const kAchAboutY: f32 = kListStartY + kRowH * kAchVisible + 10;
+
+fn achRowRect(slot: usize) Rect {
+    return .{ .x = 32, .y = kListStartY + kRowH * @as(f32, @floatFromInt(slot)) - 3, .w = kWindowW - 64, .h = kRowH };
+}
+
+/// One line per achievement, its category beside it, ticked off once it's
+/// got; under them, what the picked one asks for.
+fn drawAchievements(renderer: *c.SDL_Renderer, v: View) void {
+    const all = achievement_list.kList;
+
+    for (0..kAchVisible) |slot| {
+        const row = g_ach_top + slot;
+        if (row >= all.len) break;
+        const ach = all[row];
+        const r = achRowRect(slot);
+        const y = r.y + 3;
+        const selected = row == v.cursor;
+        const has = g_ach_unlocked.has(ach.id);
+        if (selected) drawRowHighlight(renderer, r.x, r.y, r.w, r.h);
+        // A filled box for got, an empty one for not yet.
+        if (has) fillRect(renderer, 44, y + 2, 12, 12, kColorOk) else outlineRound(renderer, 44, y + 2, 12, 12, 0, 1, kColorTextDim);
+        var name_buf: [48]u8 = undefined;
+        const name = upper(&name_buf, ach.name);
+        drawText(renderer, 68, y, if (selected) kColorSelect else if (has) kColorText else kColorTextDim, name);
+    }
+    if (all.len > kAchVisible) {
+        const track_y = kListStartY - 3;
+        const track_h = kRowH * @as(f32, kAchVisible);
+        const nf: f32 = @floatFromInt(all.len);
+        drawScrollbar(renderer, track_y, track_h, track_y + track_h * @as(f32, @floatFromInt(g_ach_top)) / nf, track_h * kAchVisible / nf);
+    }
+
+    const picked = all[@min(v.cursor, all.len - 1)];
+    fillRect(renderer, 40, kAchAboutY - 4, kWindowW - 80, 1, kColorLine);
+    // Its category, and how many are got, on the rule's line.
+    var cat_buf: [16]u8 = undefined;
+    drawText(renderer, 40, kAchAboutY + 4, kColorSection, upper(&cat_buf, picked.category.label()));
+    var count_buf: [24]u8 = undefined;
+    const count = std.fmt.bufPrint(&count_buf, "{d} OF {d} UNLOCKED", .{ g_ach_unlocked.count(), all.len }) catch "";
+    drawText(renderer, kWindowW - 40 - textWidth(count, kScale), kAchAboutY + 4, kColorTextDim, count);
+    var about_buf: [96]u8 = undefined;
+    var lines = LineWrap{ .text = upper(&about_buf, picked.about), .width = (kWindowW - 80) / kCell };
+    var y = kAchAboutY + 4 + kRowH;
+    while (lines.next()) |line| : (y += kRowH) drawText(renderer, 40, y, if (g_ach_unlocked.has(picked.id)) kColorOk else kColorText, line);
 }
 
 // ---------------------------------------------------------------- controls
@@ -2026,6 +2093,10 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
         .settings, .features => {
             drawText(renderer, 40, footer_y, kColorTextDim, "CHANGE  LEFT/RIGHT OR A");
             drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "INFO Y/I   SAVE X/S   BACK B/ESC");
+        },
+        .achievements => {
+            drawText(renderer, 40, footer_y, kColorTextDim, "CHOOSE UP/DOWN");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "BACK B/ESC");
         },
         .hub => {
             drawText(renderer, 40, footer_y, kColorTextDim, "SELECT A/ENTER");
@@ -2828,6 +2899,11 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         screen = .controls;
                         status = "";
                     },
+                    kMainAchievements => {
+                        g_ach_unlocked = achievement_list.Unlocked.load(alloc);
+                        screen = .achievements;
+                        status = "";
+                    },
                     kMainSave => save = true,
                     kMainBuild => {
                         modal = .rom;
@@ -2901,6 +2977,20 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 if (g_ctl_row < g_ctl_top) g_ctl_top = g_ctl_row;
                 if (g_ctl_row >= g_ctl_top + kCtlVisible) g_ctl_top = g_ctl_row + 1 - kCtlVisible;
             }
+        } else if (screen == .achievements) {
+            if (back) {
+                screen = .main;
+                status = "";
+            }
+            for (0..kAchVisible) |slot| {
+                const row = g_ach_top + slot;
+                if (row >= kAchRows) break;
+                if ((hovered or clicked) and achRowRect(slot).contains(hover_x, hover_y)) g_ach_row = row;
+            }
+            if (wheel != 0) move = if (wheel > 0) -1 else 1;
+            if (move != 0) g_ach_row = @intCast(@mod(@as(i32, @intCast(g_ach_row)) + move, @as(i32, kAchRows)));
+            if (g_ach_row < g_ach_top) g_ach_top = g_ach_row;
+            if (g_ach_row >= g_ach_top + kAchVisible) g_ach_top = g_ach_row + 1 - kAchVisible;
         } else if (screen == .hub) {
             if (back) {
                 screen = .main;

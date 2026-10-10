@@ -32,6 +32,8 @@ const main = @import("main.zig");
 const gfx = @import("game_gfx.zig");
 const hud = @import("hud_tables.zig");
 const pad_art = @import("pad_art.zig");
+const achievements = @import("achievements.zig");
+const achievement_list = @import("achievement_list.zig");
 const controls = @import("controls.zig");
 const c = @import("sdl.zig").c;
 const Ppu = @import("snes").ppu_types.Ppu;
@@ -99,11 +101,15 @@ const kTabIcons = [_][4]u16{
     .{ 0x3429, 0x342a, 0x342b, 0x342c },
 };
 
-/// The settings' own tabs, then Controls, which isn't a list of settings.
-const kTabCount = kTabs.len + 1;
+/// The settings' own tabs, then Controls and Achievements, which aren't
+/// lists of settings.
+const kTabCount = kTabs.len + 2;
 const kControlsTab = kTabs.len;
+const kAchievementsTab = kTabs.len + 1;
 /// The Power Glove.
 const kControlsIcon = hud.kHudItemGloves[1].v;
+/// The Pendant of Courage.
+const kAchievementsIcon = hud.kHudPendants2[1].v;
 
 const kTabs = blk: {
     var tabs: [kTabIcons.len]Tab = undefined;
@@ -327,7 +333,7 @@ pub fn update() void {
         }
         return;
     }
-    if (pressed_h & kJoypadH_Y != 0 and !onPausePage() and currentTab() != kControlsTab) {
+    if (pressed_h & kJoypadH_Y != 0 and !onPausePage() and currentTab() < kTabs.len) {
         g_details = true;
         vars.sound_effect_2.* = 32;
         return;
@@ -349,6 +355,7 @@ pub fn update() void {
     if (onPausePage()) return pauseUpdate(step, dirs, pressed_l);
     g_tab = currentTab();
     if (g_tab == kControlsTab) return controlsUpdate(step, dirs, pressed_l);
+    if (g_tab == kAchievementsTab) return achievementsUpdate(step, dirs);
     const count = kTabs[g_tab].count;
     if (step and dirs & kJoypadH_Up != 0) {
         g_row = (g_row + count - 1) % count;
@@ -561,7 +568,14 @@ pub fn drawOver(pixels: [*]u8, pitch: usize, width: usize, height: usize, scale:
         drawPause(cv);
     } else {
         g_tab = currentTab();
-        if (g_details) drawDetails(cv) else if (g_tab == kControlsTab) drawControls(cv) else drawList(cv);
+        if (g_details)
+            drawDetails(cv)
+        else if (g_tab == kControlsTab)
+            drawControls(cv)
+        else if (g_tab == kAchievementsTab)
+            drawAchievements(cv)
+        else
+            drawList(cv);
     }
     drawFooter(cv);
 }
@@ -575,7 +589,14 @@ fn drawTabs(cv: gfx.Canvas) void {
     for (0..n) |page| {
         const x: i32 = 30 + @as(i32, @intCast(page)) * spacing;
         const offset = @intFromBool(hasPausePage());
-        const icon = if (page < offset) kPauseIcon else if (page - offset < kTabs.len) kTabs[page - offset].icon else kControlsIcon;
+        const icon = if (page < offset)
+            kPauseIcon
+        else if (page - offset < kTabs.len)
+            kTabs[page - offset].icon
+        else if (page - offset == kControlsTab)
+            kControlsIcon
+        else
+            kAchievementsIcon;
         cv.icon(x, 16, icon);
         if (page == g_page and g_frame & 0x10 != 0) drawRing(cv, x, 16);
     }
@@ -697,6 +718,8 @@ fn drawFooter(cv: gfx.Canvas) void {
         "[B] Back"
     else if (currentTab() == kControlsTab)
         "[Up][Down] Choose  [A] Change  [B] Done"
+    else if (currentTab() == kAchievementsTab)
+        "[Up][Down] Choose  [B] Done"
     else
         "[Up][Down] Choose  [Left][Right] Change  [Y] Info  [B] Done";
     cv.band(192, 24, 0x000000);
@@ -747,6 +770,63 @@ const WordWrap = struct {
         return self.text[start..end];
     }
 };
+
+// ------------------------------------------------------------ achievements
+
+/// Rows of achievements at once, with room under them for what the picked
+/// one asks for.
+const kAchievementRows = 4;
+const kAchievementRowH = 18;
+
+fn achievementsUpdate(step: bool, dirs: u8) void {
+    const count = achievement_list.kList.len;
+    if (step and dirs & kJoypadH_Up != 0) {
+        g_row = (g_row + count - 1) % count;
+        vars.sound_effect_2.* = 32;
+    } else if (step and dirs & kJoypadH_Down != 0) {
+        g_row = (g_row + 1) % count;
+        vars.sound_effect_2.* = 32;
+    }
+    if (g_row < g_top) g_top = g_row;
+    if (g_row >= g_top + kAchievementRows) g_top = g_row + 1 - kAchievementRows;
+}
+
+/// Each with its icon once it's got, dimmed and without until then, and what
+/// the picked one asks for underneath.
+fn drawAchievements(cv: gfx.Canvas) void {
+    cv.box(8, 46, 30, 18, kFramePalette);
+    const got = achievements.unlocked();
+    const all = achievement_list.kList;
+    var title_buf: [32]u8 = undefined;
+    const title = std.fmt.bufPrint(&title_buf, "Achievements  {d} of {d}", .{ got.count(), all.len }) catch "";
+    _ = cv.text(24, 52, title, kTextSelected);
+    const picked = all[@min(g_row, all.len - 1)];
+    const category = picked.category.label();
+    _ = cv.text(222 - gfx.textWidth(category), 52, category, kTextDim);
+
+    const top: i32 = 70;
+    var row = g_top;
+    while (row < @min(all.len, g_top + kAchievementRows)) : (row += 1) {
+        const y = top + @as(i32, @intCast(row - g_top)) * kAchievementRowH;
+        const ach = all[row];
+        const selected = row == g_row;
+        const has = got.has(ach.id);
+        if (selected) cv.fill(18, y - 1, 212, kAchievementRowH, kRowHighlight);
+        if (has) cv.icon(24, y, ach.icon);
+        var name_buf: [48]u8 = undefined;
+        const colors = if (selected) kTextSelected else if (has) kTextNormal else kTextDim;
+        _ = cv.text(46, y, fontSafe(&name_buf, ach.name), colors);
+    }
+    if (g_top > 0) _ = cv.text(232, top, "[Up]", kTextDim);
+    if (g_top + kAchievementRows < all.len) _ = cv.text(232, top + (kAchievementRows - 1) * kAchievementRowH, "[Down]", kTextDim);
+
+    var y: i32 = top + kAchievementRows * kAchievementRowH + 4;
+    var lines = WordWrap{ .text = picked.about, .width = 208 };
+    while (lines.next()) |line| : (y += 14) {
+        if (y > 166) break;
+        _ = cv.text(24, y, line, if (got.has(picked.id)) kTextNormal else kTextDim);
+    }
+}
 
 // ---------------------------------------------------------------- controls
 
@@ -914,8 +994,15 @@ test "the tabs fit the box with and without the pause page" {
         const spacing = 176 / (n - 1);
         try testing.expect(30 + (n - 1) * spacing + 16 <= 232);
     }
-    // The file select screen's tabs stay where they were.
-    try testing.expectEqual(@as(usize, 44), 176 / (kTabCount - 1));
+}
+
+test "every achievement's words are in the font" {
+    for (achievement_list.kList) |ach| {
+        var buf: [64]u8 = undefined;
+        for ([_][]const u8{ fontSafe(&buf, ach.name), ach.about, ach.category.label() }) |text| {
+            for (text) |ch| try testing.expect(ch == ' ' or gfx.glyphIndex(&.{ch}) != null);
+        }
+    }
 }
 
 test "every editable setting sits on exactly one tab" {
