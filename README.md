@@ -16,7 +16,7 @@ with the extras a modern re-release would have.
 - **Quality of life:** item switching with L and R, a second item on X, Save
   and Continue, and optional gameplay tweaks and bug fixes
 - **Randomizer:** play [alttpr.com](https://alttpr.com) seeds with an item
-  tracker that follows along by itself
+  tracker that auto updates. 
 - **Modding and languages** with `zelda3-tools`
 
 You bring your own US ROM. No game data ships here, and once the assets are

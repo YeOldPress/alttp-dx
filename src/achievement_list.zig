@@ -145,7 +145,7 @@ pub const kList = [_]Achievement{
     a(.flawless_ganon, .challenges, "Flawless Victory", "Defeat Ganon without being hit.", hud.kHudItemShield[2]),
     a(.three_hearts, .challenges, "Three Heart Hero", "Defeat Ganon with only three heart containers.", hud.kHudItemHeartPieces[0]),
     a(.deathless, .challenges, "Never Say Die", "Reach the credits without dying once.", hud.kHudItemBottles[6]),
-    a(.green_tunic, .challenges, "Green Is Good", "Defeat Ganon in the green tunic.", hud.kHudItemArmor[0]),
+    a(.green_tunic, .challenges, "It's Not Easy Being Green", "Defeat Ganon in the green tunic.", hud.kHudItemArmor[0]),
 };
 
 pub fn get(id: Id) Achievement {
@@ -153,12 +153,12 @@ pub fn get(id: Id) Achievement {
 }
 
 pub fn indexOf(id: Id) usize {
-    return kIndexOf[@intFromEnum(id)];
+    return kIndexOf[@backingInt(id)];
 }
 
 const kIndexOf = blk: {
     var out: [std.meta.fieldNames(Id).len]usize = undefined;
-    for (kList, 0..) |ach, i| out[@intFromEnum(ach.id)] = i;
+    for (kList, 0..) |ach, i| out[@backingInt(ach.id)] = i;
     break :blk out;
 };
 
@@ -216,7 +216,7 @@ test "every achievement is listed once, a category at a time" {
     for (kList) |ach| {
         try std.testing.expect(!seen.contains(ach.id));
         seen.insert(ach.id);
-        try std.testing.expect(@intFromEnum(ach.category) >= @intFromEnum(last));
+        try std.testing.expect(@backingInt(ach.category) >= @backingInt(last));
         last = ach.category;
         // The game's font has no colon or slash.
         for (ach.name) |ch| try std.testing.expect(ch != ':' and ch != '/');
