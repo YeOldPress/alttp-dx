@@ -300,6 +300,11 @@ fn ConfigurePpuSideSpace() void {
         s.left = kPpuExtraLeftRight;
         s.right = kPpuExtraLeftRight;
     }
+    // A room whose sides are one flat color carries it on into the margins,
+    // drawn by dungeon_wide.zig.
+    const plain = dungeon_wide.plainSides(zenvPpu());
+    if (plain.left) s.left = kPpuExtraLeftRight;
+    if (plain.right) s.right = kPpuExtraLeftRight;
     ppu_mod.PpuSetExtraSideSpace(zenvPpu(), s.left, s.right, s.bottom);
 }
 
@@ -504,7 +509,7 @@ pub export fn ZeldaDrawPpuFrame(pixel_buffer: [*]u8, pitch: usize, render_flags:
         ppu_mod.g_bg_tile_source_layers = overworld_wide.sourceLayers(ppu);
     } else {
         g_frame_tile_source = dungeon_wide.tileSource;
-        ppu_mod.g_bg_tile_source_layers = if (ppu.extraLeftRight != 0) dungeon_wide.sourceLayers() else 0;
+        ppu_mod.g_bg_tile_source_layers = if (ppu.extraLeftRight != 0) dungeon_wide.sourceLayers(ppu) else 0;
     }
     // The Select menu, with the HUD moved down, has BG3 to itself.
     ppu_mod.g_bg_tile_source_layers |= settings_menu.hudLayers(ppu);

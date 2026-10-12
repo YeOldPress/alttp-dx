@@ -208,8 +208,122 @@ fn lanternTile(ppu: *const Ppu, x: u32, y: u32) ?u16 {
     return ppu_mod.bgTilemapWord(ppu, 0, qx, qy);
 }
 
+// ------------------------------------------------------- plain-colored sides
+
+/// A room a screen wide whose sides are one flat color: a cave's dark
+/// ground past its walls, the sky round Agahnim's room at the top of the
+/// castle tower. The margins had nothing of the room to show and stayed
+/// black; here they carry that color on. A side counts when its outermost
+/// column is one tile all the way down and the tile is a single color, every
+/// pixel the same. Patterned floors and walls don't, so a room like that
+/// keeps the black sides a 4:3 room should. Layer 1 has to be one tile all
+/// over as well, since it's drawn into the margins as it is.
+///
+/// Past a side that counts, layer 2 carries on that side's edge column, row
+/// for row. It has to be the room's own tiles rather than what's behind
+/// them: the warp out after Agahnim turns the backdrop white at once and
+/// fades the room's colors after it, and the margins fade with the room this
+/// way. A room the margins already reach into keeps those parts as they are.
+pub const Sides = struct { left: bool = false, right: bool = false };
+var g_plain: Sides = .{};
+
+/// A room on the screen and nothing else going on: no scroll between rooms,
+/// no fall, no lantern. Playing in it, the item menu over it, dying in it
+/// (until the world's layers go off for the game over screen, which fills
+/// the width by itself), and Agahnim beaten in it, until the pyramid comes:
+/// the warp to it from the castle tower's top, and Ganon coming out of him
+/// in Ganon's Tower.
+fn inRoom() bool {
+    const module = vars.main_module_index.*;
+    const in_room = switch (module) {
+        7 => vars.submodule_index.* != 1 and vars.submodule_index.* != 2,
+        14 => vars.saved_module_for_menu.* == 7,
+        18 => vars.player_is_indoors.* != 0 and (vars.TM_copy.* | vars.TS_copy.*) & 3 != 0,
+        21 => vars.player_is_indoors.* != 0,
+        24 => vars.overworld_map_state.* < 3,
+        else => false,
+    };
+    return in_room and !lanternLit() and transitionLayers() == 0;
+}
+
+fn roomLeft() i32 {
+    return vars.room_bounds_x.v[vars.quadrant_fullsize_x.* >> 1];
+}
+
+fn roomRight() i32 {
+    return @as(i32, vars.room_bounds_x.v[(vars.quadrant_fullsize_x.* >> 1) + 2]) + 256;
+}
+
+/// Which sides of the room on screen are one flat color, to carry on into
+/// the margins.
+pub fn plainSides(ppu: *const Ppu) Sides {
+    if (!enabled() or !inRoom() or !layerIsOneTile(ppu, 0)) return .{};
+    return .{
+        .left = columnIsPlain(ppu, roomLeft()),
+        .right = columnIsPlain(ppu, roomRight() - 8),
+    };
+}
+
+/// Whether layer 2's column at x, in the scroll's coordinates, is one tile
+/// of a single color all the way down the screen.
+fn columnIsPlain(ppu: *const Ppu, wx: i32) bool {
+    const bg = &ppu.bgLayer[1];
+    const tx: u32 = @bitCast(@as(i32, bg.hScroll) + (wx - @as(i32, vars.BG2HOFS_copy2.*)));
+    // The rows on the screen's 224 lines: 28, or 29 when the scroll's
+    // partway into one.
+    const top: u32 = bg.vScroll & ~@as(u32, 7);
+    const rows: u32 = ((bg.vScroll + 223) >> 3) - (bg.vScroll >> 3) + 1;
+    const first = ppu_mod.bgTilemapWord(ppu, 1, tx, top);
+    var row: u32 = 1;
+    while (row < rows) : (row += 1) {
+        if (ppu_mod.bgTilemapWord(ppu, 1, tx, top +% row * 8) != first) return false;
+    }
+    return tileIsOneColor(ppu, 1, first & 0x3ff);
+}
+
+/// Whether every pixel of a 4-bits-a-pixel tile is the same color.
+fn tileIsOneColor(ppu: *const Ppu, layer: usize, tile: usize) bool {
+    const base: usize = ppu.bgLayer[layer].tileAdr + tile * 16;
+    // Each pair of bitplanes is one word a row, its planes in the low and
+    // high bytes: one color means every plane is all set or all clear.
+    for (0..8) |r| {
+        for ([_]usize{ r, r + 8 }) |at| {
+            const w = ppu.vram[(base + at) & 0x7fff];
+            const first = ppu.vram[(base + (at & 8)) & 0x7fff];
+            if (w != first) return false;
+            for ([_]u16{ w & 0xff, w >> 8 }) |plane| {
+                if (plane != 0 and plane != 0xff) return false;
+            }
+        }
+    }
+    return true;
+}
+
+/// Whether a layer's map is one tile, the same word, all over: a backdrop
+/// rather than anything with a shape.
+fn layerIsOneTile(ppu: *const Ppu, layer: u32) bool {
+    const first = ppu_mod.bgTilemapWord(ppu, layer, 0, 0);
+    var y: u32 = 0;
+    while (y < 64) : (y += 1) {
+        var x: u32 = 0;
+        while (x < 64) : (x += 1) {
+            if (ppu_mod.bgTilemapWord(ppu, layer, x * 8, y * 8) != first) return false;
+        }
+    }
+    return true;
+}
+
 /// Which background layers the PPU should ask `tileSource` for this frame.
-pub fn sourceLayers() u8 {
+pub fn sourceLayers(ppu: *const Ppu) u8 {
+    if (!enabled()) return 0;
+    g_plain = plainSides(ppu);
+    if (g_plain.left or g_plain.right) return 0b10;
+    return transitionLayers();
+}
+
+/// The layers drawn from here for a dark room's light, a fall into a room,
+/// or a scroll between rooms.
+fn transitionLayers() u8 {
     if (!enabled()) return 0;
     if (drawsLanternLight()) return 0b01;
     if (fallingIn()) return 0b11;
@@ -233,6 +347,16 @@ pub fn tileSource(ppu: *const Ppu, layer: u32, x: u32, y: u32) ?u16 {
     const full_y: i32 = if (layer == 0) vars.BG1VOFS_copy2.* else vars.BG2VOFS_copy2.*;
     const wx = full_x + @as(i32, @as(i16, @bitCast(@as(u16, @truncate(x -% bg.hScroll)))));
     const wy = full_y + @as(i32, @as(i16, @bitCast(@as(u16, @truncate(y -% bg.vScroll)))));
+    if (layer == 1 and (g_plain.left or g_plain.right)) {
+        // Past a plain side, that side's edge column; anything else, VRAM.
+        const from: i32 = if (wx < roomLeft() and g_plain.left)
+            roomLeft()
+        else if (wx >= roomRight() and g_plain.right)
+            roomRight() - 8
+        else
+            return null;
+        return ppu_mod.bgTilemapWord(ppu, 1, x +% @as(u32, @bitCast(from - wx)), y);
+    }
     if (g_shown) |so| {
         if (tileIn(so, wx, wy)) |i|
             return (if (layer == 0) vars.dung_bg1 else vars.dung_bg2)[i];
@@ -295,7 +419,7 @@ pub fn transitionMargins(max: c_int, end_left: c_int, end_right: c_int, end_cam_
     }.f;
     // Until the next room's in its buffers, the room being left is all
     // there is, and its margins stay as they were.
-    if (!within_room and sourceLayers() == 0) {
+    if (!within_room and transitionLayers() == 0) {
         // Not yet: the room being left is still the one in the buffers.
         if (vars.subsubmodule_index.* >= 2) return null;
         return .{ .left = cap(s.left, max), .right = cap(s.right, max) };
