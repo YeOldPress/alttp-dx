@@ -45,6 +45,14 @@ pub fn noteAssist() void {
     g_assisted = true;
 }
 
+/// Moments the save keeps no trace of, reported by the game code where they
+/// happen and unlocked after the frame, under the same rules as the rest.
+var g_happened: std.EnumSet(Id) = .{};
+
+pub fn happened(id: Id) void {
+    g_happened.insert(id);
+}
+
 // ------------------------------------------------------------- the checks
 
 fn saveByte(off: u16) u8 {
@@ -170,6 +178,8 @@ var g_last_module: u8 = 0;
 /// Runs after each frame of the port's own game.
 pub fn afterFrame() void {
     if (!enabled) return;
+    // Reported this frame: kept only until it's been looked at.
+    defer g_happened = .{};
     const module = vars.main_module_index.*;
     defer g_last_module = module;
     if (!inPlay(module)) {
@@ -181,6 +191,8 @@ pub fn afterFrame() void {
     if (g_assisted) return;
 
     watchBossRoom(module);
+    var it = g_happened.iterator();
+    while (it.next()) |id| unlock(id);
 
     // Ganon down: the game falls into the Triforce's room.
     if (module == 25 and g_last_module != 25) {

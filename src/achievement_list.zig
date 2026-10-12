@@ -73,6 +73,8 @@ pub const Id = enum {
     zora,
     sahasrahla,
     bee,
+    fish,
+    sweeping_lady,
 
     untouchable,
     flawless_ganon,
@@ -140,6 +142,8 @@ pub const kList = [_]Achievement{
     a(.zora, .secrets, "Royal Purchase", "Buy the Zora's Flippers from King Zora.", hud.kHudItemFlippers[1]),
     a(.sahasrahla, .secrets, "Elder's Gift", "Show Sahasrahla the Pendant of Courage.", hud.kHudItemBoots[1]),
     a(.bee, .secrets, "Bee Keeper", "Catch a bee in a bottle.", hud.kHudItemBottles[7]),
+    a(.fish, .secrets, "Catch of the Day", "Throw a fish to the Bottle Merchant in Kakariko.", hud.kHudItemBottles[2]),
+    a(.sweeping_lady, .secrets, "Spring Cleaning", "Sprinkle Magic Powder on the woman sweeping in Kakariko.", hud.kHudItemMushroom[2]),
 
     a(.untouchable, .challenges, "Untouchable", "Defeat a dungeon's boss without being hit.", hud.kHudItemShield[1]),
     a(.flawless_ganon, .challenges, "Flawless Victory", "Defeat Ganon without being hit.", hud.kHudItemShield[2]),

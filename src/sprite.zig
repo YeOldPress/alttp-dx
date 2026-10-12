@@ -17,6 +17,7 @@ const tagalong = @import("tagalong.zig");
 const tile_detect = @import("tile_detect.zig");
 const zelda_rtl = @import("zelda_rtl.zig");
 const main_mod = @import("main.zig");
+const achievements = @import("achievements.zig");
 
 const g_ram = &vars.g_ram;
 const OamEnt = vars.OamEnt;
@@ -2291,6 +2292,8 @@ pub export fn Sprite_ApplyCalculatedDamage(k: c_int, a: c_int) callconv(.c) void
 pub export fn Sprite_GiveDamage(k: c_int, dmg: u8, r0_hit_timer: u8) callconv(.c) void {
     const ki: usize = @intCast(k);
     if (dmg == 249) {
+        // The woman sweeping in Kakariko, powdered into a fairy.
+        if (vars.sprite_type[ki] == 0x2a) achievements.happened(.sweeping_lady);
         Sprite_Func18(k, 0xe3);
         return;
     }

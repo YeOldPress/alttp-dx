@@ -12,6 +12,7 @@ const v = @import("variables.zig");
 const a = @import("sprite_main_abi.zig");
 const t = @import("sprite_main_tables.zig");
 const features = @import("features.zig");
+const achievements = @import("achievements.zig");
 const SpriteSpawnInfo = a.SpriteSpawnInfo;
 const PrepOamCoordsRet = a.PrepOamCoordsRet;
 const SpriteHitBox = a.SpriteHitBox;
@@ -12754,6 +12755,7 @@ pub export fn Sprite_BottleVendor(k: c_int) callconv(.c) void {
             } else {
                 v.sprite_state[j & 0xf] = 0;
                 a.BottleMerchant_BuyFish(k);
+                achievements.happened(.fish);
             }
             v.sprite_E[i] = 0;
             v.sprite_ai_state[i] = 0;
