@@ -21930,13 +21930,17 @@ pub export fn ZoraKing_Draw(k: c_int) callconv(.c) void {
         const j: usize = g + (3 - n);
         const x = @as(c_int, t.kZoraKing_Draw_X1[j]) + @as(c_int, info.x);
         const y = @as(c_int, t.kZoraKing_Draw_Y1[j]) + @as(c_int, info.y);
+        // The low bit of the extended byte is x's 9th. Left at 0, a piece
+        // past x 256 wrapped round to the far left, which only shows in
+        // widescreen: the camera can stop with him near the old right edge,
+        // where at 4:3 he was always mid-screen.
         cm.setOamPlain(
             oam + n,
             @truncate(@as(u32, @bitCast(x))),
             @truncate(@as(u32, @bitCast(y))),
             t.kZoraKing_Draw_Char1[j],
             t.kZoraKing_Draw_Flags1[j] | 0x24,
-            2,
+            2 | @as(u8, @truncate(@as(u32, @bitCast(x)) >> 8 & 1)),
         );
     }
 }
