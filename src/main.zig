@@ -5,13 +5,14 @@ const builtin = @import("builtin");
 const c = @import("sdl.zig").c;
 const config = @import("config.zig");
 const util = @import("util.zig");
-const opengl = @import("opengl.zig");
 const audio = @import("audio.zig");
 const rumble = @import("rumble.zig");
 const menu = @import("menu.zig");
 const settings_menu = @import("settings_menu.zig");
 const title_dx = @import("title_dx.zig");
 const achievements = @import("achievements.zig");
+const crt = @import("crt.zig");
+const crt_gpu = @import("crt_gpu.zig");
 const rando = @import("rando.zig");
 const tracker = @import("tracker.zig");
 const frame_capture = @import("frame_capture.zig");
@@ -21,7 +22,14 @@ const snes_pkg = @import("snes");
 const ppu_mod = snes_pkg.ppu;
 const ppu_types = snes_pkg.ppu_types;
 
-const RendererFuncs = opengl.RendererFuncs;
+/// How frames reach the screen: SDL's renderer, the one implementation, and
+/// the randomizer's frame through the same calls.
+const RendererFuncs = extern struct {
+    Initialize: ?*const fn (window: ?*c.SDL_Window) callconv(.c) bool,
+    Destroy: ?*const fn () callconv(.c) void,
+    BeginDraw: ?*const fn (width: c_int, height: c_int, pixels: *[*c]u8, pitch: *c_int) callconv(.c) void,
+    EndDraw: ?*const fn () callconv(.c) void,
+};
 const MemBlk = util.MemBlk;
 const Ppu = ppu_types.Ppu;
 const g_zenv = &rtl.g_zenv;
@@ -130,8 +138,6 @@ const kGamepadBtn_Count: usize = 17;
 
 const kOutputMethod_SDL: u8 = 0;
 const kOutputMethod_SDLSoftware: u8 = 1;
-const kOutputMethod_OpenGL: u8 = 2;
-const kOutputMethod_OpenGL_ES: u8 = 3;
 
 const kSaveLoad_Save: c_int = 0;
 const kSaveLoad_Load: c_int = 1;
@@ -456,7 +462,62 @@ fn DrawRandoFrame() void {
     g_renderer_funcs.BeginDraw.?(rando.canvasWidth(), rando.canvasHeight(), &pixel_buffer, &pitch);
     if (pixel_buffer == null) return;
     rando.draw(pixel_buffer, @intCast(pitch));
+    g_rando_frame = true;
+    defer g_rando_frame = false;
     g_renderer_funcs.EndDraw.?();
+}
+
+fn crtPreset() crt.Preset {
+    return std.enums.fromInt(crt.Preset, config.g_config.crt_filter) orelse .off;
+}
+
+/// Set while a frame of the port's own is being shown, which the CRT filter,
+/// the curve and the bezel draw over; the randomizer's frame, tracker and
+/// all, goes without.
+var g_port_frame = false;
+/// The same for a randomizer seed's frame, whose game alone gets the look:
+/// the tracker beside or over it stays crisp.
+var g_rando_frame = false;
+
+fn crtWanted() bool {
+    return crtPreset() != .off or config.g_config.crt_curvature != 0 or config.g_config.crt_bezel or
+        config.g_config.pixel_scaling == 1 or config.g_config.pixel_scaling == 3;
+}
+
+fn crtTuning() crt.Tuning {
+    const pc = struct {
+        fn f(v: u8) f32 {
+            return @as(f32, @floatFromInt(v)) / 100;
+        }
+    }.f;
+    return .{
+        .scanlines = pc(config.g_config.crt_scanlines),
+        .mask = pc(config.g_config.crt_mask),
+        .glow = pc(config.g_config.crt_glow),
+        .afterglow = pc(config.g_config.crt_afterglow),
+    };
+}
+
+/// How many screen pixels to a SNES pixel the frame's drawn at before the
+/// last bit of the way to the window: for the CRT looks, enough for their
+/// lines and phosphors; for a plain picture, the nearest whole number to the
+/// window's, so the last step's smoothing is a sliver at each pixel's edge.
+fn frameScale() u8 {
+    const h = pictureHeight();
+    // xBR, like the CRT looks, wants room to draw its slopes in.
+    if (crtPreset() != .off or config.g_config.pixel_scaling == 3) return crt.scaleFor(h, g_snes_height);
+    const fit = @divTrunc(h + @divTrunc(g_snes_height, 2), @max(g_snes_height, 1));
+    return @intCast(std.math.clamp(fit, 1, crt.kMaxScale));
+}
+
+/// The window's height in pixels that the picture really fills, letterboxed
+/// to its shape unless it's stretched.
+fn pictureHeight() c_int {
+    var w: c_int = 0;
+    var h: c_int = 0;
+    if (g_renderer == null or !c.SDL_GetRenderOutputSize(g_renderer, &w, &h)) return g_snes_height;
+    if (config.g_config.ignore_aspect_ratio) return h;
+    return @min(h, @divTrunc(w * g_snes_height, @max(g_snes_width, 1)));
 }
 
 fn DrawPpuFrameWithPerf() void {
@@ -464,13 +525,16 @@ fn DrawPpuFrameWithPerf() void {
     const render_scale = ppu_mod.PpuGetCurrentRenderScale(ppu, g_ppu_render_flags);
     var pixel_buffer: [*c]u8 = null;
     var pitch: c_int = 0;
+    g_renderer_funcs.BeginDraw.?(g_snes_width * render_scale, g_snes_height * render_scale, &pixel_buffer, &pitch);
+    if (pixel_buffer == null) return;
+    drawFrame(pixel_buffer, pitch, render_scale);
+    g_port_frame = true;
+    defer g_port_frame = false;
+    g_renderer_funcs.EndDraw.?();
+}
 
-    g_renderer_funcs.BeginDraw.?(
-        g_snes_width * render_scale,
-        g_snes_height * render_scale,
-        &pixel_buffer,
-        &pitch,
-    );
+/// The game's frame and everything drawn over it, into `pixel_buffer`.
+fn drawFrame(pixel_buffer: [*c]u8, pitch: c_int, render_scale: c_int) void {
     if (g_display_perf or config.g_config.display_perf_title) {
         const before = c.SDL_GetPerformanceCounter();
         ZeldaDrawPpuFrame(pixel_buffer, @intCast(pitch), g_ppu_render_flags);
@@ -490,7 +554,6 @@ fn DrawPpuFrameWithPerf() void {
     achievements.drawOver(pixel_buffer, @intCast(pitch), @intCast(g_snes_width), @intCast(g_snes_height), @intCast(render_scale));
     if (g_display_perf)
         RenderNumber(pixel_buffer + @as(usize, @intCast(pitch * render_scale)), @intCast(pitch), g_curr_fps, render_scale == 4);
-    g_renderer_funcs.EndDraw.?();
 }
 
 var g_audio_mutex: ?*c.SDL_Mutex = null;
@@ -538,15 +601,36 @@ var g_renderer: ?*c.SDL_Renderer = null;
 var g_texture: ?*c.SDL_Texture = null;
 var g_sdl_renderer_rect: c.SDL_Rect = std.mem.zeroes(c.SDL_Rect);
 
+fn createGpuRenderer() ?*c.SDL_Renderer {
+    const props = c.SDL_CreateProperties();
+    defer c.SDL_DestroyProperties(props);
+    _ = c.SDL_SetStringProperty(props, c.SDL_PROP_RENDERER_CREATE_NAME_STRING, "gpu");
+    _ = c.SDL_SetPointerProperty(props, c.SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, g_window);
+    _ = c.SDL_SetBooleanProperty(props, c.SDL_PROP_RENDERER_CREATE_GPU_SHADERS_SPIRV_BOOLEAN, true);
+    _ = c.SDL_SetBooleanProperty(props, c.SDL_PROP_RENDERER_CREATE_GPU_SHADERS_MSL_BOOLEAN, true);
+    // HDR: drawing in linear light, which can go past white. Without the
+    // setting, or if it won't have it, the usual.
+    if (config.g_config.hdr) {
+        _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_RENDERER_CREATE_OUTPUT_COLORSPACE_NUMBER, c.SDL_COLORSPACE_SRGB_LINEAR);
+        if (c.SDL_CreateRendererWithProperties(props)) |r| return r;
+        _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_RENDERER_CREATE_OUTPUT_COLORSPACE_NUMBER, c.SDL_COLORSPACE_SRGB);
+    }
+    return c.SDL_CreateRendererWithProperties(props);
+}
+
 fn SdlRenderer_Init(window: ?*c.SDL_Window) callconv(.c) bool {
     _ = window;
-    if (config.g_config.shader != null)
-        std.debug.print("Warning: Shaders are supported only with the OpenGL backend\n", .{});
 
     // SDL3 picks the backend by name and sets vsync separately; the old
     // SDL_RENDERER_* creation flags are gone.
     const software = config.g_config.output_method == kOutputMethod_SDLSoftware;
-    const renderer = c.SDL_CreateRenderer(g_window, if (software) c.SDL_SOFTWARE_RENDERER else null);
+    // SDL's GPU renderer first, which the CRT filter's shader runs on, said
+    // to take SPIR-V and MSL so it settles on Vulkan or Metal; anything that
+    // can't have it gets SDL's usual pick, and the filter without the shader.
+    const renderer = if (software)
+        c.SDL_CreateRenderer(g_window, c.SDL_SOFTWARE_RENDERER)
+    else
+        createGpuRenderer() orelse c.SDL_CreateRenderer(g_window, null);
     if (renderer == null) {
         _ = printf("Failed to create renderer: %s\n", c.SDL_GetError());
         return false;
@@ -570,6 +654,8 @@ fn SdlRenderer_Init(window: ?*c.SDL_Window) callconv(.c) bool {
         _ = printf("\n");
     }
     g_renderer = renderer;
+    crt_gpu.init(renderer.?);
+    crt_gpu.report(renderer.?);
     if (!config.g_config.ignore_aspect_ratio)
         _ = c.SDL_SetRenderLogicalPresentation(renderer, g_snes_width, g_snes_height, c.SDL_LOGICAL_PRESENTATION_LETTERBOX);
 
@@ -577,30 +663,51 @@ fn SdlRenderer_Init(window: ?*c.SDL_Window) callconv(.c) bool {
     // A randomizer seed draws at double size, with room for the tracker.
     const tex_w = if (rando.g_active) rando.kMaxGameW + rando.kMaxPanelW else g_snes_width * tex_mult;
     const tex_h = if (rando.g_active) rando.kGameH else g_snes_height * tex_mult;
-    g_texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_ARGB8888, c.SDL_TEXTUREACCESS_STREAMING, tex_w, tex_h);
-    if (g_texture == null) {
-        _ = printf("Failed to create texture: %s\n", c.SDL_GetError());
-        return false;
-    }
     // SDL_HINT_RENDER_SCALE_QUALITY was replaced by a per-texture scale mode,
-    // which defaults to linear, so nearest has to be asked for explicitly.
-    _ = c.SDL_SetTextureScaleMode(g_texture, if (config.g_config.linear_filtering)
-        c.SDL_SCALEMODE_LINEAR
-    else
-        c.SDL_SCALEMODE_NEAREST);
-    // SDL3 gives a texture in an alpha-carrying format SDL_BLENDMODE_BLEND by
-    // default, where SDL2 used SDL_BLENDMODE_NONE. The PPU leaves the alpha
-    // byte at zero, so blending would make every frame invisible.
-    _ = c.SDL_SetTextureBlendMode(g_texture, c.SDL_BLENDMODE_NONE);
-    return true;
+    // which defaults to linear, so nearest is asked for in ensureTexture.
+    return ensureTexture(tex_w, tex_h);
 }
 
 fn SdlRenderer_Destroy() callconv(.c) void {
+    crt_gpu.destroy();
     c.SDL_DestroyTexture(g_texture);
     c.SDL_DestroyRenderer(g_renderer);
 }
 
+/// How the frame's scaled to the window: smooth if asked for. Sharp scaling
+/// and the CRT filter set their own as they draw.
+fn textureScaleMode() c.SDL_ScaleMode {
+    return if (config.g_config.pixel_scaling == 2) c.SDL_SCALEMODE_LINEAR else c.SDL_SCALEMODE_NEAREST;
+}
+
+var g_texture_w: c_int = 0;
+var g_texture_h: c_int = 0;
+
+/// A texture at least this big, made afresh when a frame wants one bigger
+/// than the last.
+fn ensureTexture(width: c_int, height: c_int) bool {
+    if (g_texture != null and width <= g_texture_w and height <= g_texture_h) return true;
+    const w = @max(width, g_texture_w);
+    const h = @max(height, g_texture_h);
+    // XRGB: the PPU leaves the top byte at zero, and the CRT filter's blends
+    // need the frame opaque.
+    const t = c.SDL_CreateTexture(g_renderer, c.SDL_PIXELFORMAT_XRGB8888, c.SDL_TEXTUREACCESS_STREAMING, w, h) orelse {
+        _ = printf("Failed to create texture: %s\n", c.SDL_GetError());
+        return false;
+    };
+    if (g_texture) |old| c.SDL_DestroyTexture(old);
+    g_texture = t;
+    g_texture_w = w;
+    g_texture_h = h;
+    _ = c.SDL_SetTextureScaleMode(t, textureScaleMode());
+    // Drawn over what's there, not blended with it.
+    _ = c.SDL_SetTextureBlendMode(t, c.SDL_BLENDMODE_NONE);
+    return true;
+}
+
 fn SdlRenderer_BeginDraw(width: c_int, height: c_int, pixels: *[*c]u8, pitch: *c_int) callconv(.c) void {
+    pixels.* = null;
+    if (!ensureTexture(width, height)) return;
     g_sdl_renderer_rect.w = width;
     g_sdl_renderer_rect.h = height;
     if (!c.SDL_LockTexture(g_texture, &g_sdl_renderer_rect, @ptrCast(pixels), pitch)) {
@@ -619,8 +726,61 @@ fn SdlRenderer_EndDraw() callconv(.c) void {
         .w = @floatFromInt(g_sdl_renderer_rect.w),
         .h = @floatFromInt(g_sdl_renderer_rect.h),
     };
-    _ = c.SDL_RenderTexture(g_renderer, g_texture, &src, null);
+    if (!((g_port_frame or g_rando_frame) and crtWanted() and presentCrt(src))) {
+        _ = c.SDL_SetTextureScaleMode(g_texture, textureScaleMode());
+        _ = c.SDL_RenderTexture(g_renderer, g_texture, &src, null);
+    }
     _ = c.SDL_RenderPresent(g_renderer); // vsyncs to 60 FPS?
+}
+
+/// Shows the frame through the CRT filter, sharp scaling or xBR, with the
+/// curve and the bezel. For a randomizer seed, the game part alone, and the
+/// tracker beside it or over it as it is. False if it couldn't, for the
+/// plain frame instead.
+fn presentCrt(src: c.SDL_FRect) bool {
+    const r = g_renderer.?;
+    // The picture's area in the renderer's own coordinates, and what that
+    // comes to on the screen.
+    var lw: c_int = 0;
+    var lh: c_int = 0;
+    var mode: c.SDL_RendererLogicalPresentation = c.SDL_LOGICAL_PRESENTATION_DISABLED;
+    _ = c.SDL_GetRenderLogicalPresentation(r, &lw, &lh, &mode);
+    if (mode == c.SDL_LOGICAL_PRESENTATION_DISABLED) _ = c.SDL_GetCurrentRenderOutputSize(r, &lw, &lh);
+    var pixels: c.SDL_FRect = undefined;
+    if (!c.SDL_GetRenderLogicalPresentationRect(r, &pixels))
+        pixels = .{ .x = 0, .y = 0, .w = @floatFromInt(lw), .h = @floatFromInt(lh) };
+    const fw: f32 = @floatFromInt(lw);
+    const to_px = pixels.w / @max(fw, 1);
+
+    // The game's part of the frame, as the frame's pixels and as the
+    // renderer's coordinates, which for a seed are half of those.
+    var game_src = src;
+    var snes_w = g_snes_width;
+    var snes_h = g_snes_height;
+    var area = c.SDL_FRect{ .x = 0, .y = 0, .w = fw, .h = @floatFromInt(lh) };
+    const lay: ?rando.Layout = if (g_rando_frame) rando.layout() else null;
+    const k: f32 = rando.kScale;
+    if (lay) |l| {
+        game_src = .{ .x = @floatFromInt(l.game.x), .y = 0, .w = @floatFromInt(l.game.w), .h = @floatFromInt(l.game.h) };
+        snes_w = @intCast(l.game.w / rando.kScale);
+        snes_h = @intCast(l.game.h / rando.kScale);
+        area = .{ .x = game_src.x / k, .y = 0, .w = game_src.w / k, .h = game_src.h / k };
+    }
+    const f = crt_gpu.draw(r, g_texture.?, game_src, snes_w, snes_h, crtPreset(), crtTuning(), frameScale(), config.g_config.crt_bezel, config.g_config.pixel_scaling == 3, crt_gpu.hdrOf(r)) orelse return false;
+    const game_px = c.SDL_FRect{ .x = pixels.x + area.x * to_px, .y = pixels.y + area.y * to_px, .w = area.w * to_px, .h = area.h * to_px };
+    crt_gpu.present(r, f, area, game_px, @as(f32, @floatFromInt(config.g_config.crt_curvature)) / 100, config.g_config.crt_bezel);
+
+    // The tracker, crisp: the panel beside the game, or the box over it.
+    if (lay) |l| {
+        _ = c.SDL_SetTextureScaleMode(g_texture, c.SDL_SCALEMODE_NEAREST);
+        for ([_]?rando.Rect{ l.panel, l.overlay }) |maybe| {
+            const p = maybe orelse continue;
+            const from = c.SDL_FRect{ .x = @floatFromInt(p.x), .y = @floatFromInt(p.y), .w = @floatFromInt(p.w), .h = @floatFromInt(p.h) };
+            const to = c.SDL_FRect{ .x = from.x / k, .y = from.y / k, .w = from.w / k, .h = from.h / k };
+            _ = c.SDL_RenderTexture(r, g_texture, &from, &to);
+        }
+    }
+    return true;
 }
 
 const kSdlRendererFuncs = RendererFuncs{
@@ -853,14 +1013,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     const window_width = if (custom_size) config.g_config.window_width else @as(c_int, g_current_window_scale) * g_snes_width;
     const window_height = if (custom_size) config.g_config.window_height else @as(c_int, g_current_window_scale) * g_snes_height;
 
-    if (config.g_config.output_method == kOutputMethod_OpenGL or
-        config.g_config.output_method == kOutputMethod_OpenGL_ES)
-    {
-        g_win_flags |= c.SDL_WINDOW_OPENGL;
-        opengl.OpenGLRenderer_Create(&g_renderer_funcs, config.g_config.output_method == kOutputMethod_OpenGL_ES);
-    } else {
-        g_renderer_funcs = kSdlRendererFuncs;
-    }
+    g_renderer_funcs = kSdlRendererFuncs;
 
     // SDL3 drops the x/y arguments; an unpositioned window is the default.
     const window = c.SDL_CreateWindow(kWindowTitle, window_width, window_height, g_win_flags);
@@ -1204,7 +1357,7 @@ pub fn applyDisplaySettings() void {
         @as(u32, @intFromBool(config.g_config.new_renderer)) * kPpuRenderFlags_NewRenderer |
         @as(u32, @intFromBool(config.g_config.no_sprite_limits)) * kPpuRenderFlags_NoSpriteLimits;
     if (g_texture) |t|
-        _ = c.SDL_SetTextureScaleMode(t, if (config.g_config.linear_filtering) c.SDL_SCALEMODE_LINEAR else c.SDL_SCALEMODE_NEAREST);
+        _ = c.SDL_SetTextureScaleMode(t, textureScaleMode());
 }
 
 fn HandleCommand(j: u32, pressed: bool) void {

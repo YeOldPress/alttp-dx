@@ -1,0 +1,234 @@
+#pragma clang diagnostic ignored "-Wmissing-prototypes"
+
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+// Implementation of signed integer mod accurate to SPIR-V specification
+template<typename Tx, typename Ty>
+inline Tx spvSMod(Tx x, Ty y)
+{
+    Tx remainder = x - y * (x / y);
+    return select(Tx(remainder + y), remainder, remainder == 0 || (x >= 0) == (y >= 0));
+}
+
+struct Params
+{
+    float4 src;
+    float4 dst;
+    float4 beam;
+    float4 signal;
+};
+
+struct main0_out
+{
+    float4 o_color [[color(0)]];
+};
+
+struct main0_in
+{
+    float4 v_color [[user(locn0)]];
+    float2 v_uv [[user(locn1)]];
+};
+
+static inline __attribute__((always_inline))
+float3 fetch(thread const float& x, thread const float& y, constant Params& _51, texture2d<float> u_texture, sampler u_textureSmplr)
+{
+    float2 uv = (float2(x, y) + float2(0.5)) * _51.src.zw;
+    return u_texture.sample(u_textureSmplr, uv).xyz;
+}
+
+static inline __attribute__((always_inline))
+float3 lineColor(thread const float& x, thread const float& y, constant Params& _51, texture2d<float> u_texture, sampler u_textureSmplr)
+{
+    float px = x - 0.5;
+    float x0 = floor(px);
+    float f = px - x0;
+    float k = fast::clamp(((f - 0.5) * 4.0) + 0.5, 0.0, 1.0);
+    float param = x0;
+    float param_1 = y;
+    float param_2 = x0 + 1.0;
+    float param_3 = y;
+    float3 sharp = mix(fetch(param, param_1, _51, u_texture, u_textureSmplr), fetch(param_2, param_3, _51, u_texture, u_textureSmplr), float3(k));
+    bool _110 = _51.signal.x <= 0.0;
+    bool _117;
+    if (_110)
+    {
+        _117 = _51.signal.y <= 0.0;
+    }
+    else
+    {
+        _117 = _110;
+    }
+    if (_117)
+    {
+        return sharp;
+    }
+    float n = floor(x);
+    float3 yiq = float3x3(float3(0.2989999949932098388671875, 0.596000015735626220703125, 0.2109999954700469970703125), float3(0.58700001239776611328125, -0.273999989032745361328125, -0.5230000019073486328125), float3(0.114000000059604644775390625, -0.3219999969005584716796875, 0.3120000064373016357421875)) * sharp;
+    float l = _51.signal.x;
+    float param_4 = n - 1.0;
+    float param_5 = y;
+    float param_6 = n;
+    float param_7 = y;
+    float param_8 = n + 1.0;
+    float param_9 = y;
+    float luma = (((float3x3(float3(0.2989999949932098388671875, 0.596000015735626220703125, 0.2109999954700469970703125), float3(0.58700001239776611328125, -0.273999989032745361328125, -0.5230000019073486328125), float3(0.114000000059604644775390625, -0.3219999969005584716796875, 0.3120000064373016357421875)) * fetch(param_4, param_5, _51, u_texture, u_textureSmplr)).x * (l * 0.5)) + ((float3x3(float3(0.2989999949932098388671875, 0.596000015735626220703125, 0.2109999954700469970703125), float3(0.58700001239776611328125, -0.273999989032745361328125, -0.5230000019073486328125), float3(0.114000000059604644775390625, -0.3219999969005584716796875, 0.3120000064373016357421875)) * fetch(param_6, param_7, _51, u_texture, u_textureSmplr)).x * (1.0 - l))) + ((float3x3(float3(0.2989999949932098388671875, 0.596000015735626220703125, 0.2109999954700469970703125), float3(0.58700001239776611328125, -0.273999989032745361328125, -0.5230000019073486328125), float3(0.114000000059604644775390625, -0.3219999969005584716796875, 0.3120000064373016357421875)) * fetch(param_8, param_9, _51, u_texture, u_textureSmplr)).x * (l * 0.5));
+    float2 chroma = yiq.yz;
+    if (_51.signal.y > 0.0)
+    {
+        float2 sum = float2(0.0);
+        float total = 0.0;
+        for (int i = -4; i <= 4; i++)
+        {
+            float d = float(i) / _51.signal.y;
+            float w = exp(((-0.5) * d) * d);
+            float param_10 = n + float(i);
+            float param_11 = y;
+            sum += ((float3x3(float3(0.2989999949932098388671875, 0.596000015735626220703125, 0.2109999954700469970703125), float3(0.58700001239776611328125, -0.273999989032745361328125, -0.5230000019073486328125), float3(0.114000000059604644775390625, -0.3219999969005584716796875, 0.3120000064373016357421875)) * fetch(param_10, param_11, _51, u_texture, u_textureSmplr)).yz * w);
+            total += w;
+        }
+        chroma = sum / float2(total);
+    }
+    return float3x3(float3(1.0), float3(0.95599997043609619140625, -0.272000014781951904296875, -1.10599994659423828125), float3(0.620999991893768310546875, -0.647000014781951904296875, 1.70299994945526123046875)) * float3(mix(yiq.x, luma, step(9.9999997473787516355514526367188e-05, l)), chroma);
+}
+
+static inline __attribute__((always_inline))
+float3 toLinear(thread const float3& c)
+{
+    return powr(fast::max(c, float3(0.0)), float3(2.400000095367431640625));
+}
+
+static inline __attribute__((always_inline))
+float3 spot(thread const float& d, thread const float3& w)
+{
+    float3 t = float3(d) / w;
+    return exp((t * (-0.5)) * t) / (w * 2.5066282749176025390625);
+}
+
+static inline __attribute__((always_inline))
+float3 beamAt(thread const float& x, thread const float& y, constant Params& _51, texture2d<float> u_texture, sampler u_textureSmplr)
+{
+    float py = y - 0.5;
+    float y0 = floor(py);
+    float t = py - y0;
+    float param = x;
+    float param_1 = y0;
+    float3 param_2 = lineColor(param, param_1, _51, u_texture, u_textureSmplr);
+    float3 c0 = toLinear(param_2);
+    if (_51.beam.y <= 0.0)
+    {
+        float param_3 = x;
+        float param_4 = floor(y);
+        float3 param_5 = lineColor(param_3, param_4, _51, u_texture, u_textureSmplr);
+        return toLinear(param_5);
+    }
+    float param_6 = x;
+    float param_7 = y0 + 1.0;
+    float3 param_8 = lineColor(param_6, param_7, _51, u_texture, u_textureSmplr);
+    float3 c1 = toLinear(param_8);
+    float3 w0 = mix(float3(_51.beam.x), float3(_51.beam.y), sqrt(c0));
+    float3 w1 = mix(float3(_51.beam.x), float3(_51.beam.y), sqrt(c1));
+    float param_9 = t;
+    float3 param_10 = w0;
+    float param_11 = 1.0 - t;
+    float3 param_12 = w1;
+    return (c0 * spot(param_9, param_10)) + (c1 * spot(param_11, param_12));
+}
+
+static inline __attribute__((always_inline))
+float3 mask(thread const float2& op, constant Params& _51)
+{
+    int type = int(_51.dst.z + 0.5);
+    float dark = _51.dst.w;
+    int x = int(op.x);
+    int y = int(op.y);
+    float scale = _51.dst.y * _51.src.w;
+    if (type == 1)
+    {
+        int c = spvSMod(x, 3);
+        return mix(float3(dark), float3(1.0), float3(float(c == 0), float(c == 1), float(c == 2)));
+    }
+    if (type == 2)
+    {
+        int c_1 = spvSMod(x, 3);
+        float3 m = mix(float3(dark), float3(1.0), float3(float(c_1 == 0), float(c_1 == 1), float(c_1 == 2)));
+        int h = max(int(scale + 0.5), 2);
+        int shift = spvSMod(x / 3, 2) * (h / 2);
+        if (spvSMod(y + shift, h) == (h - 1))
+        {
+            m *= dark;
+        }
+        return m;
+    }
+    if (type == 3)
+    {
+        int c_2 = spvSMod(x + (spvSMod(y, 2) * 2), 3);
+        return mix(float3(dark), float3(1.0), float3(float(c_2 == 0), float(c_2 == 1), float(c_2 == 2)));
+    }
+    if (type == 4)
+    {
+        int s = max(int(scale + 0.5), 2);
+        bool _508 = spvSMod(x, s) == (s - 1);
+        bool _518;
+        if (!_508)
+        {
+            _518 = spvSMod(y, s) == (s - 1);
+        }
+        else
+        {
+            _518 = _508;
+        }
+        bool gap = _518;
+        return float3(gap ? dark : 1.0);
+    }
+    return float3(1.0);
+}
+
+static inline __attribute__((always_inline))
+float3 toGamma(thread const float3& c)
+{
+    return powr(fast::max(c, float3(0.0)), float3(0.4545454680919647216796875));
+}
+
+fragment main0_out main0(main0_in in [[stage_in]], constant Params& _51 [[buffer(0)]], texture2d<float> u_texture [[texture(0)]], sampler u_textureSmplr [[sampler(0)]])
+{
+    main0_out out = {};
+    float2 pos = in.v_uv * _51.src.xy;
+    float3 col;
+    if (_51.signal.z != 0.0)
+    {
+        float param = pos.x + _51.signal.z;
+        float param_1 = pos.y;
+        col.x = beamAt(param, param_1, _51, u_texture, u_textureSmplr).x;
+        float param_2 = pos.x;
+        float param_3 = pos.y;
+        col.y = beamAt(param_2, param_3, _51, u_texture, u_textureSmplr).y;
+        float param_4 = pos.x - _51.signal.z;
+        float param_5 = pos.y;
+        col.z = beamAt(param_4, param_5, _51, u_texture, u_textureSmplr).z;
+    }
+    else
+    {
+        float param_6 = pos.x;
+        float param_7 = pos.y;
+        col = beamAt(param_6, param_7, _51, u_texture, u_textureSmplr);
+    }
+    float2 param_8 = in.v_uv * _51.dst.xy;
+    col *= mask(param_8, _51);
+    col *= _51.beam.z;
+    float2 d = (in.v_uv * 2.0) - float2(1.0);
+    col *= fast::max(1.0 - ((_51.beam.w * dot(d, d)) * 0.5), 0.0);
+    if (_51.signal.w > 0.0)
+    {
+        out.o_color = float4(col * _51.signal.w, 1.0) * in.v_color;
+    }
+    else
+    {
+        float3 param_9 = col;
+        out.o_color = float4(toGamma(param_9), 1.0) * in.v_color;
+    }
+    return out;
+}
+

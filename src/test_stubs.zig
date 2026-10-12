@@ -493,14 +493,3 @@ export fn opus_decoder_ctl(st: *anyopaque, request: c_int) c_int {
     stub("opus_decoder_ctl");
 }
 
-// third_party/stb, whose implementation unit the test binary does not compile.
-export fn stbi_load(
-    filename: [*:0]const u8,
-    x: *c_int,
-    y: *c_int,
-    comp: *c_int,
-    req_comp: c_int,
-) ?[*]u8 {
-    _ = .{ filename, x, y, comp, req_comp };
-    stub("stbi_load");
-}

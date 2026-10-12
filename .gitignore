@@ -29,7 +29,6 @@
 /zelda3.*.ini
 /zelda3.wiki
 /sprites-gfx
-/glsl-shaders
 /token.txt
 
 # nix build link

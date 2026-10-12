@@ -1,0 +1,133 @@
+#pragma clang diagnostic ignored "-Wmissing-prototypes"
+
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct Params
+{
+    float4 src;
+    float4 out_scale;
+};
+
+struct main0_out
+{
+    float4 o_color [[color(0)]];
+};
+
+struct main0_in
+{
+    float4 v_color [[user(locn0)]];
+    float2 v_uv [[user(locn1)]];
+};
+
+static inline __attribute__((always_inline))
+float3 at(thread const float2& p, texture2d<float> u_texture, sampler u_textureSmplr, constant Params& _32)
+{
+    return u_texture.sample(u_textureSmplr, ((p + float2(0.5)) * _32.src.zw)).xyz;
+}
+
+static inline __attribute__((always_inline))
+float dist(thread const float3& a, thread const float3& b)
+{
+    float3 d = abs(float3x3(float3(0.2989999949932098388671875, -0.1689999997615814208984375, 0.499000012874603271484375), float3(0.58700001239776611328125, -0.3310000002384185791015625, -0.4180000126361846923828125), float3(0.114000000059604644775390625, 0.499000012874603271484375, -0.081299997866153717041015625)) * (a - b));
+    return dot(d, float3(48.0, 7.0, 6.0));
+}
+
+fragment main0_out main0(main0_in in [[stage_in]], constant Params& _32 [[buffer(0)]], texture2d<float> u_texture [[texture(0)]], sampler u_textureSmplr [[sampler(0)]])
+{
+    main0_out out = {};
+    float2 pos = in.v_uv * _32.src.xy;
+    float2 e = floor(pos);
+    float2 f = (pos - e) - float2(0.5);
+    float2 dir = float2((f.x < 0.0) ? (-1.0) : 1.0, (f.y < 0.0) ? (-1.0) : 1.0);
+    float2 u = f * dir;
+    float2 dx = float2(dir.x, 0.0);
+    float2 dy = float2(0.0, dir.y);
+    float2 param = e;
+    float3 E = at(param, u_texture, u_textureSmplr, _32);
+    float2 param_1 = e + dx;
+    float3 F = at(param_1, u_texture, u_textureSmplr, _32);
+    float2 param_2 = e + dy;
+    float3 H = at(param_2, u_texture, u_textureSmplr, _32);
+    float2 param_3 = (e + dx) + dy;
+    float3 I = at(param_3, u_texture, u_textureSmplr, _32);
+    float2 param_4 = e - dy;
+    float3 B = at(param_4, u_texture, u_textureSmplr, _32);
+    float2 param_5 = (e + dx) - dy;
+    float3 C = at(param_5, u_texture, u_textureSmplr, _32);
+    float2 param_6 = e - dx;
+    float3 D = at(param_6, u_texture, u_textureSmplr, _32);
+    float2 param_7 = (e - dx) + dy;
+    float3 G = at(param_7, u_texture, u_textureSmplr, _32);
+    float2 param_8 = e + (dx * 2.0);
+    float3 F4 = at(param_8, u_texture, u_textureSmplr, _32);
+    float2 param_9 = (e + (dx * 2.0)) + dy;
+    float3 I4 = at(param_9, u_texture, u_textureSmplr, _32);
+    float2 param_10 = e + (dy * 2.0);
+    float3 H5 = at(param_10, u_texture, u_textureSmplr, _32);
+    float2 param_11 = (e + dx) + (dy * 2.0);
+    float3 I5 = at(param_11, u_texture, u_textureSmplr, _32);
+    float3 param_12 = E;
+    float3 param_13 = C;
+    float3 param_14 = E;
+    float3 param_15 = G;
+    float3 param_16 = I;
+    float3 param_17 = F4;
+    float3 param_18 = I;
+    float3 param_19 = H5;
+    float3 param_20 = H;
+    float3 param_21 = F;
+    float along = (((dist(param_12, param_13) + dist(param_14, param_15)) + dist(param_16, param_17)) + dist(param_18, param_19)) + (4.0 * dist(param_20, param_21));
+    float3 param_22 = H;
+    float3 param_23 = I5;
+    float3 param_24 = H;
+    float3 param_25 = D;
+    float3 param_26 = F;
+    float3 param_27 = I4;
+    float3 param_28 = F;
+    float3 param_29 = B;
+    float3 param_30 = E;
+    float3 param_31 = I;
+    float across = (((dist(param_22, param_23) + dist(param_24, param_25)) + dist(param_26, param_27)) + dist(param_28, param_29)) + (4.0 * dist(param_30, param_31));
+    bool _270 = along < across;
+    bool _279;
+    if (_270)
+    {
+        float3 param_32 = E;
+        float3 param_33 = F;
+        _279 = dist(param_32, param_33) > 0.0;
+    }
+    else
+    {
+        _279 = _270;
+    }
+    bool _288;
+    if (_279)
+    {
+        float3 param_34 = E;
+        float3 param_35 = H;
+        _288 = dist(param_34, param_35) > 0.0;
+    }
+    else
+    {
+        _288 = _279;
+    }
+    bool edge = _288;
+    float3 col = E;
+    if (edge)
+    {
+        float3 param_36 = E;
+        float3 param_37 = F;
+        float3 param_38 = E;
+        float3 param_39 = H;
+        float3 fill = select(H, F, bool3(dist(param_36, param_37) <= dist(param_38, param_39)));
+        float soft = 0.5 / fast::max(_32.out_scale.x, 1.0);
+        float k = smoothstep(0.5 - soft, 0.5 + soft, u.x + u.y);
+        col = mix(E, fill, float3(k));
+    }
+    out.o_color = float4(col, 1.0) * in.v_color;
+    return out;
+}
+

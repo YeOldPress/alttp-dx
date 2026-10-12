@@ -19,6 +19,7 @@ const seed_info = @import("seed_info.zig");
 const config = @import("config.zig");
 const controls = @import("controls.zig");
 const pad_art = @import("pad_art.zig");
+const crt = @import("crt.zig");
 const achievement_list = @import("achievement_list.zig");
 
 /// The zelda3.ini this build shipped with, written out whenever there is no
@@ -91,6 +92,8 @@ pub const Kind = union(enum) {
     /// Shown but not editable here: free text that wants a keyboard, or a
     /// binding list that wants a capture UI.
     text,
+    /// A button, not a value: A does it. Nothing of it goes in the ini.
+    action,
 };
 
 pub const Setting = struct {
@@ -124,15 +127,29 @@ pub const kSettings = [_]Setting{
         .labels = &.{ "Windowed", "Borderless", "Exclusive" },
     } } },
     .{ .section = "Graphics", .key = "WindowScale", .label = "Window Scale", .kind = .{ .number = .{ .min = 1, .max = 10, .step = 1 } } },
-    .{ .section = "Graphics", .key = "OutputMethod", .label = "Output Method", .kind = .{ .choice = .{ .values = &.{ "SDL", "SDL-Software", "OpenGL", "OpenGL ES" } } } },
+    .{ .section = "Graphics", .key = "OutputMethod", .label = "Output Method", .kind = .{ .choice = .{ .values = &.{ "SDL", "SDL-Software" } } } },
     .{ .section = "Graphics", .key = "NewRenderer", .label = "New Renderer", .kind = .toggle },
     .{ .section = "Graphics", .key = "EnhancedMode7", .label = "Enhanced Mode 7", .kind = .toggle },
     .{ .section = "Graphics", .key = "NoSpriteLimits", .label = "No Sprite Limits", .kind = .toggle },
     .{ .section = "Graphics", .key = "IgnoreAspectRatio", .label = "Stretch To Window", .kind = .toggle },
-    .{ .section = "Graphics", .key = "LinearFiltering", .label = "Linear Filtering", .kind = .toggle },
+    .{ .section = "Graphics", .key = "PixelScaling", .label = "Pixel Scaling", .kind = .{ .choice = .{
+        .values = &.{ "sharp", "nearest", "smooth", "xbr" },
+        .labels = &.{ "Sharp", "Nearest", "Smooth", "xBR" },
+    } } },
+    .{ .section = "Graphics", .key = "CrtFilter", .label = "CRT Filter", .kind = .{ .choice = .{
+        .values = &.{ "off", "scanlines", "arcade", "soft", "tv", "composite", "lcd" },
+        .labels = &.{ "Off", "Scanlines", "Arcade", "Soft", "Consumer TV", "Composite", "LCD" },
+    } } },
+    .{ .section = "Graphics", .key = "CrtScanlines", .label = "CRT Scanlines", .kind = .{ .number = .{ .min = 0, .max = 200, .step = 10, .suffix = "%" } } },
+    .{ .section = "Graphics", .key = "CrtMask", .label = "CRT Mask", .kind = .{ .number = .{ .min = 0, .max = 200, .step = 10, .suffix = "%" } } },
+    .{ .section = "Graphics", .key = "CrtGlow", .label = "CRT Glow", .kind = .{ .number = .{ .min = 0, .max = 200, .step = 10, .suffix = "%" } } },
+    .{ .section = "Graphics", .key = "CrtAfterglow", .label = "CRT Afterglow", .kind = .{ .number = .{ .min = 0, .max = 200, .step = 10, .suffix = "%" } } },
+    .{ .section = "Graphics", .key = "CrtCurvature", .label = "CRT Curvature", .kind = .{ .number = .{ .min = 0, .max = 100, .step = 10, .suffix = "%" } } },
+    .{ .section = "Graphics", .key = "CrtBezel", .label = "TV Bezel", .kind = .toggle },
+    .{ .section = "Graphics", .key = "HDR", .label = "HDR", .kind = .toggle },
+    .{ .section = "Graphics", .key = "CrtReset", .label = "Reset CRT Settings", .kind = .action },
     .{ .section = "Graphics", .key = "DimFlashes", .label = "Dim Flashes", .kind = .toggle },
     .{ .section = "Graphics", .key = "WindowSize", .label = "Window Size", .kind = .text },
-    .{ .section = "Graphics", .key = "Shader", .label = "Shader", .kind = .text },
 
     .{ .section = kSectionMark, .key = "", .label = "SOUND", .kind = .text },
     .{ .section = "Sound", .key = "EnableAudio", .label = "Enable Audio", .kind = .toggle },
@@ -522,9 +539,35 @@ pub fn cycle(alloc: std.mem.Allocator, buf: []u8, s: Setting, current: []const u
             if (next > num.max) next = num.max;
             return std.fmt.bufPrint(buf, "{d}{s}", .{ next, num.suffix }) catch null;
         },
-        .text => return null,
+        .text, .action => return null,
     }
     _ = alloc;
+}
+
+/// The settings each CRT Filter sets for itself when it's picked, and Reset
+/// CRT Settings puts back: the sliders, the curve and the bezel.
+pub const kCrtDefaultKeys = [_][]const u8{ "CrtScanlines", "CrtMask", "CrtGlow", "CrtAfterglow", "CrtCurvature", "CrtBezel" };
+
+/// Sets those to the chosen filter's own defaults.
+pub fn applyCrtDefaults(ini: *Ini) !void {
+    const filter_at = settingIndex("Graphics", "CrtFilter") orelse return;
+    const name = std.mem.trim(u8, ini.values[filter_at] orelse "off", " \t");
+    const d = crt.defaultsFor(crt.Preset.fromName(name) orelse .off);
+    var buf: [16]u8 = undefined;
+    for (kCrtDefaultKeys) |key| {
+        const at = settingIndex("Graphics", key) orelse continue;
+        const value: []const u8 = if (std.mem.eql(u8, key, "CrtCurvature"))
+            try std.fmt.bufPrint(&buf, "{d}%", .{d.curvature})
+        else if (std.mem.eql(u8, key, "CrtBezel"))
+            (if (d.bezel) "1" else "0")
+        else
+            "100%";
+        try ini.set(at, value);
+    }
+}
+
+pub fn isCrtFilter(s: Setting) bool {
+    return std.mem.eql(u8, s.section, "Graphics") and std.mem.eql(u8, s.key, "CrtFilter");
 }
 
 /// What the list shows for a value: toggles read as words, everything else as
@@ -534,6 +577,7 @@ pub fn displayValue(buf: []u8, s: Setting, value: []const u8) []const u8 {
     switch (s.kind) {
         .toggle => return if (std.mem.eql(u8, v, "1")) "ON" else "OFF",
         .text => return if (v.len == 0) "(none)" else v,
+        .action => return "",
         .choice => |opts| return opts.labelFor(v),
         else => {},
     }
@@ -701,14 +745,22 @@ pub fn describe(s: Setting) []const u8 {
         .{ "Tracker", "Where the item tracker goes when playing a randomizer seed. Beside the game, over it, in its own window, or nowhere. T switches while playing." },
         .{ "Fullscreen", "Windowed, fullscreen at the desktop's resolution, or fullscreen with a change of display mode." },
         .{ "WindowScale", "How many times bigger than the SNES screen the window opens." },
-        .{ "OutputMethod", "How frames reach the screen. SDL suits most machines, SDL-Software can help on a Raspberry Pi, and OpenGL is needed for shaders." },
+        .{ "OutputMethod", "How frames reach the screen. SDL suits most machines. SDL-Software can help on a Raspberry Pi." },
         .{ "NewRenderer", "Draw the screen with a faster rewrite of the SNES graphics chip. Turn it off if something looks wrong." },
         .{ "EnhancedMode7", "Draw the world map and other rotating backgrounds at a higher resolution." },
         .{ "NoSpriteLimits", "Stop sprites flickering or vanishing when too many share a line of the screen, a limit of the original hardware." },
         .{ "IgnoreAspectRatio", "Stretch the picture to fill the window instead of keeping its shape." },
-        .{ "LinearFiltering", "Smooth the pixels when the picture is scaled up. Softer, less crisp." },
+        .{ "PixelScaling", "How the picture fills the window. Sharp keeps pixels square and even, with soft edges. Nearest is crispest, but some rows come out bigger. Smooth blurs it. xBR rounds off diagonals and curves. A CRT Filter does its own." },
         .{ "WindowSize", "The window's size when the game opens, as a width and height in pixels such as 1280x720, or Auto to size it from Window Scale. Set it in zelda3.ini." },
-        .{ "Shader", "A GLSL shader to draw the picture through, given as the path to a glsl or glslp file. Needs the OpenGL output method. Set it in zelda3.ini." },
+        .{ "CrtScanlines", "How strong the CRT Filter's scanlines are. 100 percent is the filter as it comes, 0 none at all, 200 twice as strong." },
+        .{ "CrtMask", "How strong the colored stripes, dots or grid of the CRT Filter are. 100 percent is the filter as it comes, 0 none." },
+        .{ "CrtGlow", "How much bright things glow and haze on the CRT Filters that have it. 100 percent is the filter as it comes, 0 none." },
+        .{ "CrtAfterglow", "How long moving things leave a fading trail on the CRT Filters that have it. 100 percent is the filter as it comes, 0 none." },
+        .{ "CrtCurvature", "Bows the picture like the face of an old TV's tube, with rounded corners. 0 is flat, 50 a TV's. Works with any CRT Filter, or none." },
+        .{ "CrtReset", "Puts the CRT sliders, the curvature and the bezel back to the chosen CRT Filter's own defaults. Picking a filter does this too." },
+        .{ "HDR", "On an HDR display, lets the CRT Filter shine past normal white, the way a real tube's phosphors do, so its dark stripes don't dim the picture. Does nothing on other displays." },
+        .{ "CrtBezel", "Puts the picture in a TV's dark plastic frame, which catches a little of the screen's light. Works with any CRT Filter, or none." },
+        .{ "CrtFilter", "Draws the picture like an old screen. Scanlines adds dark lines between the rows. Arcade is a monitor up close, Soft a gentler one. Consumer TV is a home TV, with a glow and soft edges. Composite blends the dithering the way a TV cable did. LCD is a handheld's grid." },
         .{ "DimFlashes", "Tone down flashing effects, as the Virtual Console releases did." },
         .{ "Volume", "How loud the whole game plays, music and sound effects together, MSU music included. Changes as you move it. Shift and plus or minus on the keyboard change it too." },
         .{ "EnableAudio", "Play sound and music at all." },
@@ -3093,11 +3145,17 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                     screen = .details;
                     status = "";
                 }
+            } else if ((adjust != 0 or confirm) and at < kSettings.len and kSettings[at].kind == .action) {
+                try applyCrtDefaults(&ini);
+                dirty = true;
+                status = "CRT SETTINGS RESET";
             } else if (adjust != 0 and at < kSettings.len) {
                 var buf: [64]u8 = undefined;
                 const cur = ini.values[at] orelse "";
                 if (cycle(alloc, &buf, kSettings[at], cur, adjust)) |next| {
                     try ini.set(at, next);
+                    // A filter brings its own sliders, curve and bezel.
+                    if (isCrtFilter(kSettings[at])) try applyCrtDefaults(&ini);
                     dirty = true;
                     status = "";
                 }
@@ -3293,11 +3351,26 @@ test "toggles flip and choices wrap in both directions" {
     try testing.expect(cycle(testing.allocator, &buf, text, "whatever", 1) == null);
 }
 
+test "picking a filter brings its own CRT settings, and the reset puts them back" {
+    var path_buf: [64]u8 = undefined;
+    const path = try scratchName(&path_buf, "crt", "ini");
+    try fileio.writeWholeFile(path, "[Graphics]\nCrtFilter = tv\nCrtScanlines = 40%\nCrtCurvature = 0%\nCrtBezel = 0\n");
+    defer _ = fileio.remove(path);
+    var ini = try Ini.load(testing.allocator, path);
+    defer ini.deinit();
+    try applyCrtDefaults(&ini);
+    try testing.expectEqualStrings("100%", ini.values[settingIndex("Graphics", "CrtScanlines").?].?);
+    try testing.expectEqualStrings("50%", ini.values[settingIndex("Graphics", "CrtCurvature").?].?);
+    try testing.expectEqualStrings("1", ini.values[settingIndex("Graphics", "CrtBezel").?].?);
+}
+
 test "every schema entry names a real key in the shipped ini" {
     var ini = try Ini.load(testing.allocator, "zelda3.ini");
     defer ini.deinit();
     for (kSettings, 0..) |s, i| {
         if (std.mem.eql(u8, s.section, kSectionMark)) continue;
+        // A button keeps nothing in the ini.
+        if (s.kind == .action) continue;
         if (ini.line_of[i] == null) {
             std.debug.print("schema entry not found in zelda3.ini: [{s}] {s}\n", .{ s.section, s.key });
             return error.SettingNotFound;

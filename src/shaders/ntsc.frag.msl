@@ -1,0 +1,143 @@
+#pragma clang diagnostic ignored "-Wmissing-prototypes"
+
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct Params
+{
+    float4 src;
+    float4 signal;
+    float4 extra;
+};
+
+struct main0_out
+{
+    float4 o_color [[color(0)]];
+};
+
+struct main0_in
+{
+    float4 v_color [[user(locn0)]];
+    float2 v_uv [[user(locn1)]];
+};
+
+static inline __attribute__((always_inline))
+float3 yiqAt(thread const float& x, thread const float& y, constant Params& _50, texture2d<float> u_texture, sampler u_textureSmplr)
+{
+    float2 uv = (float2(floor(x), y) + float2(0.5)) * _50.src.zw;
+    return float3x3(float3(0.2989999949932098388671875, 0.596000015735626220703125, 0.2109999954700469970703125), float3(0.58700001239776611328125, -0.273999989032745361328125, -0.5230000019073486328125), float3(0.114000000059604644775390625, -0.3219999969005584716796875, 0.3120000064373016357421875)) * u_texture.sample(u_textureSmplr, uv).xyz;
+}
+
+static inline __attribute__((always_inline))
+float phaseAt(thread const float& x, thread const float& turn)
+{
+    return ((6.283185482025146484375 * x) / 1.5) + turn;
+}
+
+static inline __attribute__((always_inline))
+float signalAt(thread const float& x, thread const float& y, thread const float& turn, constant Params& _50, texture2d<float> u_texture, sampler u_textureSmplr)
+{
+    float param = x;
+    float param_1 = y;
+    float3 yiq = yiqAt(param, param_1, _50, u_texture, u_textureSmplr);
+    float param_2 = x;
+    float param_3 = turn;
+    float p = phaseAt(param_2, param_3);
+    return (yiq.x + (yiq.y * cos(p))) + (yiq.z * sin(p));
+}
+
+static inline __attribute__((always_inline))
+float lumaAt(thread const float& x, thread const float& y, thread const float& turn, thread const float& width, constant Params& _50, texture2d<float> u_texture, sampler u_textureSmplr)
+{
+    float sum = 0.0;
+    float n = 0.0;
+    for (int k = -8; k <= 8; k++)
+    {
+        float off = float(k) * 0.25;
+        if (abs(off) > (width * 0.5))
+        {
+            continue;
+        }
+        float param = x + off;
+        float param_1 = y;
+        float param_2 = turn;
+        sum += signalAt(param, param_1, param_2, _50, u_texture, u_textureSmplr);
+        n += 1.0;
+    }
+    return sum / fast::max(n, 1.0);
+}
+
+static inline __attribute__((always_inline))
+float hash(thread float3& p)
+{
+    p = fract(p * float3(443.897003173828125, 441.423004150390625, 437.19500732421875));
+    p += float3(dot(p, p.yzx + float3(19.1900005340576171875)));
+    return fract((p.x + p.y) * p.z);
+}
+
+fragment main0_out main0(main0_in in [[stage_in]], constant Params& _50 [[buffer(0)]], texture2d<float> u_texture [[texture(0)]], sampler u_textureSmplr [[sampler(0)]])
+{
+    main0_out out = {};
+    float x = in.v_uv.x * _50.src.x;
+    float line = floor(in.v_uv.y * _50.src.y);
+    float turn = 3.1415927410125732421875 * (line + _50.signal.x);
+    float param = x;
+    float param_1 = line;
+    float param_2 = turn;
+    float param_3 = _50.signal.w;
+    float luma = lumaAt(param, param_1, param_2, param_3, _50, u_texture, u_textureSmplr);
+    if (_50.extra.x > 0.0)
+    {
+        float param_4 = x;
+        float param_5 = line;
+        float param_6 = turn;
+        float param_7 = 4.0;
+        float wide = lumaAt(param_4, param_5, param_6, param_7, _50, u_texture, u_textureSmplr);
+        luma += ((luma - wide) * _50.extra.x);
+    }
+    float2 chroma = float2(0.0);
+    float total = 0.0;
+    float sigma = fast::max(_50.signal.z, 0.5);
+    for (int k = -24; k <= 24; k++)
+    {
+        float off = float(k) * 0.375;
+        float d = off / sigma;
+        if (abs(d) > 3.0)
+        {
+            continue;
+        }
+        float w = exp(((-0.5) * d) * d);
+        float param_8 = x + off;
+        float param_9 = line;
+        float param_10 = turn;
+        float s = signalAt(param_8, param_9, param_10, _50, u_texture, u_textureSmplr);
+        float param_11 = x + off;
+        float param_12 = turn;
+        float p = phaseAt(param_11, param_12);
+        chroma += ((float2(cos(p), sin(p)) * (2.0 * s)) * w);
+        total += w;
+    }
+    chroma /= float2(fast::max(total, 9.9999997473787516355514526367188e-05));
+    if (_50.extra.y > 0.0)
+    {
+        float param_13 = x - 3.0;
+        float param_14 = line;
+        float param_15 = turn;
+        float param_16 = 1.5;
+        luma = mix(luma, lumaAt(param_13, param_14, param_15, param_16, _50, u_texture, u_textureSmplr), _50.extra.y);
+    }
+    if (_50.extra.z > 0.0)
+    {
+        float3 param_17 = float3(x * 4.0, line, _50.extra.w);
+        float _375 = hash(param_17);
+        luma += ((_375 - 0.5) * _50.extra.z);
+    }
+    float param_18 = x;
+    float param_19 = line;
+    float3 yiq = mix(yiqAt(param_18, param_19, _50, u_texture, u_textureSmplr), float3(luma, chroma), float3(_50.signal.y));
+    out.o_color = float4(fast::clamp(float3x3(float3(1.0), float3(0.95599997043609619140625, -0.272000014781951904296875, -1.10599994659423828125), float3(0.620999991893768310546875, -0.647000014781951904296875, 1.70299994945526123046875)) * yiq, float3(0.0), float3(1.0)), 1.0) * in.v_color;
+    return out;
+}
+

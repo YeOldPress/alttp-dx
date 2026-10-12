@@ -272,27 +272,22 @@ fn context() tracker.Context {
     };
 }
 
-/// Draws the frame: the game at double size, and the tracker as the mode
-/// has it. `pitch` is in bytes.
-pub fn draw(pixels: [*]u8, pitch_bytes: usize) void {
-    const pitch = pitch_bytes / 4;
-    const px: [*]u32 = @ptrCast(@alignCast(pixels));
+/// A part of the frame, in its pixels.
+pub const Rect = struct { x: usize, y: usize, w: usize, h: usize };
+
+/// Where things are in the frame: the game, the panel when it's beside it,
+/// and the tracker when it's laid over the game.
+pub const Layout = struct { game: Rect, panel: ?Rect, overlay: ?Rect };
+
+pub fn layout() Layout {
     const gw = gameW();
-    const src_w = gw / kScale;
     const opts = config.g_tracker_opts;
     // The panel goes on whichever side the options say; the game moves over.
     const pw = if (g_mode == .panel) panelW() else 0;
     const game_x: usize = if (opts.side == .left) pw else 0;
-    for (0..kGameH) |y| {
-        const src = g_frame[(y / kScale) * src_w ..][0..src_w];
-        const dst = px[y * pitch + game_x ..];
-        for (0..gw) |x| dst[x] = src[x / kScale];
-    }
+    var out = Layout{ .game = .{ .x = game_x, .y = 0, .w = gw, .h = kGameH }, .panel = null, .overlay = null };
     switch (g_mode) {
-        .panel => {
-            const panel_x: usize = if (opts.side == .left) 0 else gw;
-            tracker.draw(.{ .px = px + panel_x, .pitch = pitch, .w = pw, .h = kGameH, .scale = kScale }, context(), true);
-        },
+        .panel => out.panel = .{ .x = if (opts.side == .left) 0 else gw, .y = 0, .w = pw, .h = kGameH },
         .overlay => {
             // At the game's own pixel size, in the corner the options say.
             const sz = tracker.size(opts, false);
@@ -307,10 +302,33 @@ pub fn draw(pixels: [*]u8, pitch_bytes: usize) void {
                 .bottom_right, .bottom_left => kGameH - h - 4,
                 .top_right, .top_left => 4,
             };
-            const alpha: u32 = @as(u32, @max(opts.opacity, 10)) * 256 / 100;
-            tracker.draw(.{ .px = px + y * pitch + x, .pitch = pitch, .w = w, .h = h, .scale = scale, .alpha = alpha }, context(), false);
+            out.overlay = .{ .x = game_x + x, .y = y, .w = w, .h = h };
         },
         .off, .window => {},
+    }
+    return out;
+}
+
+/// Draws the frame: the game at double size, and the tracker as the mode
+/// has it. `pitch` is in bytes.
+pub fn draw(pixels: [*]u8, pitch_bytes: usize) void {
+    const pitch = pitch_bytes / 4;
+    const px: [*]u32 = @ptrCast(@alignCast(pixels));
+    const gw = gameW();
+    const src_w = gw / kScale;
+    const opts = config.g_tracker_opts;
+    const lay = layout();
+    const game_x = lay.game.x;
+    for (0..kGameH) |y| {
+        const src = g_frame[(y / kScale) * src_w ..][0..src_w];
+        const dst = px[y * pitch + game_x ..];
+        for (0..gw) |x| dst[x] = src[x / kScale];
+    }
+    if (lay.panel) |p| tracker.draw(.{ .px = px + p.x, .pitch = pitch, .w = p.w, .h = p.h, .scale = kScale }, context(), true);
+    if (lay.overlay) |o| {
+        const scale: usize = if (opts.overlay_size == .large) kScale else 1;
+        const alpha: u32 = @as(u32, @max(opts.opacity, 10)) * 256 / 100;
+        tracker.draw(.{ .px = px + o.y * pitch + o.x, .pitch = pitch, .w = o.w, .h = o.h, .scale = scale, .alpha = alpha }, context(), false);
     }
     if (g_toast_frames > 0) {
         g_toast_frames -= 1;

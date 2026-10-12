@@ -19,10 +19,8 @@ comptime {
     _ = @import("src/features.zig");
     _ = @import("src/tagalong.zig");
     _ = @import("src/select_file.zig");
-    _ = @import("src/opengl.zig");
     _ = @import("src/audio.zig");
     _ = @import("src/zelda_cpu_infra.zig");
-    _ = @import("src/glsl_shader.zig");
     _ = @import("src/main.zig");
     _ = @import("src/rumble.zig");
     _ = @import("src/settings_menu.zig");
@@ -33,6 +31,8 @@ comptime {
     _ = @import("src/msu_import.zig");
     _ = @import("src/title_dx.zig");
     _ = @import("src/achievements.zig");
+    _ = @import("src/crt.zig");
+    _ = @import("src/crt_gpu.zig");
     _ = @import("src/achievement_list.zig");
     _ = @import("src/misc.zig");
     _ = @import("src/attract.zig");

@@ -67,7 +67,7 @@ const Tab = struct {
 };
 
 /// Every setting the start menu can change, grouped by its headings. Free
-/// text such as the shader path has no business being cycled, so it stays
+/// text such as the window size has no business being cycled, so it stays
 /// out.
 fn editable(s: menu.Setting) bool {
     return !menu.isSection(s) and s.kind != .text;
@@ -145,7 +145,14 @@ fn appliesLive(s: menu.Setting) bool {
         .{ "Graphics", "Fullscreen" },
         .{ "Graphics", "NewRenderer" },
         .{ "Graphics", "NoSpriteLimits" },
-        .{ "Graphics", "LinearFiltering" },
+        .{ "Graphics", "PixelScaling" },
+        .{ "Graphics", "CrtFilter" },
+        .{ "Graphics", "CrtCurvature" },
+        .{ "Graphics", "CrtScanlines" },
+        .{ "Graphics", "CrtMask" },
+        .{ "Graphics", "CrtGlow" },
+        .{ "Graphics", "CrtAfterglow" },
+        .{ "Graphics", "CrtBezel" },
         .{ "Sound", "Volume" },
         .{ "Sound", "ResumeMSU" },
         .{ "Sound", "MSUFinishCues" },
@@ -377,12 +384,32 @@ fn change(dir: i32) void {
     const ini = &g_ini.?;
     const si = settingAt(g_tab, g_row);
     const s = menu.kSettings[si];
+    if (s.kind == .action) {
+        // Reset CRT Settings.
+        resetCrt(ini);
+        showNote("CRT settings back to the filter's own");
+        vars.sound_effect_1.* = 43;
+        return;
+    }
     var buf: [64]u8 = undefined;
     const next = menu.cycle(alloc, &buf, s, ini.values[si] orelse "", dir) orelse return;
     ini.set(si, next) catch return;
     g_dirty = true;
     applyLive(s, ini.values[si].?);
+    // A filter brings its own sliders, curve and bezel.
+    if (menu.isCrtFilter(s)) resetCrt(ini);
     vars.sound_effect_1.* = 43;
+}
+
+/// The CRT sliders, the curve and the bezel to the chosen filter's own, in
+/// the ini and in the running game.
+fn resetCrt(ini: *menu.Ini) void {
+    menu.applyCrtDefaults(ini) catch return;
+    g_dirty = true;
+    for (menu.kCrtDefaultKeys) |key| {
+        const at = menu.settingIndex("Graphics", key) orelse continue;
+        applyLive(menu.kSettings[at], ini.values[at] orelse continue);
+    }
 }
 
 fn pauseUpdate(step: bool, dirs: u8, pressed_l: u8) void {
@@ -656,6 +683,8 @@ fn drawValue(cv: gfx.Canvas, right: i32, y: i32, s: menu.Setting, value: []const
     const colors = if (selected) kTextSelected else kTextNormal;
     const v = std.mem.trim(u8, value, " \t");
     switch (s.kind) {
+        // A button: the font's A, to say what does it.
+        .action => _ = cv.text(right - gfx.textWidth("[A]"), y, "[A]", if (selected) kTextSelected else kTextDim),
         .toggle => {
             // A full heart for on, an empty one for off.
             const on = std.mem.eql(u8, v, "1");

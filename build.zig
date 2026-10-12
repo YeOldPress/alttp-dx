@@ -6,9 +6,6 @@ var sdl_lib: ?[]const u8 = null;
 // C sources that have not been ported to Zig yet. As modules are translated,
 // they move out of this list and are referenced from zelda_zig.zig instead.
 const c_sources = [_][]const u8{
-    "third_party/gl_core/gl_core_3_1.c",
-    // Carries the stb_image implementation used by glsl_shader.zig.
-    "third_party/stb/stb_image_impl.c",
     "third_party/opus-1.3.1-stripped/opus_decoder_amalgam.c",
 };
 
@@ -131,6 +128,18 @@ pub fn build(b: *std.Build) void {
         // needs no include path into the (now header-free) source tree.
         tests.root_module.addCSourceFile(.{ .file = .{ .cwd_relative = path }, .flags = &c_flags });
     }
+    // The CRT shaders, from GLSL to the SPIR-V and MSL the game embeds. Only
+    // needed after changing src/shaders/*.frag; the results are committed.
+    const shaders_step = b.step("shaders", "Rebuild the CRT shaders (needs glslangValidator and spirv-cross)");
+    for ([_][]const u8{ "crt", "ntsc", "xbr" }) |name| {
+        const glsl = b.fmt("src/shaders/{s}.frag", .{name});
+        const spv_path = b.fmt("src/shaders/{s}.frag.spv", .{name});
+        const spv = b.addSystemCommand(&.{ "glslangValidator", "-V", "--target-env", "vulkan1.0", "-o", spv_path, glsl });
+        const msl = b.addSystemCommand(&.{ "spirv-cross", spv_path, "--msl", "--msl-version", "20000", "--msl-decoration-binding", "--output", b.fmt("src/shaders/{s}.frag.msl", .{name}) });
+        msl.step.dependOn(&spv.step);
+        shaders_step.dependOn(&msl.step);
+    }
+
     const test_step = b.step("test", "Run tests for the ported Zig modules");
     test_step.dependOn(&b.addRunArtifact(tests).step);
 
@@ -193,7 +202,6 @@ pub fn build(b: *std.Build) void {
                 exe.root_module.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
             }
         }
-        exe.root_module.linkFramework("OpenGL", .{});
         // Room for the release packaging to repoint SDL3 at the copy inside
         // the app bundle, which is a longer path than the one linked against.
         exe.headerpad_max_install_names = true;

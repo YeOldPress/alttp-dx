@@ -5,6 +5,9 @@ with the extras a modern re-release would have.
 
 <img src="docs/screenshots/start-menu.png" alt="The ALTTP-DX start menu, with Settings, Features, Controls, Play and Randomizer" width="480">
 
+- **CRT filters:** scanlines, arcade and home TV looks with phosphor masks,
+  glow and a composite smear, and an LCD grid, drawn on the GPU with no
+  shaders to install
 - **Widescreen**, with a camera that keeps the whole wide picture in the area
   you're in and a HUD that moves out to the edges
 - **Rumble** for hits, explosions, bosses, the hammer and more
@@ -222,8 +225,8 @@ https://discord.gg/AJJbJAzNNJ
   [Swedish](https://www.romhacking.net/translations/982/) and English Redux
   ([1](https://www.romhacking.net/translations/6657/),
   [2](https://www.romhacking.net/hacks/2594/)) versions the tools can read.
-- [SDL](https://libsdl.org), [Opus](https://opus-codec.org) by the Xiph.Org
-  Foundation, and [stb_image](https://github.com/nothings/stb) by Sean Barrett.
+- [SDL](https://libsdl.org), and [Opus](https://opus-codec.org) by the
+  Xiph.Org Foundation.
 - Nintendo, for the game.
 
 ## License
@@ -232,7 +235,6 @@ MIT, see `LICENSE.txt`, which keeps the original notices: Copyright (c) 2022
 snesrev and Copyright (c) 2021 elzo_d.
 
 Vendored in `third_party/`: Opus 1.3.1 (3-clause BSD, `COPYING` there and in
-`LICENSE.txt`), stb_image 2.27 (MIT or public domain), and a generated OpenGL
-loader. SDL3 and OpenGL are system dependencies.
+`LICENSE.txt`). SDL3 is a system dependency.
 
 No game assets are distributed here.

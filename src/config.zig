@@ -1,5 +1,6 @@
 //! Port of config.c: the .ini parser plus the keyboard and gamepad bindings.
 const std = @import("std");
+const crt = @import("crt.zig");
 const util = @import("util.zig");
 
 const c = @import("sdl.zig").c;
@@ -54,8 +55,6 @@ const kKeys = struct {
 
 const kOutputMethod_SDL: u8 = 0;
 const kOutputMethod_SDLSoftware: u8 = 1;
-const kOutputMethod_OpenGL: u8 = 2;
-const kOutputMethod_OpenGL_ES: u8 = 3;
 
 const kMsuEnabled_Msu: u8 = 1;
 const kMsuEnabled_MsuDeluxe: u8 = 2;
@@ -119,7 +118,6 @@ pub const Config = extern struct {
     fullscreen: u8,
     window_scale: u8,
     enable_audio: bool,
-    linear_filtering: bool,
     output_method: u8,
     audio_freq: u16,
     audio_channels: u8,
@@ -139,11 +137,31 @@ pub const Config = extern struct {
     volume: u8,
     /// Controller rumble strength as a percentage; 0 turns it off.
     rumble: u8,
+    /// How the picture's scaled to the window: 0 nearest, every pixel
+    /// square but some a screen pixel bigger than others at an uneven size;
+    /// 1 sharp, square and even, with only the edges smoothed; 2 smooth;
+    /// 3 xBR, diagonals and curves smoothed, flat areas crisp.
+    pixel_scaling: u8,
+    /// The CRT look drawn over the picture, as crt.Preset numbers it.
+    crt_filter: u8,
+    /// The CRT look's parts, in percent of the preset's own: 100 as it is,
+    /// 0 none, up to 200.
+    crt_scanlines: u8,
+    crt_mask: u8,
+    crt_glow: u8,
+    crt_afterglow: u8,
+    /// How far the picture bows like a tube's face, in percent: 0 flat, 50 a
+    /// TV's, 100 a lot.
+    crt_curvature: u8,
+    /// A TV's plastic surround round the picture.
+    crt_bezel: bool,
+    /// Draw in linear light, for HDR displays: the CRT Filter's phosphors
+    /// then shine past white as a tube's do.
+    hdr: bool,
     features0: u32,
 
     link_graphics: ?[*:0]const u8,
     memory_buffer: ?[*:0]u8,
-    shader: ?[*:0]const u8,
     msu_path: ?[*:0]const u8,
     language: ?[*:0]const u8,
 };
@@ -920,24 +938,63 @@ fn handleGraphics(key: [*:0]const u8, value: [*:0]u8) bool {
         g_config.window_scale = @truncate(@as(c_ulong, @bitCast(strtol(value, null, 10))));
         return true;
     } else if (util.StringEqualsNoCase(key, "OutputMethod")) {
+        // OpenGL and OpenGL ES were output methods once, for shaders; an ini
+        // that still asks for one gets SDL, which the CRT filter replaced
+        // them with.
         g_config.output_method = if (util.StringEqualsNoCase(value, "SDL-Software"))
             kOutputMethod_SDLSoftware
-        else if (util.StringEqualsNoCase(value, "OpenGL"))
-            kOutputMethod_OpenGL
-        else if (util.StringEqualsNoCase(value, "OpenGL ES"))
-            kOutputMethod_OpenGL_ES
         else
             kOutputMethod_SDL;
         return true;
     } else if (util.StringEqualsNoCase(key, "LinearFiltering")) {
-        return ParseBool(value, &g_config.linear_filtering);
+        // What Pixel Scaling's Smooth was, before it had a choice.
+        var on = false;
+        if (!ParseBool(value, &on)) return false;
+        if (on) g_config.pixel_scaling = 2;
+        return true;
+    } else if (util.StringEqualsNoCase(key, "PixelScaling")) {
+        const span = std.mem.span(value);
+        g_config.pixel_scaling = if (std.ascii.eqlIgnoreCase(span, "sharp"))
+            1
+        else if (std.ascii.eqlIgnoreCase(span, "smooth"))
+            2
+        else if (std.ascii.eqlIgnoreCase(span, "nearest"))
+            0
+        else if (std.ascii.eqlIgnoreCase(span, "xbr"))
+            3
+        else
+            return false;
+        return true;
+    } else if (util.StringEqualsNoCase(key, "CrtFilter")) {
+        const preset = crt.Preset.fromName(std.mem.span(value)) orelse return false;
+        g_config.crt_filter = @intFromEnum(preset);
+        return true;
+    } else if (util.StringEqualsNoCase(key, "CrtCurvature")) {
+        g_config.crt_curvature = @intCast(std.math.clamp(atoi(value), 0, 100));
+        return true;
+    } else if (util.StringEqualsNoCase(key, "CrtScanlines")) {
+        g_config.crt_scanlines = @intCast(std.math.clamp(atoi(value), 0, 200));
+        return true;
+    } else if (util.StringEqualsNoCase(key, "CrtMask")) {
+        g_config.crt_mask = @intCast(std.math.clamp(atoi(value), 0, 200));
+        return true;
+    } else if (util.StringEqualsNoCase(key, "CrtGlow")) {
+        g_config.crt_glow = @intCast(std.math.clamp(atoi(value), 0, 200));
+        return true;
+    } else if (util.StringEqualsNoCase(key, "CrtAfterglow")) {
+        g_config.crt_afterglow = @intCast(std.math.clamp(atoi(value), 0, 200));
+        return true;
+    } else if (util.StringEqualsNoCase(key, "HDR")) {
+        return ParseBool(value, &g_config.hdr);
+    } else if (util.StringEqualsNoCase(key, "CrtBezel")) {
+        return ParseBool(value, &g_config.crt_bezel);
     } else if (util.StringEqualsNoCase(key, "NoSpriteLimits")) {
         return ParseBool(value, &g_config.no_sprite_limits);
     } else if (util.StringEqualsNoCase(key, "LinkGraphics")) {
         g_config.link_graphics = value;
         return true;
     } else if (util.StringEqualsNoCase(key, "Shader")) {
-        g_config.shader = if (value[0] != 0) value else null;
+        // GLSL shaders are gone; an older ini's line is let be, quietly.
         return true;
     } else if (util.StringEqualsNoCase(key, "DimFlashes")) {
         return parseBoolBit(value, &g_config.features0, kFeatures0_DimFlashes);
@@ -1118,6 +1175,10 @@ export fn ParseConfigFile(filename_in: ?[*:0]const u8) callconv(.c) void {
     g_config.features0 |= kFeatures0_ContinueFromDungeon;
     g_config.rumble = 100;
     g_config.msu_finish_cues = true;
+    g_config.crt_scanlines = 100;
+    g_config.crt_mask = 100;
+    g_config.crt_glow = 100;
+    g_config.crt_afterglow = 100;
 
     var filename = filename_in;
     if (filename != null or !parseOneConfigFile("zelda3.user.ini", 0)) {
