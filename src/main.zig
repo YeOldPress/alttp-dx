@@ -1627,7 +1627,7 @@ fn HandleGamepadAxisInput(gamepad_id: c.SDL_JoystickID, axis: u8, value: i16) vo
         }
         if (axis == c.SDL_GAMEPAD_AXIS_LEFTX) last_x = value else last_y = value;
         var buttons: u8 = 0;
-        if (last_x * last_x + last_y * last_y >= 10000 * 10000) {
+        if (stickPastDeadzone(last_x, last_y)) {
             // in the non deadzone part, divide the circle into eight 45 degree
             // segments rotated by 22.5 degrees that control which direction to move.
             const angle = segmentAngle(@floatFromInt(last_y), @floatFromInt(last_x));
@@ -1638,6 +1638,14 @@ fn HandleGamepadAxisInput(gamepad_id: c.SDL_JoystickID, axis: u8, value: i16) vo
         if (value < 12000 or value >= 16000) // hysteresis
             HandleGamepadInput(if (axis == c.SDL_GAMEPAD_AXIS_LEFT_TRIGGER) kGamepadBtn_L2 else kGamepadBtn_R2, value >= 12000);
     }
+}
+
+/// Squared in 64 bits: a stick pinned to (-32768, -32768) sums to exactly 2^31,
+/// one past what a c_int holds, and safe builds panic on it (issue #4).
+fn stickPastDeadzone(x: c_int, y: c_int) bool {
+    const x2 = @as(i64, x) * x;
+    const y2 = @as(i64, y) * y;
+    return x2 + y2 >= 10000 * 10000;
 }
 
 /// The C rounds the [0,4) angle into a byte; 4.0 wraps to 0 exactly as the
@@ -1804,6 +1812,17 @@ test "stick angles fall into the eight movement segments" {
     // The rotation puts a pure axis reading in the middle of its segment.
     const idx = (segmentAngle(0, 32000) +% 16 +% 64) >> 5;
     try testing.expectEqual(@as(u8, 1 << 7), kSegmentToButtons[idx]); // right
+}
+
+test "a stick pinned to a corner clears the deadzone without overflowing" {
+    // Issue #4: some pads report the full -32768 on both axes up-left.
+    try testing.expect(stickPastDeadzone(-32768, -32768));
+    try testing.expect(stickPastDeadzone(32767, -32768));
+    try testing.expect(stickPastDeadzone(10000, 0));
+    try testing.expect(!stickPastDeadzone(7000, 7000));
+    try testing.expect(!stickPastDeadzone(0, 0));
+    const idx = (segmentAngle(-32768, -32768) +% 16 +% 64) >> 5;
+    try testing.expectEqual(@as(u8, 1 << 6 | 1 << 4), kSegmentToButtons[idx]); // up-left
 }
 
 test "the keyboard remap covers every control key" {
