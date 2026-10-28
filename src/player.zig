@@ -5183,9 +5183,9 @@ pub export fn HandlePushingBonkingSnaps_Y() callconv(.c) void {
                     0 -% vars.link_y_vel.*;
                 const r0: u8 = if (sign8(tt)) 0xff else 1;
                 if ((vars.R14.* & 2) == 0) {
-                    if (vars.link_y_coord.* & 7 != 0) {
+                    if (vars.link_x_coord.* & 7 != 0) {
                         // C adds the byte as a signed displacement.
-                        vars.link_x_coord.* +%= @bitCast(@as(i16, @as(i8, @bitCast(r0))));
+                        vars.link_x_coord.* +%=@bitCast(@as(i16, @as(i8, @bitCast(r0))));
                         HandleNudging(@bitCast(r0));
                         return;
                     }
