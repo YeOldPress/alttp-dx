@@ -236,9 +236,11 @@ jobs:
         Invoke-WebRequest -Uri $url -OutFile sdl3.zip
         Expand-Archive sdl3.zip -DestinationPath sdl3
         "SDL3_ROOT=$PWD\sdl3\SDL3-$ver\x86_64-w64-mingw32" | Out-File -FilePath $env:GITHUB_ENV -Append
+    # Quoted, or PowerShell reads "-Dversion=v1.8" as "-Dversion=v1" and
+    # then a number, ".8", which zig takes for a build step.
     - name: Build
       shell: pwsh
-      run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu --prefix out -Dsdl-include="$env:SDL3_ROOT\include" -Dsdl-lib="$env:SDL3_ROOT\bin" -Dversion=${{ needs.plan.outputs.name }} -Dcommit=${{ needs.plan.outputs.ref }}
+      run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu --prefix out -Dsdl-include="$env:SDL3_ROOT\include" -Dsdl-lib="$env:SDL3_ROOT\bin" "-Dversion=${{ needs.plan.outputs.name }}" "-Dcommit=${{ needs.plan.outputs.ref }}"
     - name: Package
       shell: pwsh
       run: |
