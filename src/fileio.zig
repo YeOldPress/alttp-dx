@@ -72,14 +72,23 @@ pub fn removeDir(path: [*:0]const u8) void {
 
 extern fn opendir(path: [*:0]const u8) ?*anyopaque;
 extern fn closedir(d: *anyopaque) c_int;
+/// Windows' CRT has no opendir, so Windows gets asked directly.
+extern "kernel32" fn GetFileAttributesW(path: [*:0]const u16) callconv(.winapi) u32;
+const FILE_ATTRIBUTE_DIRECTORY = 0x10;
 
 /// Whether a directory exists at `path`.
 pub fn isDir(path: [*:0]const u8) bool {
     if (@import("builtin").os.tag == .windows) {
-        // Windows' CRT has no opendir; a file inside a directory's "." does.
-        var buf: [4096]u8 = undefined;
-        const probe = std.fmt.bufPrintSentinel(&buf, "{s}/.", .{std.mem.span(path)}, 0) catch return false;
-        return exists(probe.ptr);
+        // Not by fopening "path/.": Windows drops a trailing "\." before
+        // looking, so that opened files and refused folders.
+        // UTF-16 never takes more units than UTF-8 takes bytes.
+        var buf: [4096:0]u16 = undefined;
+        const utf8 = std.mem.span(path);
+        if (utf8.len >= buf.len) return false;
+        const len = std.unicode.utf8ToUtf16Le(&buf, utf8) catch return false;
+        buf[len] = 0;
+        const attrs = GetFileAttributesW(buf[0..len :0]);
+        return attrs != std.os.windows.INVALID_FILE_ATTRIBUTES and attrs & FILE_ATTRIBUTE_DIRECTORY != 0;
     }
     const d = opendir(path) orelse return false;
     _ = closedir(d);
