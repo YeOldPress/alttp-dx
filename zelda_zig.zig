@@ -29,6 +29,8 @@ comptime {
     _ = @import("src/zelda_rtl.zig");
     _ = @import("src/overworld_wide.zig");
     _ = @import("src/msu_import.zig");
+    _ = @import("src/zip.zig");
+    _ = @import("src/updater.zig");
     _ = @import("src/title_dx.zig");
     _ = @import("src/achievements.zig");
     _ = @import("src/crt.zig");

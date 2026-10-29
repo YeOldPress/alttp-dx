@@ -38,6 +38,14 @@ pub fn build(b: *std.Build) void {
     );
     const optimize = b.standardOptimizeOption(.{});
 
+    // What this build is, for the updater to hold up against what's been
+    // released: the tag or "nightly", and the commit. The release workflow
+    // fills these in. A build nobody named is "dev" and never offers to
+    // replace itself with something off GitHub.
+    const build_info = b.addOptions();
+    build_info.addOption([]const u8, "version", b.option([]const u8, "version", "The release tag, or nightly (default: dev)") orelse "dev");
+    build_info.addOption([]const u8, "commit", b.option([]const u8, "commit", "The commit this was built from") orelse "");
+
     // The SNES emulation is its own module so that nothing under src/ has to
     // reach across the directory with a relative path. The dependency only
     // goes one way: snes/ never imports the game.
@@ -99,6 +107,7 @@ pub fn build(b: *std.Build) void {
     zig_obj.root_module.addImport("snes", snes_mod);
     zig_obj.root_module.addImport("sdl_c", sdl_c_mod);
     zig_obj.root_module.addImport("default_ini", default_ini);
+    zig_obj.root_module.addOptions("build_info", build_info);
     exe.root_module.addObject(zig_obj);
 
     const tests = b.addTest(.{
@@ -113,6 +122,7 @@ pub fn build(b: *std.Build) void {
     tests.root_module.addImport("snes", snes_mod);
     tests.root_module.addImport("sdl_c", sdl_c_mod);
     tests.root_module.addImport("default_ini", default_ini);
+    tests.root_module.addOptions("build_info", build_info);
     // Exercise the same C/Zig boundaries as the game while the port is in
     // progress. Real implementations replace the former panic-only stubs.
     tests.root_module.addCSourceFiles(.{
@@ -167,6 +177,7 @@ pub fn build(b: *std.Build) void {
     });
     menu_tests.root_module.addIncludePath(b.path("."));
     menu_tests.root_module.addImport("default_ini", default_ini);
+    menu_tests.root_module.addOptions("build_info", build_info);
     menu_tests.root_module.addImport("sdl_c", sdl_c_mod);
     addSdlIncludes(b, menu_tests.root_module);
     linkSdlLibs(b, menu_tests.root_module);
@@ -210,6 +221,11 @@ pub fn build(b: *std.Build) void {
     // The triforce icon, so the Windows binary is not a blank default one.
     if (target.result.os.tag == .windows) {
         exe.root_module.addWin32ResourceFile(.{ .file = b.path("src/platform/win32/zelda3.rc") });
+        // The updater's HTTPS trusts what Windows trusts, which it reads out
+        // of the system's certificate store through crypt32.
+        for ([_]*std.Build.Module{ exe.root_module, tests.root_module, menu_tests.root_module }) |m| {
+            m.linkSystemLibrary("crypt32", .{});
+        }
     }
 
     b.installArtifact(exe);
@@ -227,6 +243,7 @@ pub fn build(b: *std.Build) void {
     });
     tools.root_module.addIncludePath(b.path("."));
     tools.root_module.addImport("sdl_c", sdl_c_mod);
+    tools.root_module.addOptions("build_info", build_info);
     addSdlIncludes(b, tools.root_module);
     linkSdlLibs(b, tools.root_module);
     tools.headerpad_max_install_names = target.result.os.tag == .macos;
@@ -247,6 +264,7 @@ pub fn build(b: *std.Build) void {
     });
     tools_tests.root_module.addIncludePath(b.path("."));
     tools_tests.root_module.addImport("sdl_c", sdl_c_mod);
+    tools_tests.root_module.addOptions("build_info", build_info);
     addSdlIncludes(b, tools_tests.root_module);
     linkSdlLibs(b, tools_tests.root_module);
     test_step.dependOn(&b.addRunArtifact(tools_tests).step);

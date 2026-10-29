@@ -88,7 +88,7 @@ jobs:
         cmake --install sdl3-build
     # An explicit target also means a baseline CPU rather than the runner's.
     - name: Build
-      run: zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-macos.11.0 --prefix out -Dsdl-include="$PWD/sdl3/include" -Dsdl-lib="$PWD/sdl3/lib"
+      run: zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-macos.11.0 --prefix out -Dsdl-include="$PWD/sdl3/include" -Dsdl-lib="$PWD/sdl3/lib" -Dversion=${{ needs.plan.outputs.name }} -Dcommit=${{ needs.plan.outputs.ref }}
     # The game and the asset tools each get a bundle; both keep their
     # files in the same data directory.
     - name: Make the app bundles
@@ -128,6 +128,8 @@ jobs:
         echo "data directory: $dir"
         case "$dir" in *"Application Support/alttp-dx") ;; *) exit 1 ;; esac
         test -f "$dir/zelda3.ini"
+        # The updater compares this with what's released, so it had better be right.
+        ALTTP-DX.app/Contents/MacOS/zelda3 --version 2>&1 | grep -F "${{ needs.plan.outputs.name }} ${{ needs.plan.outputs.ref }}"
     - name: Check the tools start
       run: zelda3-tools.app/Contents/MacOS/zelda3-tools help
     # Two downloads: the game, and the tools for modding and languages.
@@ -179,7 +181,7 @@ jobs:
         cmake --install sdl3-build
     # An explicit target also means a baseline CPU rather than the runner's.
     - name: Build
-      run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux-gnu.2.35 --prefix out -Dsdl-include="$PWD/sdl3/include" -Dsdl-lib="$PWD/sdl3/lib"
+      run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux-gnu.2.35 --prefix out -Dsdl-include="$PWD/sdl3/include" -Dsdl-lib="$PWD/sdl3/lib" -Dversion=${{ needs.plan.outputs.name }} -Dcommit=${{ needs.plan.outputs.ref }}
     # Two AppImages from the one build: the game, and the tools.
     - name: Make the AppImages
       run: |
@@ -207,6 +209,7 @@ jobs:
         echo "data directory: $dir"
         case "$dir" in *".local/share/alttp-dx") ;; *) exit 1 ;; esac
         test -f "$dir/zelda3.ini"
+        APPIMAGE_EXTRACT_AND_RUN=1 ./alttp-dx-${{ needs.plan.outputs.name }}-x86_64.AppImage --version 2>&1 | grep -F "${{ needs.plan.outputs.name }} ${{ needs.plan.outputs.ref }}"
         APPIMAGE_EXTRACT_AND_RUN=1 ./zelda3-tools-${{ needs.plan.outputs.name }}-x86_64.AppImage help
     - uses: actions/upload-artifact@v7
       with:
@@ -235,7 +238,7 @@ jobs:
         "SDL3_ROOT=$PWD\sdl3\SDL3-$ver\x86_64-w64-mingw32" | Out-File -FilePath $env:GITHUB_ENV -Append
     - name: Build
       shell: pwsh
-      run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu --prefix out -Dsdl-include="$env:SDL3_ROOT\include" -Dsdl-lib="$env:SDL3_ROOT\bin"
+      run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu --prefix out -Dsdl-include="$env:SDL3_ROOT\include" -Dsdl-lib="$env:SDL3_ROOT\bin" -Dversion=${{ needs.plan.outputs.name }} -Dcommit=${{ needs.plan.outputs.ref }}
     - name: Package
       shell: pwsh
       run: |

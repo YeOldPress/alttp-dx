@@ -12,6 +12,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const fileio = @import("fileio.zig");
 const msu_import = @import("msu_import.zig");
+const updater = @import("updater.zig");
 const rom_mod = @import("rom.zig");
 const asset_all = @import("asset_all.zig");
 const c = @import("sdl.zig").c;
@@ -113,6 +114,11 @@ const kSectionMark = "\x00SECTION";
 pub const kSettings = [_]Setting{
     .{ .section = kSectionMark, .key = "", .label = "GENERAL", .kind = .text },
     .{ .section = "General", .key = "StartMenu", .label = "Start Menu", .kind = .toggle },
+    .{ .section = "General", .key = "CheckForUpdates", .label = "Check For Updates", .kind = .toggle },
+    .{ .section = "General", .key = "UpdateChannel", .label = "Update Channel", .kind = .{ .choice = .{
+        .values = &.{ "releases", "nightly" },
+        .labels = &.{ "Releases", "Nightly" },
+    } } },
     .{ .section = "General", .key = "Autosave", .label = "Autosave", .kind = .toggle },
     .{ .section = "General", .key = "DisplayPerfInTitle", .label = "Show FPS In Title", .kind = .toggle },
     .{ .section = "General", .key = "ExtendedAspectRatio", .label = "Aspect Ratio", .kind = .{ .choice = .{ .values = &.{ "4:3", "16:9", "16:10", "18:9" } } } },
@@ -566,6 +572,11 @@ pub fn applyCrtDefaults(ini: *Ini) !void {
     }
 }
 
+fn isUpdateSetting(s: Setting) bool {
+    return std.mem.eql(u8, s.section, "General") and
+        (std.mem.eql(u8, s.key, "CheckForUpdates") or std.mem.eql(u8, s.key, "UpdateChannel"));
+}
+
 pub fn isCrtFilter(s: Setting) bool {
     return std.mem.eql(u8, s.section, "Graphics") and std.mem.eql(u8, s.key, "CrtFilter");
 }
@@ -735,6 +746,8 @@ fn firstSelectable(from: usize, to: usize) usize {
 pub fn describe(s: Setting) []const u8 {
     const kDescriptions = [_][2][]const u8{
         .{ "StartMenu", "Show the start menu, with settings and the ROM and assets, before the game begins. When off, the game starts straight away unless its assets need building." },
+        .{ "CheckForUpdates", "When the start menu opens, ask GitHub whether there's a newer version. If there is, an Update button shows under the title. Nothing downloads until you press it. A game you built yourself never updates." },
+        .{ "UpdateChannel", "Releases offers each numbered release. Nightly offers the rolling test build of the newest changes, rebuilt most nights, and sometimes broken. Back on Releases, the next release is the next update." },
         .{ "Autosave", "Save a snapshot of the game when you quit and pick up from it next time you start." },
         .{ "DisplayPerfInTitle", "Show the frames per second in the window's title bar." },
         .{ "ExtendedAspectRatio", "Widen the view past the original 4 by 3 screen, showing more of the world at the sides. 16 by 9 suits most modern screens." },
@@ -806,6 +819,8 @@ const Modal = enum {
     info,
     /// Where an MSU-1 pack comes from: dropped on the window, or picked.
     msu,
+    /// A newer version: whether to install it, then how that's going.
+    update,
 };
 
 const kMsuChoices = [_][]const u8{ "Folder", "Zip File" };
@@ -897,7 +912,7 @@ fn visibleRows(screen: Screen) usize {
     return if (screen == .alttpr) 9 else kVisibleRows;
 }
 
-const kMainItems = [_][]const u8{ "Settings", "Features", "Controls", "Achievements", "Save Settings", "Build Assets", "Import MSU-1", "Play", "Randomizer" };
+const kMainItems = [_][]const u8{ "Settings", "Features", "Controls", "Achievements", "Save Settings", "Build Assets", "Import MSU-1", "Play", "Randomizer", "Update" };
 const kMainControls = 2;
 const kMainAchievements = 3;
 const kMainSave = 4;
@@ -906,6 +921,9 @@ const kMainBuild = 5;
 const kMainImport = 6;
 const kMainLaunch = 7;
 const kMainRandomizer = 8;
+/// Only there when there's a newer version, in the title's third line. Last,
+/// so down from Randomizer wraps through it to the top.
+const kMainUpdate = 9;
 
 /// Whether MSU audio is on in the ini, which brings Import MSU-1 onto the
 /// main page. Set from the ini every frame, so it follows the setting.
@@ -925,8 +943,54 @@ fn msuPathIn(ini: *const Ini) []const u8 {
 }
 
 fn mainShown(i: usize) bool {
+    if (i == kMainUpdate) return updateShown();
     return i != kMainImport or g_msu_on;
 }
+
+// ------------------------------------------------------------------ updates
+
+/// Whether the ini wants update checks, which it does unless told not to.
+fn updatesOnIn(ini: *const Ini) bool {
+    const i = settingIndex("General", "CheckForUpdates") orelse return false;
+    const v = std.mem.trim(u8, ini.values[i] orelse "1", " \t");
+    return !std.mem.eql(u8, v, "0") and !std.ascii.eqlIgnoreCase(v, "false");
+}
+
+fn updateChannelIn(ini: *const Ini) updater.Channel {
+    const i = settingIndex("General", "UpdateChannel") orelse return .releases;
+    return updater.Channel.fromName(ini.values[i] orelse "");
+}
+
+/// Asks again after the update settings change, or forgets what was found
+/// once they're off.
+fn recheckUpdates(ini: *const Ini) void {
+    if (updatesOnIn(ini)) updater.check(updateChannelIn(ini)) else updater.forget();
+}
+
+/// The Update button shows from when something newer turns up until the
+/// game restarts into it.
+fn updateShown() bool {
+    return switch (updater.phase()) {
+        .available, .downloading, .installing, .ready, .failed => true,
+        else => false,
+    };
+}
+
+fn updateButtonLabel(buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "UPDATE TO {s}", .{updater.offerLabel()}) catch "UPDATE";
+}
+
+fn updateRect() Rect {
+    var buf: [64]u8 = undefined;
+    const w = textWidth(updateButtonLabel(&buf), kScale) + 40;
+    // Clear of the title above and the rule below.
+    return .{ .x = kWindowW / 2 - w / 2, .y = 36 + kRowH * 2 - 2, .w = w, .h = kRowH + 2 };
+}
+
+/// Which of the update dialog's two buttons is picked.
+var g_update_choice: usize = 0;
+const kUpdateChoices = [_][]const u8{ "Update", "Not Now" };
+const kUpdateFailedChoices = [_][]const u8{ "Open Page", "Close" };
 
 /// Which of the MSU dialog's two buttons is picked: a folder, or a zip.
 var g_msu_choice: usize = 0;
@@ -1321,14 +1385,20 @@ pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const 
     const row_top: usize = if (row >= visibleRows(screen)) row + 1 - visibleRows(screen) else 0;
     const cursor = [_]usize{ row, row, row };
     const top = [_]usize{ row_top, row_top, row_top };
-    const modal: Modal = if (std.c.getenv("INFO") != null) .info else if (std.c.getenv("MSU_IMPORT") != null) .msu else .none;
+    // UPDATE=available|downloading|failed pretends there's a newer version;
+    // UPDATE_MODAL=1 has its dialog up, UPDATE_PICKED=1 its button picked.
+    if (std.c.getenv("UPDATE")) |u| {
+        updater.pretend(std.meta.stringToEnum(updater.Phase, std.mem.span(u)) orelse .available, "V1.8");
+    }
+    const modal: Modal = if (std.c.getenv("INFO") != null) .info else if (std.c.getenv("MSU_IMPORT") != null) .msu else if (std.c.getenv("UPDATE_MODAL") != null) .update else .none;
     g_msu_on = msuOnIn(&ini);
     if (screen == .achievements) {
         g_ach_unlocked = achievement_list.Unlocked.load(alloc);
         g_ach_row = row;
         if (row >= kAchVisible) g_ach_top = row + 1 - kAchVisible;
     }
-    drawScreen(renderer, &ini, viewOf(screen, if (screen == .main) kMainControls else kMainRandomizer, cursor, top, "", false, .verified, modal, kQuitStay));
+    const main_pick: usize = if (std.c.getenv("UPDATE_PICKED") != null) kMainUpdate else kMainControls;
+    drawScreen(renderer, &ini, viewOf(screen, if (screen == .main) main_pick else kMainRandomizer, cursor, top, "", false, .verified, modal, kQuitStay));
     if (!c.SDL_SaveBMP(surface, path)) return error.SaveFailed;
 }
 
@@ -1369,7 +1439,7 @@ fn drawHeader(renderer: *c.SDL_Renderer, screen: Screen) void {
         // it used to.
         drawTextCentered(renderer, cx, 36, kColorSelect, "THE LEGEND OF ZELDA", kScale);
         drawTextCentered(renderer, cx, 36 + kRowH, kColorSelect, "A LINK TO THE PAST DX", kScale);
-        drawTextCentered(renderer, cx, 36 + kRowH * 2, kColorTextDim, "START MENU", kScale);
+        if (!updateShown()) drawTextCentered(renderer, cx, 36 + kRowH * 2, kColorTextDim, "START MENU", kScale);
         fillRect(renderer, 60, 36 + kRowH * 3 + 7, kWindowW - 120, 1, kColorLine);
         return;
     }
@@ -1439,6 +1509,7 @@ const kEmuNote = [_][]const u8{
 };
 
 fn mainEntryRect(i: usize) Rect {
+    if (i == kMainUpdate) return if (updateShown()) updateRect() else .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     if (i == kMainLaunch) return launchRect();
     if (i == kMainRandomizer) return randoRect();
     // A hidden entry takes no room and catches no clicks.
@@ -1529,6 +1600,17 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     const r = randoRect();
     drawButton(renderer, r, kColorRandoBg, v.cursor == kMainRandomizer);
     drawTextCentered(renderer, cx, r.y + 7, kColorText, "RANDOMIZER", kScale);
+
+    // A newer version: an outlined button where "START MENU" was, in the
+    // green that means good news here.
+    if (updateShown()) {
+        var buf: [64]u8 = undefined;
+        const u = updateRect();
+        const picked = v.cursor == kMainUpdate;
+        fillRound(renderer, u.x, u.y, u.w, u.h, 8, if (picked) kColorRowHi else kColorPanel);
+        outlineRound(renderer, u.x, u.y, u.w, u.h, 8, if (picked) 2 else 1, if (picked) kColorSelect else kColorOk);
+        drawTextCentered(renderer, cx, u.y + 3, if (picked) kColorSelect else kColorOk, updateButtonLabel(&buf), kScale);
+    }
 }
 
 // ------------------------------------------------------------ achievements
@@ -2106,7 +2188,58 @@ fn drawModal(renderer: *c.SDL_Renderer, v: View) void {
                 drawTextCentered(renderer, r.x + r.w / 2, r.y + 8, if (selected) kColorSelect else kColorText, label, kScale);
             }
         },
+        .update => drawUpdateModal(renderer),
         .info, .none => {},
+    }
+}
+
+/// Two answers side by side, the way the other questions have them.
+fn drawChoices(renderer: *c.SDL_Renderer, labels: []const []const u8, picked: usize) void {
+    for (labels, 0..) |label, i| {
+        const r = modalChoiceRect(i);
+        const selected = i == picked;
+        fillRound(renderer, r.x, r.y, r.w, r.h, 8, if (selected) kColorRowHi else kColorPanel);
+        outlineRound(renderer, r.x, r.y, r.w, r.h, 8, if (selected) 2 else 1, if (selected) kColorSelect else kColorLine);
+        drawTextCentered(renderer, r.x + r.w / 2, r.y + 8, if (selected) kColorSelect else kColorText, label, kScale);
+    }
+}
+
+fn drawUpdateModal(renderer: *c.SDL_Renderer) void {
+    const box = modalRect();
+    const cx = box.x + box.w / 2;
+    var buf: [64]u8 = undefined;
+    switch (updater.phase()) {
+        .downloading, .installing, .ready => |p| {
+            const title = switch (p) {
+                .downloading => std.fmt.bufPrint(&buf, "DOWNLOADING {s}", .{updater.offerLabel()}) catch "DOWNLOADING",
+                .installing => "INSTALLING...",
+                else => "RESTARTING...",
+            };
+            drawTextCentered(renderer, cx, box.y + 34, kColorSelect, title, kScale);
+
+            const pr = updater.progress();
+            const frac: f32 = if (p != .downloading) 1 else if (pr.total == 0) 0 else @min(1, @as(f32, @floatFromInt(pr.done)) / @as(f32, @floatFromInt(pr.total)));
+            const bar = Rect{ .x = box.x + 50, .y = box.y + 84, .w = box.w - 100, .h = 14 };
+            fillRound(renderer, bar.x, bar.y, bar.w, bar.h, 6, kColorRowHi);
+            if (frac > 0) fillRound(renderer, bar.x, bar.y, @max(bar.w * frac, 12), bar.h, 6, kColorOk);
+
+            const mb = 1024.0 * 1024.0;
+            const size = std.fmt.bufPrint(&buf, "{d:.1} OF {d:.1} MB", .{ @as(f32, @floatFromInt(pr.done)) / mb, @as(f32, @floatFromInt(pr.total)) / mb }) catch "";
+            if (p == .downloading) drawTextCentered(renderer, cx, bar.y + 30, kColorTextDim, size, kScale);
+        },
+        .failed => {
+            drawTextCentered(renderer, cx, box.y + 22, kColorWarn, "COULD NOT UPDATE", kScale);
+            drawTextCentered(renderer, cx, box.y + 22 + kRowH, kColorText, updater.message(), kScale);
+            drawTextCentered(renderer, cx, box.y + 22 + kRowH * 2 + 4, kColorTextDim, "THE RELEASE PAGE HAS IT TO DOWNLOAD BY HAND", 1);
+            drawChoices(renderer, &kUpdateFailedChoices, g_update_choice);
+        },
+        else => {
+            drawTextCentered(renderer, cx, box.y + 22, kColorSelect, std.fmt.bufPrint(&buf, "UPDATE TO {s}?", .{updater.offerLabel()}) catch "UPDATE?", kScale);
+            var mine: [40]u8 = undefined;
+            drawTextCentered(renderer, cx, box.y + 22 + kRowH, kColorTextDim, std.fmt.bufPrint(&buf, "YOU HAVE {s}", .{updater.installedLabel(&mine)}) catch "", kScale);
+            drawTextCentered(renderer, cx, box.y + 22 + kRowH * 2 + 4, kColorTextDim, "DOWNLOADS FROM GITHUB, THEN RESTARTS. SAVES STAY PUT.", 1);
+            drawChoices(renderer, &kUpdateChoices, g_update_choice);
+        },
     }
 }
 
@@ -2130,6 +2263,14 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
                 drawText(renderer, 40, footer_y, kColorTextDim, "LEFT/RIGHT CHOOSE");
                 drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "A/ENTER BROWSE   B/ESC CANCEL");
             },
+            .update => switch (updater.phase()) {
+                .downloading => drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "B/ESC CANCEL"),
+                .installing, .ready => {},
+                else => {
+                    drawText(renderer, 40, footer_y, kColorTextDim, "LEFT/RIGHT CHOOSE");
+                    drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "A/ENTER CONFIRM   B/ESC CANCEL");
+                },
+            },
             .none => {},
         }
         if (v.status.len != 0)
@@ -2141,6 +2282,10 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
         .main => {
             drawText(renderer, 40, footer_y, kColorTextDim, "SELECT A/ENTER   SAVE X/S");
             drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "QUIT B/ESC");
+            // Which version this is, out of the way in the corner.
+            var buf: [40]u8 = undefined;
+            const ver = if (updater.installed == .dev) "DEV BUILD" else updater.installedLabel(&buf);
+            drawTextScaled(renderer, kWindowW - 40 - textWidth(ver, kScale), footer_y + kRowH, kColorTextDim, ver, kScale);
         },
         .settings, .features => {
             drawText(renderer, 40, footer_y, kColorTextDim, "CHANGE  LEFT/RIGHT OR A");
@@ -2611,6 +2756,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     }
     var running = true;
     var event: c.SDL_Event = undefined;
+    if (updatesOnIn(&ini)) updater.check(updateChannelIn(&ini));
 
     while (running) {
         const now = c.SDL_GetTicks();
@@ -2822,6 +2968,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
         g_msu_on = msuOnIn(&ini);
         if (!mainShown(main_cursor)) main_cursor = kMainLaunch;
         if (modal == .msu and !g_msu_on) modal = .none;
+        if (modal == .update and !updateShown()) modal = .none;
 
         // A folder or zip picked in the system's own dialog.
         if (takeMsuPick()) |path| {
@@ -2897,6 +3044,45 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                     if (confirm or over_choice) openMsuPicker(window, g_msu_choice == 1);
                     if (back) modal = .none;
                 },
+                .update => switch (updater.phase()) {
+                    .available, .failed => |p| {
+                        if (hovered) {
+                            for (0..kUpdateChoices.len) |i| {
+                                if (modalChoiceRect(i).contains(hover_x, hover_y)) g_update_choice = i;
+                            }
+                        }
+                        const step = if (adjust != 0) adjust else move;
+                        if (step != 0) g_update_choice = 1 - g_update_choice;
+                        var over_choice = false;
+                        if (clicked) {
+                            for (0..kUpdateChoices.len) |i| {
+                                if (modalChoiceRect(i).contains(hover_x, hover_y)) {
+                                    g_update_choice = i;
+                                    over_choice = true;
+                                }
+                            }
+                        }
+                        if (confirm or over_choice) {
+                            if (g_update_choice == 0 and p == .available) {
+                                updater.install();
+                            } else {
+                                if (g_update_choice == 0) _ = c.SDL_OpenURL(updater.pageUrl().ptr);
+                                // Closing a failure leaves the button there
+                                // to try again with.
+                                updater.dismiss();
+                                modal = .none;
+                            }
+                        }
+                        if (back) {
+                            updater.dismiss();
+                            modal = .none;
+                        }
+                    },
+                    // Only the download can stop; once the files are going
+                    // in, they finish.
+                    .downloading => if (back) updater.cancel(),
+                    else => {},
+                },
                 .none => {},
             }
         } else if (screen == .main) {
@@ -2968,6 +3154,11 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                     },
                     kMainRandomizer => {
                         screen = .hub;
+                        status = "";
+                    },
+                    kMainUpdate => {
+                        modal = .update;
+                        g_update_choice = 0;
                         status = "";
                     },
                     else => {
@@ -3156,6 +3347,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                     try ini.set(at, next);
                     // A filter brings its own sliders, curve and bezel.
                     if (isCrtFilter(kSettings[at])) try applyCrtDefaults(&ini);
+                    if (isUpdateSetting(kSettings[at])) recheckUpdates(&ini);
                     dirty = true;
                     status = "";
                 }
@@ -3180,6 +3372,14 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 launch = true;
                 running = false;
             }
+        }
+
+        // Installed: keep the settings, start the new game, and go. If it
+        // won't start, it's still installed, and opening it again does it.
+        if (updater.phase() == .ready and running) {
+            if (dirty) ini.save("zelda3.ini") catch {};
+            if (!updater.restart()) std.debug.print("Updated, but could not start the new version: {s}\n", .{c.SDL_GetError()});
+            running = false;
         }
 
         drawScreen(renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice));

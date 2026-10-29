@@ -8,6 +8,7 @@ const util = @import("util.zig");
 const audio = @import("audio.zig");
 const rumble = @import("rumble.zig");
 const menu = @import("menu.zig");
+const updater = @import("updater.zig");
 const settings_menu = @import("settings_menu.zig");
 const title_dx = @import("title_dx.zig");
 const achievements = @import("achievements.zig");
@@ -874,6 +875,18 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         return 0;
     }
 
+    // `--check-update <releases|nightly> [file]` asks GitHub what the start
+    // menu would, and with a file downloads the update there too.
+    if ((argc == 2 or argc == 3) and strcmp(argv[0], "--check-update") == 0) {
+        const to: ?[:0]const u8 = if (argc == 3) std.mem.span(argv[2]) else null;
+        return if (updater.checkFromCommandLine(updater.Channel.fromName(std.mem.span(argv[1])), to)) 0 else 1;
+    }
+
+    // `--update <releases|nightly>` installs what the Update button would.
+    if (argc == 2 and strcmp(argv[0], "--update") == 0) {
+        return if (updater.updateFromCommandLine(updater.Channel.fromName(std.mem.span(argv[1])))) 0 else 1;
+    }
+
     // `--emu-render <rom> <script> <out.bmp>` is the same for a ROM run in
     // the emulator, such as a randomizer seed.
     if (argc == 4 and strcmp(argv[0], "--emu-render") == 0) {
@@ -910,6 +923,10 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
             return 0;
         }
         if (std.mem.eql(u8, arg, "--menu-shot")) return 1;
+        if (std.mem.eql(u8, arg, "--version")) {
+            std.debug.print("ALTTP-DX {s}{s}{s}\n", .{ updater.version, if (updater.commit.len != 0) " " else "", updater.commit });
+            return 0;
+        }
         if (std.mem.eql(u8, arg, "--pad-info")) {
             menu.reportPads();
             return 0;
@@ -936,6 +953,8 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         // No menu for these either.
     } else {
         menu.enterDataDirectory();
+        // An update finishes here: the files it set aside go.
+        updater.cleanUp();
         // The start menu shows when zelda3.ini asks for it, and always when
         // the assets are missing or aren't the ones this build makes, since
         // stale assets misbehave in ways that look like game bugs. Comparing
