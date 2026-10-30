@@ -136,13 +136,17 @@ for seeds, the tracker and its options.
 ## zelda3-tools
 
 Everything to do with the assets besides playing: building them, exporting the
-maps, text, graphics and music to edit, building them back, and adding
-languages from translated ROMs. Run it for a window, or with a command:
+maps, text, graphics and music to edit, building them back (by itself, each
+time you save a change, if you like), then starting the game to try it. It
+shows the exported pictures and checks `.zspr` Link sprites, plays the game's
+music, looks over MSU-1 packs before you import them, and adds languages from
+translated ROMs. Run it for a window, which a mouse, the keys or a pad all
+drive, or with a command:
 
 <table>
   <tr>
-    <td><img src="docs/screenshots/tools-modding.png" alt="The Modding page, with the ROM, the files folder and the output path filled in" width="480"></td>
-    <td><img src="docs/screenshots/tools-languages.png" alt="The Languages page, with German and French ticked" width="480"></td>
+    <td><img src="docs/screenshots/tools-music.png" alt="The Music page, with a song picked and an MSU-1 pack checked" width="480"></td>
+    <td><img src="docs/screenshots/tools-graphics.png" alt="The Graphics page, showing Link's exported sprite sheet" width="480"></td>
   </tr>
 </table>
 
@@ -151,6 +155,7 @@ zelda3-tools export --rom zelda3.sfc --out my_mod
 zelda3-tools build --from my_mod
 zelda3-tools extract-dialogue --rom german.sfc --out langs
 zelda3-tools build --languages de,fr --lang-dir langs
+zelda3-tools check-msu my_pack.zip
 zelda3-tools help
 ```
 

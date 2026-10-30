@@ -1,16 +1,16 @@
 //! Port of src/spc_player.c: a direct reimplementation of the game's SPC700
 //! music/sfx driver, driving the DSP without emulating the SPC cpu.
 //!
-//! The SpcPlayer/Channel layouts live in audio.zig and the ram memory maps in
+//! The SpcPlayer/Channel layouts live in spc_types.zig and the ram memory maps in
 //! spc_player_tables.zig.
 const std = @import("std");
-const audio = @import("audio.zig");
+const spc_types = @import("spc_types.zig");
 const snes_pkg = @import("snes");
 const dsp_mod = snes_pkg.dsp;
 const maps = @import("spc_player_tables.zig");
 
-const SpcPlayer = audio.SpcPlayer;
-const Channel = audio.Channel;
+const SpcPlayer = spc_types.SpcPlayer;
+const Channel = spc_types.Channel;
 
 extern fn malloc(size: usize) ?*anyopaque;
 

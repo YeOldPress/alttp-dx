@@ -56,6 +56,16 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    // The tools play the game's music with its sound driver, which needs the
+    // sound chip and nothing else. The whole module would bring the CPU, and
+    // the CPU calls into the game.
+    const snes_dsp_mod = b.createModule(.{
+        .root_source_file = b.path("snes/dsp_root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
     // SDL and the GL loader, translated once and shared, so every module that
     // touches SDL sees the same types. sdl.zig re-exports it as `c`.
     const sdl_c = b.addTranslateC(.{
@@ -244,6 +254,8 @@ pub fn build(b: *std.Build) void {
     tools.root_module.addIncludePath(b.path("."));
     tools.root_module.addImport("sdl_c", sdl_c_mod);
     tools.root_module.addOptions("build_info", build_info);
+    tools.root_module.addImport("default_ini", default_ini);
+    tools.root_module.addImport("snes", snes_dsp_mod);
     addSdlIncludes(b, tools.root_module);
     linkSdlLibs(b, tools.root_module);
     tools.headerpad_max_install_names = target.result.os.tag == .macos;
@@ -265,6 +277,8 @@ pub fn build(b: *std.Build) void {
     tools_tests.root_module.addIncludePath(b.path("."));
     tools_tests.root_module.addImport("sdl_c", sdl_c_mod);
     tools_tests.root_module.addOptions("build_info", build_info);
+    tools_tests.root_module.addImport("default_ini", default_ini);
+    tools_tests.root_module.addImport("snes", snes_dsp_mod);
     addSdlIncludes(b, tools_tests.root_module);
     linkSdlLibs(b, tools_tests.root_module);
     test_step.dependOn(&b.addRunArtifact(tools_tests).step);

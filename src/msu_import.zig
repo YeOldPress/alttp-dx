@@ -243,6 +243,80 @@ fn removeOldPack(arena: std.mem.Allocator, dir: [:0]const u8, prefix: []const u8
     }
 }
 
+// ----------------------------------------------------------------- checking
+
+/// The game plays its own music for any of these a pack leaves out. Seeds
+/// from the randomizer use more, from 35 on, one per dungeon.
+pub const kGameTracks = 34;
+
+/// A track in a pack, and what would stop the game playing it.
+pub const Found = struct {
+    name: TrackName,
+    /// The file's own name, for saying which one.
+    file: []const u8,
+    size: u64,
+    /// Why the game won't play it, or null when it looks right.
+    problem: ?[]const u8 = null,
+};
+
+/// Every track in the pack at `source`, a folder or a .zip, by number, with
+/// anything that would stop the game playing it. Nothing is copied.
+pub fn inspectPack(arena: std.mem.Allocator, source: [:0]const u8) Error![]Found {
+    var tracks: std.ArrayList(Track) = .empty;
+    const is_zip = !fileio.isDir(source.ptr);
+    if (is_zip) try readZip(arena, source, &tracks) else try readFolder(arena, source, &tracks);
+    dedupe(&tracks);
+    std.mem.sort(Track, tracks.items, {}, struct {
+        fn lt(_: void, a: Track, b: Track) bool {
+            if (a.name.number != b.name.number) return a.name.number < b.name.number;
+            return @backingInt(a.name.ext) < @backingInt(b.name.ext);
+        }
+    }.lt);
+
+    const zip_file: ?*anyopaque = if (is_zip) fileio.fopen(source.ptr, "rb") orelse return error.NotFound else null;
+    defer if (zip_file) |f| {
+        _ = fileio.fclose(f);
+    };
+
+    const found = arena.alloc(Found, tracks.items.len) catch return error.OutOfMemory;
+    for (tracks.items, found) |t, *out| {
+        var head: [8]u8 = undefined;
+        var have_head = false;
+        var size: u64 = 0;
+        switch (t.source) {
+            .file => |path| {
+                var info: c.SDL_PathInfo = undefined;
+                if (c.SDL_GetPathInfo(path.ptr, &info)) size = info.size;
+                if (fileio.fopen(path.ptr, "rb")) |f| {
+                    have_head = fileio.fread(&head, 1, head.len, f) == head.len;
+                    _ = fileio.fclose(f);
+                }
+            },
+            .zip => |e| {
+                size = e.size;
+                have_head = zip.readStart(zip_file.?, e, &head) catch false;
+            },
+        }
+        const file = switch (t.source) {
+            .file => |path| basename(path),
+            .zip => |e| basename(e.name),
+        };
+        out.* = .{ .name = t.name, .file = file, .size = size, .problem = trackProblem(t.name.ext, size, if (have_head) head else null) };
+    }
+    return found;
+}
+
+/// What's wrong with a track of `size` bytes starting with `head`, which is
+/// null when it couldn't be read without unpacking it.
+fn trackProblem(ext: Ext, size: u64, head: ?[8]u8) ?[]const u8 {
+    if (size < 8) return "too short to be a track";
+    const h = head orelse return null;
+    return switch (ext) {
+        .pcm => if (std.mem.eql(u8, h[0..4], "MSU1")) null else "doesn't start with MSU1, so it isn't an MSU-1 track",
+        .opuz => if (std.mem.eql(u8, h[0..4], "OPUZ")) null else "doesn't start with OPUZ, so it isn't an Opuz track",
+    };
+}
+
 // --------------------------------------------------------------------- zips
 
 fn readZip(arena: std.mem.Allocator, path: [:0]const u8, tracks: *std.ArrayList(Track)) Error!void {
@@ -258,6 +332,41 @@ fn readZip(arena: std.mem.Allocator, path: [:0]const u8, tracks: *std.ArrayList(
 // -------------------------------------------------------------------- tests
 
 const testing = std.testing;
+
+test "a track's problems are put plainly" {
+    try testing.expectEqual(@as(?[]const u8, null), trackProblem(.pcm, 100, "MSU1\x00\x00\x00\x00".*));
+    try testing.expectEqual(@as(?[]const u8, null), trackProblem(.opuz, 100, null));
+    try testing.expectEqualStrings("too short to be a track", trackProblem(.pcm, 4, null).?);
+    try testing.expect(trackProblem(.pcm, 100, "RIFF\x00\x00\x00\x00".*) != null);
+    try testing.expect(trackProblem(.opuz, 100, "MSU1\x00\x00\x00\x00".*) != null);
+}
+
+test "a pack is inspected without copying anything" {
+    const root = ".zig-cache/msu-inspect-test";
+    const zip_path = root ++ "/pack.zip";
+    defer {
+        _ = c.SDL_RemovePath(zip_path);
+        _ = c.SDL_RemovePath(root);
+    }
+    try testing.expect(c.SDL_CreateDirectory(root));
+    // The first is stored, so its start can be checked; the rest are
+    // deflated, so only their sizes can.
+    try zip.writeTestZip(zip_path, &.{
+        .{ "Pack/pack-2.pcm", "RIFF not a track" },
+        .{ "Pack/pack-1.pcm", "MSU1" ++ comptime repeat("one ", 20) },
+        .{ "Pack/pack-3.pcm", "MSU" },
+        .{ "Pack/readme.txt", "hello" },
+    });
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const found = try inspectPack(arena_state.allocator(), zip_path);
+    try testing.expectEqual(@as(usize, 3), found.len);
+    try testing.expectEqual(@as(u16, 1), found[0].name.number);
+    try testing.expectEqual(@as(?[]const u8, null), found[0].problem);
+    try testing.expectEqualStrings("pack-2.pcm", found[1].file);
+    try testing.expect(found[1].problem != null);
+    try testing.expectEqualStrings("too short to be a track", found[2].problem.?);
+}
 
 test "tracks are known by the number at the end of their name" {
     try testing.expectEqual(TrackName{ .number = 12, .ext = .pcm }, trackOf("Some Pack/pack-12.pcm").?);

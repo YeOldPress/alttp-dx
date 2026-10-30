@@ -131,7 +131,10 @@ jobs:
         # The updater compares this with what's released, so it had better be right.
         ALTTP-DX.app/Contents/MacOS/zelda3 --version 2>&1 | grep -F "${{ needs.plan.outputs.name }} ${{ needs.plan.outputs.ref }}"
     - name: Check the tools start
-      run: zelda3-tools.app/Contents/MacOS/zelda3-tools help
+      run: |
+        zelda3-tools.app/Contents/MacOS/zelda3-tools help
+        # The tools update themselves too, from the version they report.
+        zelda3-tools.app/Contents/MacOS/zelda3-tools version 2>&1 | grep -F "${{ needs.plan.outputs.name }} ${{ needs.plan.outputs.ref }}"
     # Two downloads: the game, and the tools for modding and languages.
     - name: Archive
       run: |
@@ -211,6 +214,7 @@ jobs:
         test -f "$dir/zelda3.ini"
         APPIMAGE_EXTRACT_AND_RUN=1 ./alttp-dx-${{ needs.plan.outputs.name }}-x86_64.AppImage --version 2>&1 | grep -F "${{ needs.plan.outputs.name }} ${{ needs.plan.outputs.ref }}"
         APPIMAGE_EXTRACT_AND_RUN=1 ./zelda3-tools-${{ needs.plan.outputs.name }}-x86_64.AppImage help
+        APPIMAGE_EXTRACT_AND_RUN=1 ./zelda3-tools-${{ needs.plan.outputs.name }}-x86_64.AppImage version 2>&1 | grep -F "${{ needs.plan.outputs.name }} ${{ needs.plan.outputs.ref }}"
     - uses: actions/upload-artifact@v7
       with:
         name: Linux
@@ -254,6 +258,9 @@ jobs:
       run: |
         pkg\zelda3-tools\zelda3-tools.exe help
         if ($LASTEXITCODE -ne 0) { exit 1 }
+        # Through cmd, which hands back stderr as plain text.
+        $ver = (cmd /c "pkg\zelda3-tools\zelda3-tools.exe version 2>&1" | Out-String)
+        if (-not $ver.Contains("${{ needs.plan.outputs.name }} ${{ needs.plan.outputs.ref }}")) { Write-Output $ver; exit 1 }
     - uses: actions/upload-artifact@v7
       with:
         name: Windows

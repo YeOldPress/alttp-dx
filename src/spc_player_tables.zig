@@ -1,8 +1,8 @@
 //! Memory maps for spc_player, generated from src/spc_player.c -- do not edit by hand.
 //! They describe where each SpcPlayer/Channel field lives in the emulated SPC ram.
-const audio = @import("audio.zig");
-const Channel = audio.Channel;
-const SpcPlayer = audio.SpcPlayer;
+const spc_types = @import("spc_types.zig");
+const Channel = spc_types.Channel;
+const SpcPlayer = spc_types.SpcPlayer;
 
 pub const MemMap = struct { off: usize, org_off: u16 };
 pub const MemMapSized = struct { off: usize, org_off: u16, size: usize };

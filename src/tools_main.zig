@@ -5,6 +5,7 @@ const ops = @import("tools_ops.zig");
 const gui = @import("tools_gui.zig");
 const dev = @import("tools_dev.zig");
 const fileio = @import("fileio.zig");
+const updater = @import("updater.zig");
 
 const kUsage =
     \\zelda3-tools: build and check the assets for zelda3.
@@ -33,6 +34,14 @@ const kUsage =
     \\                    ROM this doesn't recognize as that language
     \\  verify [FILE]     Check an asset file against this version
     \\  rom-info ROM      Say which release a ROM is
+    \\  check-msu PACK    Look over an MSU-1 pack, a folder or a .zip, for
+    \\                    missing tracks and files that won't play
+    \\  version           Say which version these tools are
+    \\  check-update [releases|nightly]
+    \\                    Ask GitHub whether newer tools are out
+    \\  update [releases|nightly]
+    \\                    Replace these tools with the newest, as the
+    \\                    window's Update button does
     \\  gui               Open the window
     \\  help              This
     \\
@@ -48,6 +57,8 @@ const kUsage =
 
 pub fn main(init: std.process.Init) !void {
     const alloc = std.heap.c_allocator;
+    // These are the tools, and they update themselves, not the game.
+    updater.product = &updater.tools;
     g_io = init.io;
     var it = try init.minimal.args.iterateAllocator(alloc);
     defer it.deinit();
@@ -182,13 +193,26 @@ fn runCommand(alloc: std.mem.Allocator, args: []const [:0]const u8) !bool {
     if (std.mem.eql(u8, cmd, "verify")) {
         return ops.verifyAssets(alloc, log, positional(rest, 0) orelse "zelda3_assets.dat");
     }
+    if (std.mem.eql(u8, cmd, "version") or std.mem.eql(u8, cmd, "--version")) {
+        std.debug.print("zelda3-tools {s} {s}\n", .{ updater.version, updater.commit });
+        return true;
+    }
+    if (std.mem.eql(u8, cmd, "check-update")) {
+        return updater.checkFromCommandLine(updater.Channel.fromName(positional(rest, 0) orelse ""), null);
+    }
+    if (std.mem.eql(u8, cmd, "update")) {
+        return updater.updateFromCommandLine(updater.Channel.fromName(positional(rest, 0) orelse ""));
+    }
+    if (std.mem.eql(u8, cmd, "check-msu")) {
+        return ops.checkMsuPack(alloc, log, positional(rest, 0) orelse return error.Usage);
+    }
     if (std.mem.eql(u8, cmd, "rom-info")) {
         return ops.romInfo(alloc, log, positional(rest, 0) orelse return error.Usage);
     }
     if (std.mem.eql(u8, cmd, "input-log")) {
         const path = positional(rest, 0) orelse return error.Usage;
         const data = fileio.readWholeFile(alloc, path.ptr) catch |e| {
-            log.err("Could not read {s}: {s}", .{ path, @errorName(e) });
+            log.err("Could not read {s}: {s}.", .{ path, ops.plainError(e) });
             return false;
         };
         defer alloc.free(data);
@@ -201,7 +225,7 @@ fn runCommand(alloc: std.mem.Allocator, args: []const [:0]const u8) !bool {
     if (std.mem.eql(u8, cmd, "text-dict")) {
         const path = positional(rest, 0) orelse "dialogue.txt";
         const data = fileio.readWholeFile(alloc, path.ptr) catch |e| {
-            log.err("Could not read {s}: {s}", .{ path, @errorName(e) });
+            log.err("Could not read {s}: {s}.", .{ path, ops.plainError(e) });
             return false;
         };
         defer alloc.free(data);
@@ -209,6 +233,20 @@ fn runCommand(alloc: std.mem.Allocator, args: []const [:0]const u8) !bool {
             log.err("{s}: {s}", .{ path, @errorName(e) });
             return false;
         };
+        return true;
+    }
+    // Undocumented: what the music page plays, as a file, for hearing it
+    // without the window.
+    if (std.mem.eql(u8, cmd, "music-wav")) {
+        const assets = positional(rest, 0) orelse return error.Usage;
+        const number = std.fmt.parseInt(u8, positional(rest, 1) orelse return error.Usage, 10) catch return error.Usage;
+        const out = positional(rest, 2) orelse return error.Usage;
+        const music = @import("tools_music.zig");
+        const p = try music.Player.init(alloc, assets);
+        defer p.deinit();
+        for (p.songs) |s| std.debug.print("{d}:{s} ", .{ s.number, @tagName(s.bank) });
+        std.debug.print("\n", .{});
+        try music.writeWav(alloc, assets, number, out, 8);
         return true;
     }
     // Undocumented: a frame of the window as a picture, for working on it.
@@ -243,4 +281,7 @@ test {
     _ = @import("png.zig");
     _ = @import("asset_dialogue.zig");
     _ = dev;
+    _ = @import("tools_music.zig");
+    _ = @import("tools_pictures.zig");
+    _ = @import("tools_game.zig");
 }

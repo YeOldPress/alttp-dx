@@ -155,6 +155,18 @@ fn zip64Sizes(e: *Entry, extra: []const u8) void {
 
 /// Writes one entry of the open zip `f` out to `dest`, checking its size and
 /// CRC.
+/// The first bytes of a stored (uncompressed) entry, into `buf`. False for
+/// a compressed one, whose start can't be had without inflating it.
+pub fn readStart(f: *anyopaque, e: Entry, buf: []u8) Error!bool {
+    if (e.method != 0) return false;
+    if (e.size < buf.len) return error.Corrupt;
+    var local: [30]u8 = undefined;
+    try readAt(f, e.offset, &local);
+    if (le32(&local) != 0x04034b50) return error.BadZip;
+    try readAt(f, e.offset + 30 + le16(local[26..]) + le16(local[28..]), buf);
+    return true;
+}
+
 pub fn extract(alloc: std.mem.Allocator, f: *anyopaque, e: Entry, dest: [:0]const u8) Error!void {
     var local: [30]u8 = undefined;
     try readAt(f, e.offset, &local);

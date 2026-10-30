@@ -12,6 +12,9 @@
 //! and settings live elsewhere or are left alone, so they come through it.
 //! Downloads are checked against the size and SHA-256 GitHub gives for them.
 //!
+//! The tools are released beside the game as downloads of their own, and
+//! update themselves the same way: `product` says which one this is.
+//!
 //! A build without a version, which is any build nobody ran through the
 //! release workflow, never offers to replace itself.
 
@@ -29,9 +32,24 @@ pub const commit = build_info.commit;
 
 const kApi = "https://api.github.com/repos/YeOldPress/alttp-dx";
 const kUserAgent = "alttp-dx-updater";
-/// What every file of the game's own download starts with; the tools have
-/// downloads of their own.
-const kAssetPrefix = "alttp-dx-";
+
+/// What's being kept up to date: the game, or the tools. Each only ever
+/// replaces itself.
+pub const Product = struct {
+    /// What every file of its download starts with.
+    prefix: []const u8,
+    /// Its Mac bundle.
+    bundle: []const u8,
+    /// Its executable, inside the bundle, or beside it with .exe on Windows.
+    exe: []const u8,
+};
+
+pub const game = Product{ .prefix = "alttp-dx-", .bundle = "ALTTP-DX.app", .exe = "zelda3" };
+pub const tools = Product{ .prefix = "zelda3-tools-", .bundle = "zelda3-tools.app", .exe = "zelda3-tools" };
+
+/// Which one this is: the game, unless the tools say so before anything
+/// else here runs.
+pub var product: *const Product = &game;
 
 pub const Channel = enum {
     releases,
@@ -115,10 +133,10 @@ const kAssetSuffix: ?[]const u8 = switch (builtin.os.tag) {
     else => null,
 };
 
-/// The game's download for this system, out of a release's files.
-fn pickAsset(assets: []const AssetJson, suffix: []const u8) ?AssetJson {
+/// One product's download for this system, out of a release's files.
+fn pickAsset(assets: []const AssetJson, prefix: []const u8, suffix: []const u8) ?AssetJson {
     for (assets) |a| {
-        if (std.mem.startsWith(u8, a.name, kAssetPrefix) and std.mem.endsWith(u8, a.name, suffix)) return a;
+        if (std.mem.startsWith(u8, a.name, prefix) and std.mem.endsWith(u8, a.name, suffix)) return a;
     }
     return null;
 }
@@ -247,7 +265,7 @@ fn busy(p: Phase) bool {
 /// to replace.
 const Target = struct {
     kind: enum { mac_bundle, appimage, windows_folder },
-    /// The .app, the AppImage, or the folder holding zelda3.exe, with a
+    /// The .app, the AppImage, or the folder holding the .exe, with a
     /// separator on the end for a folder.
     path: Fixed(4096) = .{},
 };
@@ -279,10 +297,12 @@ fn locate() ?Target {
             return t;
         },
         .windows => {
-            // The game works in its own folder, so the files are named
-            // relative to it, which keeps the C runtime's narrow paths away
-            // from whatever the folder's called.
-            if (!fileio.exists("zelda3.exe")) return null;
+            // The game works in its own folder, and the tools' window moves
+            // into theirs, so the files are named relative to it, which keeps
+            // the C runtime's narrow paths away from whatever it's called.
+            var exe_buf: [64]u8 = undefined;
+            const exe = std.fmt.bufPrintSentinel(&exe_buf, "{s}.exe", .{product.exe}, 0) catch return null;
+            if (!fileio.exists(exe.ptr)) return null;
             const base = c.SDL_GetBasePath() orelse return null;
             var t = Target{ .kind = .windows_folder };
             t.path.set(std.mem.span(base));
@@ -313,7 +333,7 @@ fn describe(err: Failure) []const u8 {
     return switch (err) {
         error.Network => "COULD NOT REACH GITHUB",
         error.NoAsset => "NO DOWNLOAD FOR THIS SYSTEM",
-        error.WriteFailed => "CAN'T REPLACE THE GAME HERE",
+        error.WriteFailed => if (product == &tools) "CAN'T REPLACE THE TOOLS HERE" else "CAN'T REPLACE THE GAME HERE",
         error.Corrupt => "DOWNLOAD CAME OUT DAMAGED",
         error.Unpack => "COULD NOT UNPACK THE UPDATE",
         error.Cancelled => "CANCELLED",
@@ -461,7 +481,7 @@ fn findNewer(http: *Http, arena: std.mem.Allocator, channel: Channel) Failure!bo
     }
 
     const suffix = kAssetSuffix orelse return error.NoAsset;
-    const asset = pickAsset(rel.assets, suffix) orelse return error.NoAsset;
+    const asset = pickAsset(rel.assets, product.prefix, suffix) orelse return error.NoAsset;
     g_offer.label.set(label);
     g_offer.url.set(asset.browser_download_url);
     g_offer.page.set(rel.html_url);
@@ -545,7 +565,7 @@ fn downloadOffer(http: *Http, dest: [:0]const u8) Failure!void {
 /// Beside the bundle, so the swap is a rename on the one disk.
 fn macStaging(arena: std.mem.Allocator, bundle: []const u8) Failure![:0]u8 {
     const parent = std.fs.path.dirname(bundle) orelse return error.WriteFailed;
-    return std.fmt.allocPrintSentinel(arena, "{s}/.alttp-dx-update", .{parent}, 0) catch error.OutOfMemory;
+    return std.fmt.allocPrintSentinel(arena, "{s}/.{s}update", .{ parent, product.prefix }, 0) catch error.OutOfMemory;
 }
 
 /// The whole .app goes: unpacked beside the old one by ditto, which knows
@@ -560,8 +580,8 @@ fn installMac(http: *Http, arena: std.mem.Allocator, bundle: [:0]const u8) Failu
     const unpacked = try join(arena, staging, "unpacked");
     const args = [_:null]?[*:0]const u8{ "/usr/bin/ditto", "-x", "-k", zip_path.ptr, unpacked.ptr };
     if (!runAndWait(&args)) return error.Unpack;
-    const fresh = try join(arena, unpacked, "ALTTP-DX.app");
-    const fresh_exe = try join(arena, fresh, "Contents/MacOS/zelda3");
+    const fresh = try join(arena, unpacked, product.bundle);
+    const fresh_exe = std.fmt.allocPrintSentinel(arena, "{s}/Contents/MacOS/{s}", .{ fresh, product.exe }, 0) catch return error.OutOfMemory;
     if (!fileio.exists(fresh_exe.ptr)) return error.Unpack;
 
     // The old one steps aside, and comes back if the new one won't go in.
@@ -591,7 +611,10 @@ fn installAppImage(http: *Http, arena: std.mem.Allocator, image: [:0]const u8) F
     }
 }
 
-const kWindowsZip = "alttp-dx-update.zip";
+/// The download, in the folder it's going into.
+fn windowsZip(arena: std.mem.Allocator) Failure![:0]u8 {
+    return std.fmt.allocPrintSentinel(arena, "{s}update.zip", .{product.prefix}, 0) catch error.OutOfMemory;
+}
 const kNewSuffix = ".update-new";
 const kOldSuffix = ".update-old";
 
@@ -600,10 +623,11 @@ const kOldSuffix = ".update-old";
 /// a loaded DLL, but it will rename them, so the old ones step aside and go
 /// the next time the game starts.
 fn installWindows(http: *Http, arena: std.mem.Allocator) Failure!void {
-    try downloadOffer(http, kWindowsZip);
-    defer _ = fileio.remove(kWindowsZip);
+    const zip_path = try windowsZip(arena);
+    try downloadOffer(http, zip_path);
+    defer _ = fileio.remove(zip_path.ptr);
 
-    const f = fileio.fopen(kWindowsZip, "rb") orelse return error.Unpack;
+    const f = fileio.fopen(zip_path.ptr, "rb") orelse return error.Unpack;
     var names: std.ArrayList([]const u8) = .empty;
     {
         defer _ = fileio.fclose(f);
@@ -631,8 +655,8 @@ fn installWindows(http: *Http, arena: std.mem.Allocator) Failure!void {
 }
 
 /// Which of the zip's files the update puts in place, by the name it has in
-/// the game's folder: the files in the zip's top folder, all but the ini,
-/// which is the player's.
+/// the install's folder: the files in the zip's top folder, all but the
+/// game's ini, which is the player's.
 fn windowsFileOf(e: zip.Entry) ?[]const u8 {
     if (e.isDir()) return null;
     const slash = std.mem.indexOfScalar(u8, e.name, '/') orelse return null;
@@ -672,7 +696,8 @@ fn swapBack(arena: std.mem.Allocator, name: []const u8) void {
     if (fileio.exists(old.ptr)) _ = c.SDL_RenamePath(old.ptr, cur.ptr) else _ = c.SDL_RemovePath(cur.ptr);
 }
 
-/// Starts the game that was just installed. The caller quits straight after.
+/// Starts the version that was just installed. The caller quits straight
+/// after.
 pub fn restart() bool {
     const t = target() orelse return false;
     var exe_buf: [4200]u8 = undefined;
@@ -686,7 +711,7 @@ pub fn restart() bool {
             break :blk c.SDL_CreateProcess(@ptrCast(&args), false);
         },
         .windows_folder => blk: {
-            const exe = std.fmt.bufPrintSentinel(&exe_buf, "{s}zelda3.exe", .{t.path.get()}, 0) catch return false;
+            const exe = std.fmt.bufPrintSentinel(&exe_buf, "{s}{s}.exe", .{ t.path.get(), product.exe }, 0) catch return false;
             const args = [_:null]?[*:0]const u8{exe.ptr};
             break :blk c.SDL_CreateProcess(@ptrCast(&args), false);
         },
@@ -715,7 +740,8 @@ pub fn cleanUp() void {
             _ = c.SDL_RemovePath(tmp.ptr);
         },
         .windows_folder => {
-            _ = fileio.remove(kWindowsZip);
+            const zip_path = windowsZip(arena) catch return;
+            _ = fileio.remove(zip_path.ptr);
             _ = c.SDL_EnumerateDirectory(".", cleanUpCallback, null);
         },
     }
@@ -809,7 +835,7 @@ pub fn updateFromCommandLine(channel: Channel) bool {
         return false;
     }
     if (!supported()) {
-        std.debug.print("This copy isn't installed the way a release is (an .app, an AppImage, or zelda3.exe's folder), so it can't replace itself.\n", .{});
+        std.debug.print("This copy isn't installed the way a release is (an .app, an AppImage, or the folder its .exe came in), so it can't replace itself.\n", .{});
         return false;
     }
     var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
@@ -874,10 +900,13 @@ test "the game's own download is picked out of a release's files" {
         .{ .name = "alttp-dx-v1.8-windows-x86_64.zip", .browser_download_url = "game-win", .size = 3 },
         .{ .name = "alttp-dx-v1.8-x86_64.AppImage", .browser_download_url = "game-linux", .size = 4 },
     };
-    try testing.expectEqualStrings("game-mac", pickAsset(&assets, "-macos-arm64.zip").?.browser_download_url);
-    try testing.expectEqualStrings("game-win", pickAsset(&assets, "-windows-x86_64.zip").?.browser_download_url);
-    try testing.expectEqualStrings("game-linux", pickAsset(&assets, "-x86_64.AppImage").?.browser_download_url);
-    try testing.expectEqual(@as(?AssetJson, null), pickAsset(assets[0..1], "-macos-arm64.zip"));
+    try testing.expectEqualStrings("game-mac", pickAsset(&assets, game.prefix, "-macos-arm64.zip").?.browser_download_url);
+    try testing.expectEqualStrings("game-win", pickAsset(&assets, game.prefix, "-windows-x86_64.zip").?.browser_download_url);
+    try testing.expectEqualStrings("game-linux", pickAsset(&assets, game.prefix, "-x86_64.AppImage").?.browser_download_url);
+    try testing.expectEqual(@as(?AssetJson, null), pickAsset(assets[0..1], game.prefix, "-macos-arm64.zip"));
+    // And the tools take theirs, and only theirs.
+    try testing.expectEqualStrings("tools-mac", pickAsset(&assets, tools.prefix, "-macos-arm64.zip").?.browser_download_url);
+    try testing.expectEqual(@as(?AssetJson, null), pickAsset(&assets, tools.prefix, "-x86_64.AppImage"));
 }
 
 test "a release reads out of GitHub's answer, digest and all" {
@@ -892,7 +921,7 @@ test "a release reads out of GitHub's answer, digest and all" {
     ;
     const rel = try std.json.parseFromSliceLeaky(ReleaseJson, arena_state.allocator(), json, .{ .ignore_unknown_fields = true });
     try testing.expectEqualStrings("v1.8", rel.tag_name);
-    const a = pickAsset(rel.assets, "-x86_64.AppImage").?;
+    const a = pickAsset(rel.assets, game.prefix, "-x86_64.AppImage").?;
     try testing.expectEqual(@as(u64, 1234), a.size);
     // sha256("test")
     const d = parseDigest(a.digest).?;
