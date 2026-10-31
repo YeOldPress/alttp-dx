@@ -977,24 +977,33 @@ pub const AssetState = enum {
     missing,
     /// Present and matching the file the old Python tool builds from a US ROM.
     verified,
-    /// Present, but not a file this build of the tool produces. Usually an
-    /// older .dat; the game may or may not accept it.
+    /// Built for this version, but not from the plain US ROM alone: a mod,
+    /// or extra languages. The game loads it, so it plays.
+    custom,
+    /// Present, but not a file this version loads. Usually an older .dat.
     unrecognized,
 
     fn line(self: AssetState) []const u8 {
         return switch (self) {
             .missing => "ASSETS MISSING",
             .verified => "ASSETS VERIFIED",
-            .unrecognized => "ASSETS PRESENT - CHECKSUM DIFFERS",
+            .custom => "CUSTOM ASSETS - MOD OR LANGUAGES",
+            .unrecognized => "ASSETS OUT OF DATE - BUILD AGAIN",
         };
     }
 
     fn color(self: AssetState) Rgb {
         return switch (self) {
             .missing => kColorWarn,
-            .verified => kColorOk,
+            .verified, .custom => kColorOk,
             .unrecognized => kColorWarn,
         };
+    }
+
+    /// Whether Play can go ahead. Only "the standard file" used to count,
+    /// which kept every mod and translation from starting at all.
+    pub fn playable(self: AssetState) bool {
+        return self == .verified or self == .custom;
     }
 };
 
@@ -1019,7 +1028,8 @@ fn checkAssetsAt(alloc: std.mem.Allocator, path: [*:0]const u8) AssetState {
         hex[i * 2] = kHexDigits[byte >> 4];
         hex[i * 2 + 1] = kHexDigits[byte & 0xf];
     }
-    return if (std.mem.eql(u8, &hex, asset_all.kReferenceDigest)) .verified else .unrecognized;
+    if (std.mem.eql(u8, &hex, asset_all.kReferenceDigest)) return .verified;
+    return if (@import("asset_pack.zig").loadsInGame(data)) .custom else .unrecognized;
 }
 
 /// State the drawing needs. Passed as one value because the slow paths -
@@ -1113,7 +1123,10 @@ pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const 
         if (row >= kAchVisible) g_ach_top = row + 1 - kAchVisible;
     }
     const main_pick: usize = if (std.c.getenv("UPDATE_PICKED") != null) kMainUpdate else kMainControls;
-    drawScreen(renderer, &ini, viewOf(screen, if (screen == .main) main_pick else kMainRandomizer, cursor, top, "", false, .verified, modal, kQuitStay));
+    // ASSETS=check shows what's really there, rather than the verified file
+    // every other shot assumes.
+    const assets: AssetState = if (std.c.getenv("ASSETS") != null) checkAssets(alloc) else .verified;
+    drawScreen(renderer, &ini, viewOf(screen, if (screen == .main) main_pick else kMainRandomizer, cursor, top, "", false, assets, modal, kQuitStay));
     if (!c.SDL_SaveBMP(surface, path)) return error.SaveFailed;
 }
 
@@ -2453,7 +2466,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
         // Started with a seed: its page comes first, on Play, and assets
         // don't matter to it.
         screen = .alttpr;
-    } else if (assets != .verified) {
+    } else if (!assets.playable()) {
         modal = .rom;
         main_cursor = kMainLaunch;
     }
@@ -2554,7 +2567,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         assets = checkAssets(alloc);
                         // A drop that worked answers the question; one that
                         // did not leaves it up so another can be tried.
-                        if (assets == .verified) modal = .none;
+                        if (assets.playable()) modal = .none;
                     };
                 },
 
@@ -2875,7 +2888,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         // The game cannot start without its assets, and stale
                         // ones misbehave in ways that look like game bugs, so
                         // ask for a ROM rather than letting either through.
-                        if (assets != .verified) {
+                        if (!assets.playable()) {
                             modal = .rom;
                         } else {
                             launch = true;
@@ -3071,7 +3084,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
             assets = checkAssets(alloc);
 
             // Enter on Play with no assets builds them and then goes.
-            if (main_cursor == kMainLaunch and screen == .main and assets == .verified) {
+            if (main_cursor == kMainLaunch and screen == .main and assets.playable()) {
                 launch = true;
                 running = false;
             }
@@ -3491,6 +3504,30 @@ test "the asset check tells the three states apart" {
         try testing.expectEqual(AssetState.verified, checkAssetsAt(alloc, "zig-out/bin/zelda3_assets.dat"));
 }
 
+test "a mod or a translation plays, and an old asset file doesn't" {
+    const alloc = testing.allocator;
+    var scratch_buf: [64]u8 = undefined;
+    const scratch = try scratchName(&scratch_buf, "customtest", "dat");
+    defer _ = fileio.remove(scratch);
+
+    // This version's header and asset count, and anything at all after.
+    const pack = @import("asset_pack.zig");
+    var data: [88 + pack.kGameAssetCount * 4 + 16]u8 = @splat(0);
+    @memcpy(data[0..48], &pack.kGameHeader);
+    std.mem.writeInt(u32, data[80..84], pack.kGameAssetCount, .little);
+    try fileio.writeWholeFile(scratch, &data);
+    const custom = checkAssetsAt(alloc, scratch);
+    try testing.expectEqual(AssetState.custom, custom);
+    try testing.expect(custom.playable());
+
+    // Another version's names hash to something else.
+    data[20] ^= 0xff;
+    try fileio.writeWholeFile(scratch, &data);
+    const old = checkAssetsAt(alloc, scratch);
+    try testing.expectEqual(AssetState.unrecognized, old);
+    try testing.expect(!old.playable());
+}
+
 test "a corrupted asset file is not reported as verified" {
     const alloc = testing.allocator;
     if (!fileio.exists("zig-out/bin/zelda3_assets.dat")) return error.SkipZigTest;
@@ -3507,7 +3544,9 @@ test "a corrupted asset file is not reported as verified" {
     const scratch = try scratchName(&scratch_buf, "corrupttest", "dat");
     try fileio.writeWholeFile(scratch, copy);
     defer _ = fileio.remove(scratch);
-    try testing.expectEqual(AssetState.unrecognized, checkAssetsAt(alloc, scratch));
+    // A changed payload can't be told from a mod's, but it isn't passed off
+    // as the standard file either.
+    try testing.expectEqual(AssetState.custom, checkAssetsAt(alloc, scratch));
 }
 
 test "every named choice names all of its values" {

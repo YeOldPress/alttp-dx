@@ -956,11 +956,12 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         // An update finishes here: the files it set aside go.
         updater.cleanUp();
         // The start menu shows when zelda3.ini asks for it, and always when
-        // the assets are missing or aren't the ones this build makes, since
-        // stale assets misbehave in ways that look like game bugs. Comparing
+        // the assets are missing or from another version, since stale assets
+        // misbehave in ways that look like game bugs. A mod's or a
+        // translation's are this version's, and go straight in. Comparing
         // against a ROM (zelda3 <rom>) is a developer tool and goes straight in.
         // A seed always gets its options screen first.
-        if (rando_rom != null or (argc == 0 and (menu.checkAssets(alloc) != .verified or menu.wantsStartMenu(alloc)))) {
+        if (rando_rom != null or (argc == 0 and (!menu.checkAssets(alloc).playable() or menu.wantsStartMenu(alloc)))) {
             const outcome = menu.run(alloc, rando_rom) catch |err| {
                 std.debug.print("The start menu failed: {s}\n", .{@errorName(err)});
                 return 1;
@@ -1715,12 +1716,7 @@ fn LoadLinkGraphics() void {
     }
 }
 
-const kAssetsSig = [48]u8{
-    90, 101, 108, 100, 97,  51,  95,  118, 48,  32,  32,  32,
-    32, 32,  10,  0,   27,  174, 233, 45,  74,  174, 252, 50,
-    49, 27,  153, 197, 27,  43,  216, 197, 132, 101, 173, 169,
-    36, 108, 15,  155, 176, 169, 57,  131, 174, 101, 51,  207,
-};
+const kAssetsSig = @import("asset_pack.zig").kGameHeader;
 
 fn LoadAssets() void {
     var length: usize = 0;

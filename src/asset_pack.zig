@@ -25,6 +25,26 @@ const fileio = @import("fileio.zig");
 
 pub const kSignature = "Zelda3_v0     \n\x00";
 
+/// The first 48 bytes the game wants: the signature, then the hash of this
+/// version's asset names. Any file that starts with them and has this many
+/// assets loads, whatever's in them, which is what lets mods and languages
+/// play.
+pub const kGameHeader = [48]u8{
+    90, 101, 108, 100, 97,  51,  95,  118, 48,  32,  32,  32,
+    32, 32,  10,  0,   27,  174, 233, 45,  74,  174, 252, 50,
+    49, 27,  153, 197, 27,  43,  216, 197, 132, 101, 173, 169,
+    36, 108, 15,  155, 176, 169, 57,  131, 174, 101, 51,  207,
+};
+pub const kGameAssetCount = 165;
+
+/// Whether this version of the game will load `data` as its asset file: the
+/// same check the game makes before it takes one.
+pub fn loadsInGame(data: []const u8) bool {
+    if (data.len < kHeaderSize + kGameAssetCount * 4) return false;
+    if (!std.mem.eql(u8, data[0..48], &kGameHeader)) return false;
+    return readU32(data, 80) == kGameAssetCount;
+}
+
 /// How the game casts a payload. Carried so the writer can emit the C header
 /// the old Python tool prints with --print-assets-header.
 pub const Kind = enum {

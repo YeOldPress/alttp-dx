@@ -292,7 +292,11 @@ fn verifyData(log: Log, data: []const u8) bool {
         log.ok("Verified: matches the assets this version of the game expects.", .{});
         return true;
     }
-    log.info("Doesn't match the standard assets. That's expected for a mod or extra languages, and wrong otherwise.", .{});
+    if (pack.loadsInGame(data)) {
+        log.ok("Custom assets, from a mod or extra languages. The game plays them.", .{});
+    } else {
+        log.err("These are from another version of the game. Build them again.", .{});
+    }
     log.info("Its SHA-256 is {s}.", .{&hex});
     return false;
 }

@@ -1392,7 +1392,8 @@ fn reportReadiness(alloc: std.mem.Allocator, st: *State) void {
     switch (assetState(alloc, st.get(.out))) {
         .missing => g_logger.info("The assets aren't built yet.", .{}),
         .standard => g_logger.ok("The assets are built and match this version.", .{}),
-        .other => g_logger.info("The assets are a mod's, or have extra languages.", .{}),
+        .custom => g_logger.ok("The assets are custom: a mod, or extra languages.", .{}),
+        .old => g_logger.info("The assets are from another version. Build again.", .{}),
     }
 
     if (st.game != null) {
@@ -1402,9 +1403,9 @@ fn reportReadiness(alloc: std.mem.Allocator, st: *State) void {
     }
 }
 
-/// Whether the asset file at `path` is there, and whether it's the one this
-/// version builds from the US ROM.
-fn assetState(alloc: std.mem.Allocator, path: []const u8) enum { missing, standard, other } {
+/// Whether the asset file at `path` is there, whether it's the one this
+/// version builds from the US ROM, and if not, whether the game loads it.
+fn assetState(alloc: std.mem.Allocator, path: []const u8) enum { missing, standard, custom, old } {
     const z = alloc.dupeSentinel(u8, path, 0) catch return .missing;
     defer alloc.free(z);
     const data = fileio.readWholeFile(alloc, z.ptr) catch return .missing;
@@ -1412,7 +1413,8 @@ fn assetState(alloc: std.mem.Allocator, path: []const u8) enum { missing, standa
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
     const hex = std.fmt.bytesToHex(digest, .lower);
-    return if (std.mem.eql(u8, &hex, @import("asset_all.zig").kReferenceDigest)) .standard else .other;
+    if (std.mem.eql(u8, &hex, @import("asset_all.zig").kReferenceDigest)) return .standard;
+    return if (@import("asset_pack.zig").loadsInGame(data)) .custom else .old;
 }
 
 /// Takes a dropped file or folder for whichever row it belongs in, by what
@@ -1493,8 +1495,8 @@ fn drawFrame(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Wind
 /// "@watch" turns on rebuilding, "@picture=N" and "@song=N" pick from those
 /// lists, "@focus=N" puts the focus on the Nth thing that can have it,
 /// "@busy=build" shows a job running, "@update=available" (or downloading,
-/// failed...) an update on offer, and "@modal=quit" or "@modal=update" a
-/// question up.
+/// failed...) an update on offer, "@modal=quit" or "@modal=update" a
+/// question up, and "@us=path" takes path to be a US ROM.
 pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]const u8, log_lines: []const [:0]const u8) !void {
     const surface = c.SDL_CreateSurface(kWindowW, kWindowH, c.SDL_PIXELFORMAT_XRGB8888) orelse return error.SdlSurface;
     defer c.SDL_DestroySurface(surface);
@@ -1535,6 +1537,11 @@ pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]co
                 updater.pretend(std.meta.stringToEnum(updater.Phase, value) orelse .available, "V1.9");
             } else if (std.mem.eql(u8, key, "modal")) {
                 st.modal = std.meta.stringToEnum(Modal, value) orelse .none;
+            } else if (std.mem.eql(u8, key, "us")) {
+                // A US ROM to build from, for a machine without one.
+                st.set(alloc, .rom, value);
+                st.rom_seen.appendSlice(std.heap.c_allocator, value) catch {};
+                st.rom_kind = .us;
             } else if (std.meta.stringToEnum(Field, key)) |f| st.set(alloc, f, value);
         }
     }
