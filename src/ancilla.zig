@@ -1010,6 +1010,23 @@ fn tileCheckExtraX() u16 {
     return xt;
 }
 
+/// Whether an ancilla at (x, y) hits the diagonal wall it's over, whose
+/// attribute is `tile_attr` (0x18-0x1B).
+///
+/// The game hands this to the sprites' slope check, which reads the tile from
+/// sprite_tiletype ($0FA5) and takes 0x10 off it. On the overworld nothing
+/// here sets that, so it's whatever the last sprite looked at; indoors it's
+/// set, but to 0x18-0x1B, still past the four slopes the table holds. Either
+/// way the SNES indexes past the table into the code after it, and a
+/// boomerang thrown at a diagonal wall bounces or passes through by chance;
+/// the C reads past it the same way, and here that trapped (issue #7). The
+/// overworld also had x shifted down to a tile column by then. The slope's
+/// direction is the attribute's low bits, as Link's own walls read it, and x
+/// is the pixel.
+fn ancillaSlopeBlocks(tile_attr: u8, x: u16, y: u16) bool {
+    return sprite.slopeBlocks(tile_attr & 3, x, y);
+}
+
 pub export fn Ancilla_CheckTileCollision_targeted(k: c_int, x_in: u16, y: u16) callconv(.c) bool {
     const ku: usize = @intCast(k);
     var x = x_in;
@@ -1041,7 +1058,7 @@ pub export fn Ancilla_CheckTileCollision_targeted(k: c_int, x_in: u16, y: u16) c
         if (t == 1) {
             set_alert = true;
         } else if (t == 2) {
-            return sprite.Entity_CheckSlopedTileCollision(x, y);
+            return ancillaSlopeBlocks(tile_attr, x_in, y);
         } else if (t == 3) {
             if (vars.ancilla_floor2[ku] != 0) {
                 set_alert = true;
@@ -1091,7 +1108,8 @@ pub export fn Ancilla_CheckTileCollision_Class2(k: c_int) callconv(.c) bool {
 pub export fn Ancilla_CheckTileCollision_Class2_Inner(k: c_int) callconv(.c) bool {
     const ku: usize = @intCast(k);
     const d: usize = vars.ancilla_dir[ku];
-    var x = Ancilla_GetX(k) +% @as(u16, @bitCast(@as(i16, tables.kAncilla_CheckTileColl_X[d])));
+    const x0 = Ancilla_GetX(k) +% @as(u16, @bitCast(@as(i16, tables.kAncilla_CheckTileColl_X[d])));
+    var x = x0;
     const y = Ancilla_GetY(k) +% @as(u16, @bitCast(@as(i16, tables.kAncilla_CheckTileColl_Y[d])));
 
     if ((y -% vars.BG2VOFS_copy2.*) >= 224 or (x -% vars.BG2HOFS_copy2.*) >= 256)
@@ -1113,7 +1131,7 @@ pub export fn Ancilla_CheckTileCollision_Class2_Inner(k: c_int) callconv(.c) boo
     if (t == 0)
         return false;
     if (t == 2)
-        return sprite.Entity_CheckSlopedTileCollision(x, y);
+        return ancillaSlopeBlocks(tile_attr, x0, y);
     if (t == 4) {
         if (vars.ancilla_floor2[ku] != 0)
             return true;
@@ -2891,6 +2909,22 @@ test "ice rod wall-hit animation terminates at frame two" {
     Ancilla11_IceRodWallHit(0);
     try std.testing.expectEqual(@as(u8, 0), vars.ancilla_type[0]);
     try std.testing.expectEqual(@as(u8, 7), vars.ancilla_aux_timer[0]);
+}
+
+test "an ancilla on a diagonal wall reads the wall's own slope" {
+    @memset(&rtl.g_ram, 0);
+    vars.player_is_indoors.* = 1;
+    vars.ancilla_type[0] = 5;
+    // Pixel (3, 2) of the tile at column 2, row 2.
+    const x: u16 = 16 + 3;
+    const y: u16 = 16 + 2;
+    const t = 2 + 2 * 64;
+    // Below the line for one facing, above it for the opposite one; both
+    // used to index past the slope table.
+    vars.dung_bg2_attr_table[t] = 0x18;
+    try std.testing.expect(Ancilla_CheckTileCollision_targeted(0, x, y));
+    vars.dung_bg2_attr_table[t] = 0x1b;
+    try std.testing.expect(!Ancilla_CheckTileCollision_targeted(0, x, y));
 }
 
 fn expired(timer: *u8) bool {

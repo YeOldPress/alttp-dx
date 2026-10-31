@@ -2003,11 +2003,16 @@ pub export fn Sprite_GetTileAttribute(k: c_int, x: *u16, y: u16) callconv(.c) u8
 }
 
 pub export fn Entity_CheckSlopedTileCollision(x: u16, y: u16) callconv(.c) bool {
+    return slopeBlocks(vars.sprite_tiletype.* -% 0x10, x, y);
+}
+
+/// Whether (x, y) is on the solid side of a diagonal wall, `slope` (0-3)
+/// saying which way it faces.
+pub fn slopeBlocks(slope: u8, x: u16, y: u16) bool {
     const a: u8 = @truncate(y & 7);
-    const r6: u8 = vars.sprite_tiletype.* -% 0x10;
-    const b: i8 = tables.kSlopedTile[@as(usize, r6) * 8 + (x & 7)];
+    const b: i8 = tables.kSlopedTile[@as(usize, slope) * 8 + (x & 7)];
     // C promotes both to int, so this is a signed comparison.
-    return if (r6 < 2) (@as(i32, b) >= @as(i32, a)) else (@as(i32, a) >= @as(i32, b));
+    return if (slope < 2) (@as(i32, b) >= @as(i32, a)) else (@as(i32, a) >= @as(i32, b));
 }
 
 // ---------------------------------------------------------------------------
