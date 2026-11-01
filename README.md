@@ -5,9 +5,11 @@ with the extras a modern re-release would have.
 
 <img src="docs/screenshots/start-menu.png" alt="The ALTTP-DX start menu, with Settings, Features, Controls, Play and Randomizer" width="480">
 
-- **CRT filters:** scanlines, arcade and home TV looks with phosphor masks,
-  glow and a composite smear, and an LCD grid, drawn on the GPU with no
-  shaders to install
+- **CRT filters:** seven looks, from clean scanlines to an arcade monitor to
+  a composite signal falling apart on a cheap TV, run as real GPU shaders,
+  with curvature, a TV bezel, afterglow and HDR
+- **Updates itself:** the start menu offers each new version and installs it
+  when you say so
 - **Widescreen**, with a camera that keeps the whole wide picture in the area
   you're in and a HUD that moves out to the edges
 - **Rumble** for hits, explosions, bosses, the hammer and more
@@ -43,6 +45,31 @@ releases are the ones to play.
 The Mac app isn't notarized, so the first time, run
 `xattr -dr com.apple.quarantine /Applications/ALTTP-DX.app` or allow it under
 System Settings → Privacy & Security. On Linux, `chmod +x` the AppImage first.
+On Windows, SmartScreen asks once: "More info", then "Run anyway". Put the
+game somewhere you can write to, so it can update itself.
+
+### Updates
+
+From v1.8 on, you download the game by hand once. When the start menu opens,
+it asks GitHub in the background whether there's a newer version, and if
+there is, an **Update** button shows up under the title. Nothing downloads
+until you press it. The game checks the download against the size and SHA-256
+GitHub publishes, puts it in place and restarts:
+
+- **Mac:** the whole `ALTTP-DX.app` is swapped for the new one. A file the
+  game downloads itself isn't quarantined, so `xattr` is a one-time thing.
+- **Linux:** the AppImage is replaced in place, under the same name, so your
+  shortcuts keep working.
+- **Windows:** the files beside `zelda3.exe` are replaced, except your
+  `zelda3.ini`.
+
+Your saves and settings carry over. Under **General**, **Check For Updates**
+turns this off, and **Update Channel** picks **Releases** or **Nightly**. The
+start menu's bottom-right corner says which version you're on, and a build
+you made yourself never offers to update. The tools are still a download of
+their own. From a terminal, `--version` prints the version,
+`--check-update releases` asks without changing anything, and
+`--update releases` (or `nightly`) does the whole thing.
 
 ## Playing
 
@@ -91,6 +118,36 @@ the settings too.
 </table>
 
 Most settings take effect straight away. The ones that can't say so.
+
+### CRT filters
+
+**CRT Filter**, under Graphics, draws the picture like an old screen. With
+SDL's GPU renderer (Metal on a Mac, Vulkan on Windows and Linux) the looks run
+as real shaders:
+
+| Look | What it is |
+| --- | --- |
+| **Scanlines** | Scanlines alone, the beams fattening on bright colors and thinning in the dark |
+| **Arcade** | Hard lines and a strong grille, like an arcade monitor up close |
+| **Soft** | Gentle lines and a faint shadow mask |
+| **Consumer TV** | A home TV: soft lines, a slot mask, a glow, a little smear and darker corners, curved and framed |
+| **Composite** | A real NTSC signal taken apart by a cheap TV: rainbows on dithering, dot crawl, color bleeding, halos and a ghost from the cable |
+| **LCD** | A handheld's screen: a fine grid between the pixels, no lines |
+| **Off** | Plain pixels |
+
+**CRT Scanlines**, **CRT Mask**, **CRT Glow** and **CRT Afterglow** turn each
+part up or down, from 0 to 200% of the look as it comes. **CRT Curvature**
+bows the picture like a tube, **TV Bezel** puts it in a frame whose plastic
+catches the light from the screen, and **HDR** lets it shine past white on a
+display that has it. Picking a look loads its own defaults, and **Reset CRT
+Settings** puts them back. Randomizer seeds get the filters on the game, but
+not on the tracker. Without a GPU renderer, each look falls back to a simpler
+version of itself.
+
+**Pixel Scaling** decides how the pixels are blown up to the window:
+**Sharp** (even, square pixels at any size, with soft edges), **Nearest**
+(crispest, but uneven at most sizes), **Smooth** (blurred) or **xBR**
+(diagonals and curves rounded off, flat areas crisp).
 
 ### Achievements
 
