@@ -240,6 +240,19 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    // The tools window's font, Inter, cut down to Latin, embedded the same
+    // way as the ini.
+    const font_files = b.addWriteFiles();
+    _ = font_files.addCopyFile(b.path("third_party/inter/Inter-Regular.ttf"), "Inter-Regular.ttf");
+    _ = font_files.addCopyFile(b.path("third_party/inter/Inter-SemiBold.ttf"), "Inter-SemiBold.ttf");
+    const tools_fonts = b.createModule(.{
+        .root_source_file = font_files.add("tools_fonts.zig",
+            \\pub const regular = @embedFile("Inter-Regular.ttf");
+            \\pub const semibold = @embedFile("Inter-SemiBold.ttf");
+            \\
+        ),
+    });
+
     // zelda3-tools: the asset tools, with a window and a command line. It
     // needs the asset builder and SDL, not the game.
     const tools = b.addExecutable(.{
@@ -256,6 +269,8 @@ pub fn build(b: *std.Build) void {
     tools.root_module.addOptions("build_info", build_info);
     tools.root_module.addImport("default_ini", default_ini);
     tools.root_module.addImport("snes", snes_dsp_mod);
+    tools.root_module.addImport("tools_fonts", tools_fonts);
+    tools.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
     addSdlIncludes(b, tools.root_module);
     linkSdlLibs(b, tools.root_module);
     tools.headerpad_max_install_names = target.result.os.tag == .macos;
@@ -279,6 +294,8 @@ pub fn build(b: *std.Build) void {
     tools_tests.root_module.addOptions("build_info", build_info);
     tools_tests.root_module.addImport("default_ini", default_ini);
     tools_tests.root_module.addImport("snes", snes_dsp_mod);
+    tools_tests.root_module.addImport("tools_fonts", tools_fonts);
+    tools_tests.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
     addSdlIncludes(b, tools_tests.root_module);
     linkSdlLibs(b, tools_tests.root_module);
     test_step.dependOn(&b.addRunArtifact(tools_tests).step);

@@ -145,7 +145,7 @@ drive, or with a command:
 
 <table>
   <tr>
-    <td><img src="docs/screenshots/tools-music.png" alt="The Music page, with a song picked and an MSU-1 pack checked" width="480"></td>
+    <td><img src="docs/screenshots/tools-build.png" alt="The tools window: a sidebar of tasks with Play at its foot, and the Build Assets page with a US ROM picked" width="480"></td>
     <td><img src="docs/screenshots/tools-graphics.png" alt="The Graphics page, showing Link's exported sprite sheet" width="480"></td>
   </tr>
 </table>

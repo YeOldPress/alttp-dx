@@ -284,4 +284,5 @@ test {
     _ = @import("tools_music.zig");
     _ = @import("tools_pictures.zig");
     _ = @import("tools_game.zig");
+    _ = @import("tools_draw.zig");
 }

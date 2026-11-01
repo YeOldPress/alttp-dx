@@ -1,16 +1,18 @@
-//! The zelda3-tools window, dressed like the game's start menu.
+//! The zelda3-tools window, laid out like a desktop app.
 //!
-//! The same card on the same dark ground, the game's title over it, and the
-//! sections as tabs under that. Each section is a short stack of rows and
-//! buttons that the mouse, the keys and a pad all drive, with a log along the
-//! bottom that every job reports into. Jobs run on a thread of their own, so
-//! the window keeps drawing while a build takes its time. Paths come from the
+//! A sidebar down the left lists the things to do, with how the assets stand
+//! and Play at its foot. The page on the right is the chosen one: a heading
+//! saying what it's for, the files it works with, one main button, a line
+//! saying what to do next, and what the last job had to say. The mouse, the
+//! keys and a pad all drive it. Jobs run on a thread of their own, so the
+//! window keeps drawing while a build takes its time. Paths come from the
 //! system's own file dialogs, or from dropping a file on the window.
 const std = @import("std");
 const builtin = @import("builtin");
 const c = @import("sdl.zig").c;
 const ops = @import("tools_ops.zig");
 const kit = @import("menu_kit.zig");
+const draw = @import("tools_draw.zig");
 const menu = @import("menu.zig");
 const updater = @import("updater.zig");
 const fileio = @import("fileio.zig");
@@ -20,91 +22,89 @@ const game = @import("tools_game.zig");
 const rom_mod = @import("rom.zig");
 const Language = rom_mod.Language;
 
-const Rect = kit.Rect;
-const Rgb = kit.Rgb;
-const kScale = kit.kScale;
-const kCell = kit.kCell;
-const kRowH = kit.kRowH;
+const Rect = draw.Rect;
+const Color = draw.Color;
+const Paint = draw.Paint;
 
-const kWindowW = 1024;
-const kWindowH = 680;
-/// Inside the card: where everything lines up on the left, and how far it
-/// can reach.
-const kMarginX: f32 = 48;
-const kContentW: f32 = kWindowW - kMarginX * 2;
-const kTabsY: f32 = 118;
-const kContentY: f32 = 164;
-const kLogY: f32 = 494;
-const kLogH: f32 = 122;
-const kFooterY: f32 = kWindowH - 32 - kRowH;
-const kLogLineH: f32 = kRowH + 2;
-/// The labels in front of the path boxes, and the Browse chip after them.
-const kLabelW: f32 = 256;
-const kBrowseW: f32 = 128;
-const kButtonH: f32 = 8 * kScale + 18;
-/// From one row of a page to the next.
-const kRowStep: f32 = 38;
+const kWindowW = 1080;
+const kWindowH = 720;
+const kMinW = 880;
+const kMinH = 600;
 
-/// For the buttons that aren't a page's main job, which are green.
-const kColorButton = Rgb{ .r = 0x33, .g = 0x45, .b = 0x6c };
-const kColorLogBg = Rgb{ .r = 0x0b, .g = 0x0f, .b = 0x18 };
+const kSideW: f32 = 236;
+/// Around the page, and as wide as its rows get on a big window.
+const kPad: f32 = 40;
+const kMaxPageW: f32 = 760;
+/// Where a page's rows start, under its heading.
+const kPageTop: f32 = 116;
+const kFieldH: f32 = 40;
+const kButtonH: f32 = 38;
+const kBrowseW: f32 = 104;
+const kRadius: f32 = 8;
+/// A labeled field and the gap under it.
+const kFieldStep: f32 = 24 + kFieldH + 20;
+const kLogLineH: f32 = 19;
+
+const kBg = Color.hex(0x10141c);
+const kSide = Color.hex(0x161b26);
+const kSurface = Color.hex(0x1c2230);
+const kSurfaceHi = Color.hex(0x262e40);
+const kBorder = Color.hex(0x2b3447);
+const kText = Color.hex(0xe9edf4);
+const kTextDim = Color.hex(0x98a2b5);
+const kTextFaint = Color.hex(0x606a7d);
+const kAccent = Color.hex(0x5b8cff);
+const kAccentHi = Color.hex(0x7aa2ff);
+const kOnAccent = Color.hex(0xffffff);
+const kPlay = Color.hex(0x34c76c);
+const kPlayHi = Color.hex(0x4ad681);
+const kOnPlay = Color.hex(0x05230f);
+const kOk = Color.hex(0x63d69d);
+const kWarn = Color.hex(0xf5b45b);
+const kBrand = Color.hex(0xf5c451);
 
 // ------------------------------------------------------------------ the log
 
 const LogLine = struct {
     level: ops.Log.Level,
-    len: u8,
-    text: [200]u8,
+    len: u16,
+    text: [400]u8,
 };
 
 var g_log: [300]LogLine = undefined;
 var g_log_count: usize = 0;
-/// Lines scrolled up from the bottom.
+/// Lines scrolled up from the bottom, as they're wrapped on screen.
 var g_log_scroll: usize = 0;
 /// Jobs write from their own thread while the window draws.
 var g_log_lock: ?*c.SDL_Mutex = null;
-
-const kLogCols: usize = @intFromFloat((kContentW - 32) / kCell);
-const kLogRows: usize = @intFromFloat((kLogH - 12) / kLogLineH);
 
 fn logWrite(ctx: *anyopaque, level: ops.Log.Level, text: []const u8) void {
     _ = ctx;
     c.SDL_LockMutex(g_log_lock);
     defer c.SDL_UnlockMutex(g_log_lock);
-    // Long lines are wrapped to the log's width here, once, rather than at
-    // every draw.
-    var rest = text;
-    while (true) {
-        var n: usize = @min(rest.len, kLogCols);
-        // Break at a space where there is one, so words stay whole.
-        if (n < rest.len) {
-            if (std.mem.lastIndexOfScalar(u8, rest[0 .. n + 1], ' ')) |sp| {
-                if (sp > 0) n = sp;
-            }
-        }
-        pushLine(level, rest[0..n]);
-        rest = std.mem.trimStart(u8, rest[n..], " ");
-        if (rest.len == 0) break;
-    }
-    g_log_scroll = 0;
-}
-
-fn pushLine(level: ops.Log.Level, text: []const u8) void {
     if (g_log_count == g_log.len) {
         std.mem.copyForwards(LogLine, g_log[0 .. g_log.len - 1], g_log[1..]);
         g_log_count -= 1;
     }
-    var line = LogLine{ .level = level, .len = @intCast(@min(text.len, 200)), .text = undefined };
+    var line = LogLine{ .level = level, .len = @intCast(@min(text.len, 400)), .text = undefined };
     @memcpy(line.text[0..line.len], text[0..line.len]);
     g_log[g_log_count] = line;
     g_log_count += 1;
+    g_log_scroll = 0;
 }
 
+fn clearLog() void {
+    c.SDL_LockMutex(g_log_lock);
+    defer c.SDL_UnlockMutex(g_log_lock);
+    g_log_count = 0;
+    g_log_scroll = 0;
+}
+
+/// Up is positive. How far it can go is found out as it's drawn.
 fn scrollLog(lines: i32) void {
     c.SDL_LockMutex(g_log_lock);
     defer c.SDL_UnlockMutex(g_log_lock);
-    const most = g_log_count -| kLogRows;
-    if (lines > 0) g_log_scroll = @min(g_log_scroll + @as(usize, @intCast(lines)), most) else g_log_scroll -|= @as(usize, @intCast(-lines));
+    if (lines > 0) g_log_scroll += @intCast(lines) else g_log_scroll -|= @intCast(-lines);
 }
 
 var g_log_dummy: u8 = 0;
@@ -160,41 +160,53 @@ fn openDialog(window_opt: ?*c.SDL_Window, field: Field) void {
 
 // ----------------------------------------------------------------- the state
 
-const Page = enum {
+/// The pages, in the sidebar's order.
+const Screen = enum {
     assets,
     modding,
     graphics,
     music,
+    msu,
     languages,
     extras,
 
-    fn title(self: Page) []const u8 {
+    fn label(self: Screen) []const u8 {
         return switch (self) {
-            .assets => "ASSETS",
-            .modding => "MODDING",
-            .graphics => "GRAPHICS",
-            .music => "MUSIC",
-            .languages => "LANGUAGES",
-            .extras => "EXTRAS",
+            .assets => "Build Assets",
+            .modding => "Mod the Game",
+            .graphics => "Graphics",
+            .music => "Music",
+            .msu => "MSU-1 Pack",
+            .languages => "Languages",
+            .extras => "Extras",
         };
     }
 
-    /// The next page along, or the one before, going round.
-    fn step(self: Page, dir: i32) Page {
-        const n: i32 = @intCast(kPageCount);
-        return @fromBackingInt(@intCast(@mod(@as(i32, @backingInt(self)) + dir, n)));
+    /// What it's for, under its heading.
+    fn about(self: Screen) []const u8 {
+        return switch (self) {
+            .assets => "Make the game's asset file from your US ROM. Do this once, and again after an update.",
+            .modding => "Export the game's text, maps and pictures to a folder, edit them, then build them back in.",
+            .graphics => "Look through the pictures in your work folder, or preview a custom Link sprite.",
+            .music => "Listen to the game's songs, played by its own sound driver.",
+            .msu => "Check a CD-quality MSU-1 music pack for missing or broken tracks before you use it.",
+            .languages => "Take the text out of a translated ROM, like German, French or Redux, and build it into the game.",
+            .extras => "Small tools for digging into the game.",
+        };
     }
 };
-const kPageCount = @typeInfo(Page).@"enum".field_names.len;
 
-/// A question over the page, which takes the keys until it's answered.
+const AssetState = enum { missing, standard, custom, old };
+
+/// A question over the window, which takes the keys until it's answered.
 const Modal = enum { none, quit, update };
-const kQuitChoices = [_][]const u8{ "QUIT", "STAY" };
-const kUpdateChoices = [_][]const u8{ "UPDATE", "NOT NOW" };
-const kUpdateFailedChoices = [_][]const u8{ "OPEN PAGE", "CLOSE" };
 
 const State = struct {
-    page: Page = .assets,
+    screen: Screen = .assets,
+    /// How the asset file stands, for the sidebar, looked at now and then
+    /// rather than every frame.
+    assets: AssetState = .missing,
+    assets_age: u32 = 0,
     paths: [kFieldCount]std.ArrayList(u8) = @splat(.empty),
     sprites_from_png: bool = false,
     /// Translations ticked to build in, and which ones the folder has files
@@ -204,7 +216,7 @@ const State = struct {
     available_age: u32 = 0,
     extra_buf: [kLangCount]Language = undefined,
     modal: Modal = .none,
-    /// Which of the modal's two answers is picked.
+    /// Which of the modal's two answers is picked: 0 does it, 1 doesn't.
     choice: usize = 0,
     /// Where the focus was before a modal took it, to go back to after.
     focus_before: usize = 0,
@@ -278,6 +290,29 @@ const State = struct {
         const base = std.mem.span(c.SDL_GetBasePath() orelse return false);
         return builtin.os.tag == .macos and menu.isPackaged(base);
     }
+
+    /// Opens a page with a clean log. The sidebar is drawn first, so the
+    /// focus stays on whichever of its entries opened it.
+    fn open(self: *State, screen: Screen) void {
+        if (self.screen == screen) return;
+        // A song stops when its page is left.
+        if (self.screen == .music) {
+            if (self.tunes.player) |p| p.stop();
+        }
+        self.screen = screen;
+        self.assets_age = 0;
+        clearLog();
+    }
+
+    /// The asset file's state, looked at again every couple of seconds.
+    fn assetsNow(self: *State, alloc: std.mem.Allocator) AssetState {
+        if (self.assets_age == 0 or self.assets_age > 120) {
+            self.assets = assetState(alloc, self.get(.out));
+            self.assets_age = 0;
+        }
+        self.assets_age += 1;
+        return self.assets;
+    }
 };
 
 /// Where a file called `name` would sit in the game's folder: beside this
@@ -326,8 +361,6 @@ fn play(alloc: std.mem.Allocator, st: *State) void {
 
 const Job = enum {
     build,
-    rom_info,
-    verify,
     export_files,
     build_from_files,
     extract_dialogue,
@@ -335,12 +368,10 @@ const Job = enum {
     input_log,
     text_dict,
 
-    /// What the footer says while it runs.
+    /// What the page says while it runs.
     fn doing(self: Job) []const u8 {
         return switch (self) {
             .build => "Building the assets",
-            .rom_info => "Checking the ROM",
-            .verify => "Checking the assets",
             .export_files => "Exporting the files",
             .build_from_files => "Building from your files",
             .extract_dialogue => "Extracting the dialogue",
@@ -390,7 +421,7 @@ fn startJob(alloc: std.mem.Allocator, st: *State, job: Job) void {
         g_logger.err("Out of memory.", .{});
         return;
     };
-    logWrite(&g_log_dummy, .info, "");
+    if (g_log_count != 0) logWrite(&g_log_dummy, .info, "");
     g_job = job;
     g_job_running.store(true, .release);
     const t = std.Thread.spawn(.{}, jobThread, .{ alloc, args }) catch {
@@ -426,8 +457,6 @@ fn jobThread(alloc: std.mem.Allocator, a: *JobArgs) void {
     const extra = ops.Extra{ .languages = a.languages[0..a.language_count], .dir = a.get(.folder) };
     switch (a.job) {
         .build => _ = ops.buildAssets(alloc, g_logger, a.get(.rom), a.get(.out), extra),
-        .rom_info => _ = ops.romInfo(alloc, g_logger, a.get(.rom)),
-        .verify => _ = ops.verifyAssets(alloc, g_logger, a.get(.out)),
         .export_files => _ = ops.exportFiles(alloc, g_logger, a.get(.rom), a.get(.folder)),
         .build_from_files => _ = ops.buildFromFiles(alloc, g_logger, a.get(.rom), a.get(.folder), a.get(.out), .{ .sprites_from_png = a.sprites_from_png }, extra),
         .extract_dialogue => _ = ops.extractDialogue(alloc, g_logger, a.get(.lang_rom), a.get(.folder), null),
@@ -439,14 +468,17 @@ fn jobThread(alloc: std.mem.Allocator, a: *JobArgs) void {
 
 // -------------------------------------------------------------- immediate UI
 
-const kMaxItems = 48;
+const kMaxItems = 64;
 
 /// Everything that can be picked registers itself as it's drawn, in order,
 /// and the arrows move between them by where they sit on screen. So a page
 /// is just drawn, and the keys and pads work on it without a list of its
 /// own to keep in step.
 const Ui = struct {
-    r: *c.SDL_Renderer,
+    p: *Paint,
+    /// The window's size, in points.
+    w: f32 = kWindowW,
+    h: f32 = kWindowH,
     mouse_x: f32 = -1,
     mouse_y: f32 = -1,
     /// The mouse moved this frame, so whatever it's over takes the focus.
@@ -454,15 +486,17 @@ const Ui = struct {
     clicked: bool = false,
     /// A or Enter this frame: whatever has the focus is pressed.
     confirm: bool = false,
-    /// Left or right moved the focus this frame. A tab takes its page when
-    /// the keys land on it that way, but not when the mouse passes over it.
-    stepped: bool = false,
     /// Left or right this frame, for a chooser with the focus, which takes
     /// them itself rather than moving off.
     adjust: i32 = 0,
+    /// The keys or a pad moved the focus last, rather than the mouse, so the
+    /// focus is shown with a ring.
+    keys: bool = false,
+    /// Something that can be clicked is under the mouse, for the pointer.
+    over_any: bool = false,
     /// Which item has the focus, by its place in the frame's drawing order.
     focus: usize = 0,
-    /// While a modal is up, the page under it is drawn but takes nothing.
+    /// While a modal is up, the window under it is drawn but takes nothing.
     blocked: bool = false,
     rects: [kMaxItems]Rect = undefined,
     enabled: [kMaxItems]bool = undefined,
@@ -474,7 +508,15 @@ const Ui = struct {
     last_adjustable: [kMaxItems]bool = undefined,
     last_count: usize = 0,
 
-    const Hit = struct { focused: bool, pressed: bool };
+    const Hit = struct {
+        focused: bool,
+        pressed: bool,
+        /// Drawn as hovered: under the mouse, or focused by the keys.
+        lit: bool,
+        /// Focused by the keys, so it wants a ring.
+        ring: bool,
+    };
+    const kNoHit = Hit{ .focused = false, .pressed = false, .lit = false, .ring = false };
 
     fn begin(self: *Ui) void {
         self.last_rects = self.rects;
@@ -482,6 +524,7 @@ const Ui = struct {
         self.last_adjustable = self.adjustable;
         self.last_count = self.count;
         self.count = 0;
+        self.over_any = false;
     }
 
     /// Registers something that can be picked, and says whether it has the
@@ -491,16 +534,22 @@ const Ui = struct {
     }
 
     fn itemOf(self: *Ui, rect: Rect, enabled: bool, adjustable: bool) Hit {
-        if (self.blocked or self.count == kMaxItems) return .{ .focused = false, .pressed = false };
+        if (self.blocked or self.count == kMaxItems) return kNoHit;
         const id = self.count;
         self.rects[id] = rect;
         self.enabled[id] = enabled;
         self.adjustable[id] = adjustable;
         self.count += 1;
         const over = rect.contains(self.mouse_x, self.mouse_y);
+        if (enabled and over) self.over_any = true;
         if (enabled and over and (self.moved or self.clicked)) self.focus = id;
         const focused = id == self.focus;
-        return .{ .focused = focused, .pressed = enabled and ((over and self.clicked) or (focused and self.confirm)) };
+        return .{
+            .focused = focused,
+            .pressed = enabled and ((over and self.clicked) or (focused and self.confirm)),
+            .lit = enabled and ((over and !self.keys) or (focused and self.keys)),
+            .ring = enabled and focused and self.keys,
+        };
     }
 
     /// Whether the focus is on a chooser, which keeps left and right.
@@ -511,6 +560,7 @@ const Ui = struct {
     /// Moves the focus to the nearest item in a direction: straight ahead
     /// first, then whatever's least out of line.
     fn move(self: *Ui, dx: f32, dy: f32) void {
+        self.keys = true;
         const n = self.last_count;
         if (n == 0) return;
         if (self.focus >= n) self.focus = 0;
@@ -532,147 +582,128 @@ const Ui = struct {
                 best = i;
             }
         }
-        if (best) |b| {
-            self.focus = b;
-            self.stepped = dx != 0;
-        }
+        if (best) |b| self.focus = b;
     }
 
-    fn text(self: *const Ui, x: f32, y: f32, col: Rgb, s: []const u8) void {
-        kit.drawText(self.r, x, y, col, s);
+    /// The focus ring, around `rect`, on `under`.
+    fn ring(self: *const Ui, rect: Rect, radius: f32, under: Color) void {
+        self.p.box(rect.inset(-3), radius + 3, 2, kAccent, under);
     }
 
-    /// Wrapped paragraph text; returns the height it took.
-    fn paragraph(self: *const Ui, x: f32, y: f32, w: f32, col: Rgb, s: []const u8) f32 {
-        const cols: usize = @intFromFloat(w / kCell);
-        var line_y = y;
-        var rest = s;
-        while (rest.len > 0) {
-            var n = @min(rest.len, cols);
-            if (n < rest.len) {
-                if (std.mem.lastIndexOfScalar(u8, rest[0..n], ' ')) |sp| n = sp;
-            }
-            self.text(x, line_y, col, rest[0..n]);
-            rest = std.mem.trimStart(u8, rest[n..], " ");
-            line_y += kRowH + 2;
-        }
-        return line_y - y;
-    }
-
-    /// A row naming a file or folder: its label, the path in a box, and a
-    /// Browse chip. Picking any of it browses. `must` says what has to be
-    /// there already, which is flagged when it isn't.
-    fn pathRow(self: *Ui, y: f32, label: []const u8, path: []const u8, placeholder: []const u8, must: Must) bool {
-        const row = Rect{ .x = kMarginX, .y = y, .w = kContentW, .h = 32 };
+    /// A file or folder to work with: its label, then a box with the path
+    /// in it and Browse at its end. Clicking any of it browses. `tag` is a
+    /// word on how it stands, at the box's right.
+    fn field(self: *Ui, x: f32, y: f32, w: f32, label: []const u8, path: []const u8, placeholder: []const u8, tag: ?Tag) bool {
+        self.p.text(.strong, x, y, kText, label);
+        const row = Rect{ .x = x, .y = y + 24, .w = w, .h = kFieldH };
         const hit = self.item(row, true);
-        if (hit.focused) kit.drawRowHighlight(self.r, row.x, row.y, row.w, row.h);
-        self.text(row.x + 20, y + 8, if (hit.focused) kit.kColorSelect else kit.kColorText, label);
+        if (hit.ring) self.ring(row, kRadius, kBg);
+        const box = Rect{ .x = row.x, .y = row.y, .w = row.w - kBrowseW - 8, .h = row.h };
+        self.p.box(box, kRadius, 1, if (hit.lit) kTextFaint else kBorder, kSurface);
 
-        const box = rowBox(y);
-        kit.fillRound(self.r, box.x, box.y, box.w, box.h, 6, kit.kColorBgTop);
-        self.pathText(box, path, placeholder, must);
-
-        // Browse shows on the row with the focus, which the mouse gives to
-        // whatever it's over, rather than on every row at once.
-        if (hit.focused) {
-            const chip = Rect{ .x = box.x + box.w + 12, .y = box.y, .w = kBrowseW - 4, .h = box.h };
-            kit.fillRound(self.r, chip.x, chip.y, chip.w, chip.h, 8, kColorButton);
-            kit.outlineRound(self.r, chip.x, chip.y, chip.w, chip.h, 8, 2, kit.kColorSelect);
-            kit.drawTextCentered(self.r, chip.x + chip.w / 2, chip.y + 5, kit.kColorSelect, "Browse", kScale);
+        var right = box.x + box.w - 12;
+        if (tag) |t| {
+            const tw = self.p.textWidth(.small, t.text);
+            self.p.text(.small, right - tw, box.y + 11, t.color, t.text);
+            right -= tw + 16;
         }
+        self.pathText(.{ .x = box.x + 14, .y = box.y + 10, .w = right - box.x - 14, .h = 20 }, path, placeholder);
+
+        const browse = Rect{ .x = row.x + row.w - kBrowseW, .y = row.y, .w = kBrowseW, .h = row.h };
+        self.p.box(browse, kRadius, 1, kBorder, if (hit.lit) kSurfaceHi else kSurface);
+        self.p.textCentered(.strong, browse.x + browse.w / 2, browse.y + 10, kText, "Browse\u{2026}");
         return hit.pressed;
     }
 
     /// A path the way people think of one: the file's name, then which
-    /// folder it's in, or that it isn't there.
-    fn pathText(self: *const Ui, box: Rect, path: []const u8, placeholder: []const u8, must: Must) void {
-        const x = box.x + 10;
-        const y = box.y + 5;
-        const cols: usize = @intFromFloat((box.w - 20) / kCell);
-        if (path.len == 0) return self.text(x, y, kit.kColorTextDim, placeholder);
-
-        const name = std.fs.path.basename(path);
-        const shown = name[0..@min(name.len, cols)];
-        const missing = !must.satisfiedBy(path);
-        self.text(x, y, if (missing) kit.kColorWarn else kit.kColorValue, shown);
-
-        var buf: [128]u8 = undefined;
+    /// folder it's in.
+    fn pathText(self: *const Ui, at: Rect, path: []const u8, placeholder: []const u8) void {
+        var buf: [256]u8 = undefined;
+        if (path.len == 0) return self.p.text(.body, at.x, at.y, kTextFaint, self.p.fit(.body, placeholder, at.w, &buf));
+        const name = self.p.fit(.body, std.fs.path.basename(path), at.w, &buf);
+        self.p.text(.body, at.x, at.y, kText, name);
+        const used = self.p.textWidth(.body, name);
         const folder = std.fs.path.basename(std.fs.path.dirname(path) orelse "");
-        const after = if (missing)
-            "  isn't there"
-        else if (folder.len != 0)
-            std.fmt.bufPrint(&buf, "  in {s}", .{folder}) catch ""
-        else
-            "";
-        const room = cols - shown.len;
-        if (room > 4) self.text(x + @as(f32, @floatFromInt(shown.len)) * kCell, y, kit.kColorTextDim, after[0..@min(after.len, room)]);
+        if (folder.len == 0) return;
+        var in_buf: [160]u8 = undefined;
+        var fit_buf: [256]u8 = undefined;
+        const after = std.fmt.bufPrint(&in_buf, "  in {s}", .{folder}) catch return;
+        const room = at.w - used;
+        if (room < 60) return;
+        self.p.text(.body, at.x + used, at.y, kTextDim, self.p.fit(.body, after, room, &fit_buf));
     }
 
-    /// A row that picks one of several things: its label, and the choice
-    /// between arrows. Left and right step through them, as does a click
-    /// on either half; A steps forward. Returns the step, or 0.
-    fn chooser(self: *Ui, y: f32, label: []const u8, value: []const u8, enabled: bool) i32 {
-        const row = Rect{ .x = kMarginX, .y = y, .w = kContentW, .h = 32 };
+    /// Picks one of several things: its label, then the choice between
+    /// arrows. Left and right step through them, as does a click on either
+    /// half; A steps forward. Returns the step, or 0.
+    fn stepper(self: *Ui, x: f32, y: f32, w: f32, label: []const u8, value: []const u8, enabled: bool) i32 {
+        self.p.text(.strong, x, y, kText, label);
+        const row = Rect{ .x = x, .y = y + 24, .w = w, .h = kFieldH };
         const hit = self.itemOf(row, enabled, true);
-        if (hit.focused and enabled) kit.drawRowHighlight(self.r, row.x, row.y, row.w, row.h);
-        const label_col = if (!enabled) kit.kColorTextDim else if (hit.focused) kit.kColorSelect else kit.kColorText;
-        self.text(row.x + 20, y + 8, label_col, label);
-
-        const box = Rect{ .x = kMarginX + kLabelW, .y = y + 3, .w = kContentW - kLabelW - 4, .h = 26 };
-        kit.fillRound(self.r, box.x, box.y, box.w, box.h, 6, kit.kColorBgTop);
-        const arrow_col = if (!enabled) kit.kColorLine else if (hit.focused) kit.kColorSelect else kit.kColorTextDim;
-        self.text(box.x + 10, box.y + 5, arrow_col, "<");
-        self.text(box.x + box.w - 10 - kCell, box.y + 5, arrow_col, ">");
-        kit.drawTextCentered(self.r, box.x + box.w / 2, box.y + 5, if (enabled) kit.kColorValue else kit.kColorTextDim, value, kScale);
+        if (hit.ring) self.ring(row, kRadius, kBg);
+        self.p.box(row, kRadius, 1, if (hit.lit) kTextFaint else kBorder, kSurface);
+        const over_left = self.mouse_x < row.x + row.w / 2;
+        for ([_]bool{ true, false }) |left| {
+            const b = Rect{ .x = if (left) row.x + 4 else row.x + row.w - 36, .y = row.y + 4, .w = 32, .h = row.h - 8 };
+            if (hit.lit and !self.keys and over_left == left) self.p.fillRound(b, 6, kSurfaceHi);
+            self.p.textCentered(.strong, b.x + b.w / 2, b.y + 6, if (enabled) kText else kTextFaint, if (left) "\u{2190}" else "\u{2192}");
+        }
+        var buf: [256]u8 = undefined;
+        const shown = self.p.fit(.body, value, row.w - 96, &buf);
+        self.p.textCentered(.body, row.x + row.w / 2, row.y + 10, if (enabled) kText else kTextDim, shown);
 
         if (!hit.focused or !enabled) return 0;
         if (self.adjust != 0) return self.adjust;
-        if (hit.pressed) return if (self.clicked and self.mouse_x < box.x + box.w / 2) -1 else 1;
+        if (hit.pressed) return if (self.clicked and over_left) -1 else 1;
         return 0;
     }
 
     /// A box to tick, and what it means. True on the frame it's picked.
-    fn checkRow(self: *Ui, x: f32, y: f32, w: f32, label: []const u8, on: bool, enabled: bool) bool {
-        const row = Rect{ .x = x, .y = y, .w = w, .h = 26 };
+    fn check(self: *Ui, x: f32, y: f32, label: []const u8, on: bool, enabled: bool) bool {
+        const w = 28 + self.p.textWidth(.body, label);
+        const row = Rect{ .x = x - 6, .y = y, .w = w + 12, .h = 28 };
         const hit = self.item(row, enabled);
-        if (hit.focused and enabled) kit.drawRowHighlight(self.r, row.x, row.y, row.w, row.h);
-        const box = Rect{ .x = x + 18, .y = y + 4, .w = 18, .h = 18 };
-        kit.fillRound(self.r, box.x, box.y, box.w, box.h, 4, kit.kColorBgTop);
-        kit.outlineRound(self.r, box.x, box.y, box.w, box.h, 4, 1, if (enabled) kit.kColorTextDim else kit.kColorLine);
-        if (on and enabled) kit.fillRound(self.r, box.x + 4, box.y + 4, box.w - 8, box.h - 8, 2, kit.kColorOk);
-        const col = if (!enabled) kit.kColorLine else if (hit.focused) kit.kColorSelect else kit.kColorText;
-        self.text(x + 46, y + 5, col, label);
+        if (hit.ring) self.ring(row, 6, kBg);
+        if (hit.lit) self.p.fillRound(row, 6, kSurface);
+        const box = Rect{ .x = x, .y = y + 5, .w = 18, .h = 18 };
+        if (on and enabled) {
+            self.p.fillRound(box, 5, kAccent);
+            self.p.textCentered(.strong, box.x + box.w / 2, box.y - 1, kOnAccent, "\u{2713}");
+        } else {
+            self.p.box(box, 5, 1.5, if (enabled) kTextDim else kBorder, kBg);
+        }
+        self.p.text(.body, x + 28, y + 4, if (enabled) kText else kTextFaint, label);
         return hit.pressed;
     }
 
-    /// A button sized to its label, placed at x; advances x past it.
-    fn button(self: *Ui, x: *f32, y: f32, label: []const u8, enabled: bool, kind: ButtonKind) bool {
-        const rect = Rect{ .x = x.*, .y = y, .w = kit.textWidth(label, kScale) + 40, .h = kButtonH };
-        x.* += rect.w + 28;
-        const hit = self.item(rect, enabled);
-        if (kind == .main) {
-            kit.drawButton(self.r, rect, if (enabled) kit.kColorLaunchBg else kit.kColorDisabledBg, hit.focused);
-            kit.drawTextCentered(self.r, rect.x + rect.w / 2, rect.y + 9, if (enabled) kit.kColorLaunchText else kit.kColorTextDim, label, kScale);
-            return hit.pressed;
+    /// A page's buttons, side by side from the left: the main one filled,
+    /// any other an outline. Says which was pressed, if one was.
+    fn buttons(self: *Ui, x0: f32, y: f32, list: []const Action) ?usize {
+        var x = x0;
+        var pressed: ?usize = null;
+        for (list, 0..) |a, i| {
+            const rect = Rect{ .x = x, .y = y, .w = self.p.textWidth(.strong, a.label) + 40, .h = kButtonH };
+            x += rect.w + 12;
+            const hit = self.item(rect, a.enabled);
+            if (hit.ring) self.ring(rect, kRadius, kBg);
+            if (!a.enabled) {
+                self.p.fillRound(rect, kRadius, kSurface);
+                self.p.textCentered(.strong, rect.x + rect.w / 2, rect.y + 9, kTextFaint, a.label);
+            } else if (a.main) {
+                self.p.fillRound(rect, kRadius, if (hit.lit) kAccentHi else kAccent);
+                self.p.textCentered(.strong, rect.x + rect.w / 2, rect.y + 9, kOnAccent, a.label);
+            } else {
+                self.p.box(rect, kRadius, 1, kBorder, if (hit.lit) kSurfaceHi else kBg);
+                self.p.textCentered(.strong, rect.x + rect.w / 2, rect.y + 9, kText, a.label);
+            }
+            if (hit.pressed) pressed = i;
         }
-        // The rest are outlines, so the main one is the thing to look at.
-        kit.fillRound(self.r, rect.x, rect.y, rect.w, rect.h, 10, if (hit.focused) kit.kColorRowHi else kit.kColorPanel);
-        const edge = if (hit.focused) kit.kColorSelect else if (!enabled) kit.kColorRowHi else kit.kColorLine;
-        kit.outlineRound(self.r, rect.x, rect.y, rect.w, rect.h, 10, if (hit.focused) 2 else 1, edge);
-        const text_col = if (!enabled) kit.kColorLine else if (hit.focused) kit.kColorSelect else if (kind == .play) kit.kColorValue else kit.kColorText;
-        kit.drawTextCentered(self.r, rect.x + rect.w / 2, rect.y + 9, text_col, label, kScale);
-        return hit.pressed;
+        return pressed;
     }
 };
 
-/// The page's main job is a filled green button, like Play on the start
-/// menu; the rest are outlines, with starting the game picked out in blue.
-const ButtonKind = enum { main, play, other };
-
-/// The box a path row or a chooser shows its value in.
-fn rowBox(y: f32) Rect {
-    return .{ .x = kMarginX + kLabelW, .y = y + 3, .w = kContentW - kLabelW - kBrowseW - 12, .h = 26 };
-}
+const Action = struct { label: []const u8, enabled: bool, main: bool = true };
+const Tag = struct { text: []const u8, color: Color };
 
 fn centerX(r: Rect) f32 {
     return r.x + r.w / 2;
@@ -689,7 +720,7 @@ fn rangeGap(a: f32, a_len: f32, b: f32, b_len: f32) f32 {
 
 // ------------------------------------------------------------------- pages
 
-/// What a path row needs to find at its path for things to go ahead.
+/// What a path needs to find for things to go ahead.
 const Must = enum {
     /// Nothing: it's somewhere to write.
     nothing,
@@ -710,10 +741,46 @@ const Must = enum {
     }
 };
 
+/// "Not found" for a path that has to be there and isn't.
+fn mustTag(path: []const u8, must: Must) ?Tag {
+    if (path.len == 0 or must.satisfiedBy(path)) return null;
+    return .{ .text = "Not found", .color = kWarn };
+}
+
+/// For the ROM: what it is, or what's wrong with it.
+fn romTag(st: *State) ?Tag {
+    const rom = st.get(.rom);
+    if (rom.len == 0) return null;
+    if (mustTag(rom, .file)) |t| return t;
+    return switch (romKind(st)) {
+        .us => .{ .text = "\u{2713} US ROM", .color = kOk },
+        .other => .{ .text = "Not the US ROM", .color = kWarn },
+        .unreadable => .{ .text = "Can't read it", .color = kWarn },
+    };
+}
+
+/// A folder that'll be made when something's put in it.
+fn folderTag(path: []const u8) ?Tag {
+    if (path.len == 0 or Must.folder.satisfiedBy(path)) return null;
+    return .{ .text = "Will be made", .color = kTextDim };
+}
+
 /// Under the buttons: the next thing to do, in a sentence, so a grayed-out
-/// button is never a mystery.
-fn nextStep(ui: *Ui, y: f32, say: []const u8) void {
-    ui.text(kMarginX + 20, y, kit.kColorSection, if (jobRunning()) "Hang on, this takes a moment." else say);
+/// button is never a mystery. While a job runs, what it's doing.
+fn statusLine(ui: *Ui, x: f32, y: f32, say: []const u8) void {
+    if (jobRunning()) {
+        // Three dots, brightening in turn.
+        const t: f32 = @floatFromInt(c.SDL_GetTicks() % 900);
+        for (0..3) |i| {
+            const phase = @mod(t / 300 - @as(f32, @floatFromInt(i)), 3);
+            const a: u8 = if (phase < 1) 255 else 90;
+            ui.p.disc(x + 4 + @as(f32, @floatFromInt(i)) * 10, y + 10, 3, kAccent.alpha(a));
+        }
+        var buf: [64]u8 = undefined;
+        ui.p.text(.body, x + 34, y, kAccentHi, std.fmt.bufPrint(&buf, "{s}\u{2026}", .{g_job.doing()}) catch "");
+        return;
+    }
+    ui.p.text(.body, x, y, kTextDim, say);
 }
 
 const RomKind = enum { us, other, unreadable };
@@ -734,7 +801,7 @@ fn romKind(st: *State) RomKind {
     return st.rom_kind;
 }
 
-/// What the ROM row is missing, if anything.
+/// What the ROM is missing, if anything.
 fn romStep(st: *State) ?[]const u8 {
     if (st.get(.rom).len == 0) return "Pick your US ROM, or drop it on the window.";
     if (!Must.file.satisfiedBy(st.get(.rom))) return "That ROM isn't there anymore. Pick it again.";
@@ -747,62 +814,69 @@ fn romStep(st: *State) ?[]const u8 {
 
 const kLangCount = @typeInfo(Language).@"enum".field_names.len;
 
-/// What the page is for, in one quiet line under the tabs; the tab itself
-/// says which page it is. Returns where the page's rows start.
-fn pageHeading(ui: *Ui, about: []const u8) f32 {
-    ui.text(kMarginX + 20, kContentY, kit.kColorTextDim, about);
-    return kContentY + kRowH + 22;
+/// Where a page draws: its left edge, its width, and how far down it can go.
+const Page = struct { x: f32, w: f32, bottom: f32 };
+
+/// Each page returns how far down it drew, for the activity under it.
+fn drawAssets(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window, pg: Page) f32 {
+    var y: f32 = kPageTop;
+    if (ui.field(pg.x, y, pg.w, "Your ROM", st.get(.rom), "Drop a .sfc on the window, or Browse", romTag(st))) openDialog(window, .rom);
+    y += kFieldStep;
+    if (ui.field(pg.x, y, pg.w, "Save assets to", st.get(.out), "zelda3_assets.dat", null)) openDialog(window, .out);
+    y += kFieldStep + 4;
+
+    const ready = !jobRunning() and romStep(st) == null and st.get(.out).len != 0;
+    if (ui.buttons(pg.x, y, &.{.{ .label = "Build Assets", .enabled = ready }}) != null) startJob(alloc, st, .build);
+    statusLine(ui, pg.x + buttonsWidth(ui, &.{"Build Assets"}) + 20, y + 9, romStep(st) orelse if (st.get(.out).len == 0) "Pick where to save the assets." else "Ready when you are.");
+    return y + kButtonH;
 }
 
-fn drawAssets(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window) void {
-    var y = pageHeading(ui, "Make the game's graphics, music and text from your ROM.");
-    if (ui.pathRow(y, "Your ROM", st.get(.rom), "Drop a .sfc here, or Browse", .file)) openDialog(window, .rom);
-    y += kRowStep;
-    if (ui.pathRow(y, "Save to", st.get(.out), "zelda3_assets.dat", .nothing)) openDialog(window, .out);
-    y += 56;
-
-    const idle = !jobRunning();
-    const rom_ok = romStep(st) == null;
-    const built = Must.file.satisfiedBy(st.get(.out));
-    var x: f32 = kMarginX + 20;
-    if (ui.button(&x, y, "BUILD ASSETS", idle and rom_ok and st.get(.out).len != 0, .main)) startJob(alloc, st, .build);
-    // Any ROM can be checked; that's how to find out what one is.
-    if (ui.button(&x, y, "CHECK ROM", idle and Must.file.satisfiedBy(st.get(.rom)) and st.get(.rom).len != 0, .other)) startJob(alloc, st, .rom_info);
-    if (ui.button(&x, y, "VERIFY ASSETS", idle and built, .other)) startJob(alloc, st, .verify);
-    if (ui.button(&x, y, "PLAY", st.canPlay(), .play)) play(alloc, st);
-
-    nextStep(ui, y + kButtonH + 18, romStep(st) orelse if (st.get(.out).len == 0) "Pick where to save the assets." else if (built) "Built. Press Play to try it, or build again." else "All set. Press Build Assets.");
+/// How wide `buttons` will draw these labels, for whatever goes beside them.
+fn buttonsWidth(ui: *const Ui, labels: []const []const u8) f32 {
+    var w: f32 = -12;
+    for (labels) |l| w += ui.p.textWidth(.strong, l) + 40 + 12;
+    return w;
 }
 
-fn drawModding(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window) void {
-    var y = pageHeading(ui, "Export the game to files, edit them, and build it back.");
-    if (ui.pathRow(y, "Your ROM", st.get(.rom), "Drop a .sfc here, or Browse", .file)) openDialog(window, .rom);
-    y += kRowStep;
-    if (ui.pathRow(y, "Work folder", st.get(.folder), "Where the files go to be edited", .nothing)) openDialog(window, .folder);
-    y += kRowStep;
-    if (ui.pathRow(y, "Save to", st.get(.out), "zelda3_assets.dat", .nothing)) openDialog(window, .out);
-    y += 42;
-    const half = kContentW / 2;
-    if (ui.checkRow(kMarginX, y, half - 6, "Build sprite sheets too", st.sprites_from_png, true)) st.sprites_from_png = !st.sprites_from_png;
-    if (ui.checkRow(kMarginX + half, y, half, "Rebuild when files change", st.watch, true)) setWatch(st, !st.watch);
-    y += 40;
+fn drawModding(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window, pg: Page) f32 {
+    var y: f32 = kPageTop;
+    if (ui.field(pg.x, y, pg.w, "Your ROM", st.get(.rom), "Drop a .sfc on the window, or Browse", romTag(st))) openDialog(window, .rom);
+    y += kFieldStep;
+    if (ui.field(pg.x, y, pg.w, "Work folder", st.get(.folder), "Where the files go to be edited", folderTag(st.get(.folder)))) openDialog(window, .folder);
+    y += kFieldStep;
+    if (ui.field(pg.x, y, pg.w, "Save assets to", st.get(.out), "zelda3_assets.dat", null)) openDialog(window, .out);
+    y += kFieldStep - 6;
+    if (ui.check(pg.x, y, "Build sprite sheets from PNGs too", st.sprites_from_png, true)) st.sprites_from_png = !st.sprites_from_png;
+    if (ui.check(pg.x + pg.w / 2, y, "Rebuild when a file is saved", st.watch, true)) setWatch(st, !st.watch);
+    y += 48;
 
     const idle = !jobRunning();
     const rom_ok = romStep(st) == null;
     const exported = Must.folder.satisfiedBy(st.get(.folder));
-    var x: f32 = kMarginX + 20;
-    if (ui.button(&x, y, "BUILD FROM FILES", idle and rom_ok and exported and st.get(.out).len != 0, .main)) startJob(alloc, st, .build_from_files);
-    if (ui.button(&x, y, "EXPORT FILES", idle and rom_ok and st.get(.folder).len != 0, .other)) startJob(alloc, st, .export_files);
-    if (ui.button(&x, y, "PLAY", st.canPlay(), .play)) play(alloc, st);
+    const can_export = idle and rom_ok and st.get(.folder).len != 0;
+    // Exporting comes first; once there's a folder, building from it is the
+    // thing to do, and exporting again is on the side.
+    var width: f32 = 0;
+    if (!exported) {
+        if (ui.buttons(pg.x, y, &.{.{ .label = "Export Files", .enabled = can_export }}) != null) startJob(alloc, st, .export_files);
+        width = buttonsWidth(ui, &.{"Export Files"});
+    } else {
+        if (ui.buttons(pg.x, y, &.{
+            .{ .label = "Build from Files", .enabled = idle and rom_ok and st.get(.out).len != 0 },
+            .{ .label = "Export Again", .enabled = can_export, .main = false },
+        })) |i| startJob(alloc, st, if (i == 0) .build_from_files else .export_files);
+        width = buttonsWidth(ui, &.{ "Build from Files", "Export Again" });
+    }
 
-    nextStep(ui, y + kButtonH + 18, romStep(st) orelse if (st.get(.folder).len == 0)
+    statusLine(ui, pg.x + width + 20, y + 9, romStep(st) orelse if (st.get(.folder).len == 0)
         "Pick a work folder for the files."
     else if (!exported)
-        "Press Export Files to fill the work folder."
+        "Export fills the work folder."
     else if (st.watch)
-        "Watching: save a file and it rebuilds by itself."
+        "Watching: save a file and it rebuilds."
     else
-        "Edit the files, Build From Files, then Play.");
+        "Edit the files, then build.");
+    return y + kButtonH;
 }
 
 /// Turns rebuilding on save on or off, taking the folder as it is now as the
@@ -908,35 +982,35 @@ const Gallery = struct {
     }
 };
 
-/// The Graphics page uses the log's room for the picture.
-const kPictureBottom: f32 = kLogY + kLogH;
-
-fn drawGraphics(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window) void {
+/// The picture takes the rest of the page, in place of the activity.
+fn drawGraphics(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window, pg: Page) f32 {
     const g = &st.gfx;
     if (g.age == 0 or g.age > 120) g.refresh(alloc, st);
     g.age += 1;
 
-    var y = pageHeading(ui, "Look at exported pictures, or check a Link sprite.");
-    if (ui.pathRow(y, "Link sprite", st.get(.zspr), "A .zspr, or drop one here", .file)) openDialog(window, .zspr);
-    y += kRowStep;
-
+    var y: f32 = kPageTop;
+    const half = (pg.w - 16) / 2;
+    if (ui.field(pg.x, y, half, "Link sprite", st.get(.zspr), "A .zspr file", mustTag(st.get(.zspr), .file))) openDialog(window, .zspr);
     const n = g.count(st);
     var buf: [96]u8 = undefined;
-    const value = if (n == 0) "nothing to show yet" else std.fmt.bufPrint(&buf, "{s}  ({d} of {d})", .{ std.fs.path.basename(g.path(st, g.index)), g.index + 1, n }) catch "";
-    const step = ui.chooser(y, "Picture", value, n > 1);
+    const value = if (n == 0) "Nothing to show yet" else std.fmt.bufPrint(&buf, "{s}  ({d} of {d})", .{ std.fs.path.basename(g.path(st, g.index)), g.index + 1, n }) catch "";
+    const step = ui.stepper(pg.x + half + 16, y, half, "Picture", value, n > 1);
     if (step != 0 and n > 0) g.index = @intCast(@mod(@as(i64, @intCast(g.index)) + step, @as(i64, @intCast(n))));
-    y += kRowStep + 4;
+    y += kFieldStep;
 
-    g.load(alloc, st, ui.r);
-    const box = Rect{ .x = kMarginX, .y = y + 26, .w = kContentW, .h = kPictureBottom - y - 26 };
-    kit.fillRound(ui.r, box.x, box.y, box.w, box.h, 10, kColorLogBg);
-    if (n == 0) {
-        const say = if (Must.folder.satisfiedBy(st.get(.folder))) "No pictures in the work folder. Export the files on Modding." else "Export the files on Modding, or pick a Link sprite.";
-        ui.text(kMarginX + 20, y, kit.kColorSection, say);
-        return;
+    g.load(alloc, st, ui.p.r);
+    const say = if (n == 0)
+        (if (Must.folder.satisfiedBy(st.get(.folder))) "No pictures in the work folder yet." else "Export the files in Mod the Game, or pick a Link sprite.")
+    else
+        g.about;
+    ui.p.text(.body, pg.x, y, if (g.bad) kWarn else kTextDim, say);
+    y += 30;
+    const box = Rect{ .x = pg.x, .y = y, .w = pg.w, .h = pg.bottom - y };
+    ui.p.box(box, 10, 1, kBorder, kSurface);
+    if (n != 0) {
+        if (g.tex) |tex| drawPicture(ui.p.r, tex, g.w, g.h, box.inset(16));
     }
-    ui.text(kMarginX + 20, y, if (g.bad) kit.kColorWarn else kit.kColorSection, g.about);
-    if (g.tex) |tex| drawPicture(ui.r, tex, g.w, g.h, .{ .x = box.x + 12, .y = box.y + 12, .w = box.w - 24, .h = box.h - 24 });
+    return pg.bottom;
 }
 
 /// Draws a picture as big as fits, in whole steps of size from 2x up, which
@@ -1025,58 +1099,61 @@ const Tunes = struct {
     }
 };
 
-fn drawMusic(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window) void {
+fn drawMusic(ui: *Ui, alloc: std.mem.Allocator, st: *State, pg: Page) f32 {
     const t = &st.tunes;
     t.ensure(alloc, st.get(.out));
 
-    var y = pageHeading(ui, "Play the game's songs, or check an MSU-1 pack.");
+    var y: f32 = kPageTop;
     const songs: []const music.Song = if (t.player) |p| p.songs else &.{};
     var buf: [64]u8 = undefined;
-    const value = if (songs.len == 0) "no songs yet" else std.fmt.bufPrint(&buf, "Song {d}, {s}  ({d} of {d})", .{ songs[t.index].number, @tagName(songs[t.index].bank), t.index + 1, songs.len }) catch "";
-    const step = ui.chooser(y, "Song", value, songs.len > 1);
+    const value = if (songs.len == 0) "No songs yet" else std.fmt.bufPrint(&buf, "Song {d}, {s}  ({d} of {d})", .{ songs[t.index].number, @tagName(songs[t.index].bank), t.index + 1, songs.len }) catch "";
+    const step = ui.stepper(pg.x, y, @min(pg.w, 420), "Song", value, songs.len > 1);
     if (step != 0 and songs.len > 0) {
         t.index = @intCast(@mod(@as(i64, @intCast(t.index)) + step, @as(i64, @intCast(songs.len))));
         // Changing songs while one plays changes what's playing.
         if (t.player.?.playing != null) _ = t.player.?.play(songs[t.index]);
     }
-    y += kRowStep + 2;
+    y += kFieldStep + 4;
 
     const playing = if (t.player) |p| p.playing else null;
-    var x: f32 = kMarginX + 20;
-    if (ui.button(&x, y, "PLAY SONG", songs.len != 0, .main)) {
-        if (!t.player.?.play(songs[t.index])) g_logger.err("Couldn't play anything: there's no sound device to play it on.", .{});
+    const label = if (playing != null) "\u{25a0}  Stop" else "\u{25b6}  Play";
+    if (ui.buttons(pg.x, y, &.{.{ .label = label, .enabled = songs.len != 0 }}) != null) {
+        if (playing != null) {
+            t.player.?.stop();
+        } else if (!t.player.?.play(songs[t.index])) {
+            g_logger.err("Couldn't play anything: there's no sound device to play it on.", .{});
+        }
     }
-    if (ui.button(&x, y, "STOP", playing != null, .other)) t.player.?.stop();
-    y += kButtonH + 22;
 
-    if (ui.pathRow(y, "MSU-1 pack", st.get(.msu), "A pack's folder or .zip", .either)) openDialog(window, .msu);
-    y += 44;
-    x = kMarginX + 20;
-    const pack_ok = st.get(.msu).len != 0 and Must.either.satisfiedBy(st.get(.msu));
-    if (ui.button(&x, y, "CHECK PACK", !jobRunning() and pack_ok, .other)) startJob(alloc, st, .check_msu);
-
-    var say_buf: [96]u8 = undefined;
-    const say = if (t.problem.len != 0)
+    var say_buf: [64]u8 = undefined;
+    statusLine(ui, pg.x + buttonsWidth(ui, &.{label}) + 20, y + 9, if (t.problem.len != 0)
         t.problem
     else if (playing) |p|
-        std.fmt.bufPrint(&say_buf, "Playing song {d}. Left and right change it.", .{p.number}) catch ""
-    else if (!pack_ok)
-        "Pick a song and Play, or pick a pack to check."
+        std.fmt.bufPrint(&say_buf, "Playing song {d}. The arrows change it.", .{p.number}) catch ""
     else
-        "Press Check Pack to look it over.";
-    nextStep(ui, y + kButtonH + 18, say);
+        "Pick a song, then Play.");
+    return y + kButtonH;
+}
+
+fn drawMsu(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window, pg: Page) f32 {
+    var y: f32 = kPageTop;
+    if (ui.field(pg.x, y, pg.w, "MSU-1 pack", st.get(.msu), "A pack's folder or .zip", mustTag(st.get(.msu), .either))) openDialog(window, .msu);
+    y += kFieldStep + 4;
+    const pack_ok = st.get(.msu).len != 0 and Must.either.satisfiedBy(st.get(.msu));
+    if (ui.buttons(pg.x, y, &.{.{ .label = "Check Pack", .enabled = !jobRunning() and pack_ok }}) != null) startJob(alloc, st, .check_msu);
+    statusLine(ui, pg.x + buttonsWidth(ui, &.{"Check Pack"}) + 20, y + 9, if (pack_ok) "Ready to look it over." else "Pick a pack's folder or .zip, or drop it on the window.");
+    return y + kButtonH;
 }
 
 // --------------------------------------------------------------- languages
 
-/// Short names, so four fit across.
-fn shortName(lang: Language) []const u8 {
+fn languageName(lang: Language) []const u8 {
     return switch (lang) {
-        .us => "English US",
+        .us => "English (US)",
         .de => "German",
         .fr => "French",
-        .fr_c => "French CA",
-        .en => "English EU",
+        .fr_c => "French (Canada)",
+        .en => "English (Europe)",
         .es => "Spanish",
         .pl => "Polish",
         .pt => "Portuguese",
@@ -1086,85 +1163,95 @@ fn shortName(lang: Language) []const u8 {
     };
 }
 
-fn drawLanguages(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window) void {
+fn drawLanguages(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window, pg: Page) f32 {
     if (st.available_age == 0 or st.available_age > 60) st.refreshAvailable();
     st.available_age += 1;
 
-    var y = pageHeading(ui, "Add the text from translated ROMs to the game.");
-    if (ui.pathRow(y, "Translated ROM", st.get(.lang_rom), "A German, French, Spanish... ROM", .file)) openDialog(window, .lang_rom);
-    y += kRowStep;
-    if (ui.pathRow(y, "Work folder", st.get(.folder), "Where the extracted text goes", .nothing)) openDialog(window, .folder);
-    y += 40;
+    var y: f32 = kPageTop;
+    if (ui.field(pg.x, y, pg.w, "Translated ROM", st.get(.lang_rom), "A German, French, Redux\u{2026} ROM", mustTag(st.get(.lang_rom), .file))) openDialog(window, .lang_rom);
+    y += kFieldStep;
+    if (ui.field(pg.x, y, pg.w, "Work folder", st.get(.folder), "Where the extracted text goes", folderTag(st.get(.folder)))) openDialog(window, .folder);
+    y += kFieldStep;
+    if (ui.field(pg.x, y, pg.w, "Your US ROM", st.get(.rom), "The build needs it too", romTag(st))) openDialog(window, .rom);
+    y += kFieldStep - 4;
 
     // Only the languages the folder has text for, which are the ones there
-    // are to tick; until there's one, the line below says how to get it.
+    // are to tick; until there's one, the line beside the button says how
+    // to get it.
     const cols = 4;
-    const col_w: f32 = kContentW / cols;
+    const col_w: f32 = pg.w / cols;
     var n: usize = 0;
     for (std.enums.values(Language)) |lang| {
         const i = @backingInt(lang);
         if (lang == .us or !st.available[i]) continue;
-        const x = kMarginX + @as(f32, @floatFromInt(n % cols)) * col_w;
-        const row_y = y + @as(f32, @floatFromInt(n / cols)) * 26;
-        if (ui.checkRow(x, row_y, col_w - 6, shortName(lang), st.picked[i], st.available[i])) st.picked[i] = !st.picked[i];
+        if (n == 0) {
+            ui.p.text(.strong, pg.x, y, kText, "Build these in");
+            y += 26;
+        }
+        const x = pg.x + @as(f32, @floatFromInt(n % cols)) * col_w;
+        const row_y = y + @as(f32, @floatFromInt(n / cols)) * 32;
+        if (ui.check(x, row_y, languageName(lang), st.picked[i], true)) st.picked[i] = !st.picked[i];
         n += 1;
     }
-    if (n != 0) y += @as(f32, @floatFromInt((n + cols - 1) / cols)) * 26 + 12;
+    y += if (n == 0) 6 else @as(f32, @floatFromInt((n + cols - 1) / cols)) * 32 + 14;
 
-    const idle = !jobRunning();
-    const lang_rom_ok = Must.file.satisfiedBy(st.get(.lang_rom)) and st.get(.lang_rom).len != 0;
-    var x: f32 = kMarginX + 20;
-    if (ui.button(&x, y, "BUILD ASSETS", idle and romStep(st) == null and st.get(.out).len != 0, .main)) startJob(alloc, st, .build);
-    if (ui.button(&x, y, "EXTRACT DIALOGUE", idle and lang_rom_ok and st.get(.folder).len != 0, .other)) startJob(alloc, st, .extract_dialogue);
-
-    var any_available = false;
     var any_picked = false;
-    for (st.available, st.picked) |a, p| {
-        any_available = any_available or a;
-        any_picked = any_picked or (a and p);
+    for (st.available, st.picked) |a, p| any_picked = any_picked or (a and p);
+    const idle = !jobRunning();
+    const can_extract = idle and st.get(.lang_rom).len != 0 and Must.file.satisfiedBy(st.get(.lang_rom)) and st.get(.folder).len != 0;
+    // Extracting comes first; once there's a language to tick, building it
+    // in is the thing to do, and extracting another is on the side.
+    var width: f32 = 0;
+    if (n == 0) {
+        if (ui.buttons(pg.x, y, &.{.{ .label = "Extract Dialogue", .enabled = can_extract }}) != null) startJob(alloc, st, .extract_dialogue);
+        width = buttonsWidth(ui, &.{"Extract Dialogue"});
+    } else {
+        if (ui.buttons(pg.x, y, &.{
+            .{ .label = "Build Assets", .enabled = idle and any_picked and romStep(st) == null and st.get(.out).len != 0 },
+            .{ .label = "Extract Dialogue", .enabled = can_extract, .main = false },
+        })) |i| startJob(alloc, st, if (i == 0) .build else .extract_dialogue);
+        width = buttonsWidth(ui, &.{ "Build Assets", "Extract Dialogue" });
     }
-    nextStep(ui, y + kButtonH + 14, if (!any_available and st.get(.lang_rom).len == 0)
+
+    statusLine(ui, pg.x + width + 20, y + 9, if (n == 0 and st.get(.lang_rom).len == 0)
         "Pick a translated ROM to take its text from."
-    else if (!any_available)
-        "Press Extract Dialogue, then tick its language."
+    else if (n == 0)
+        "Extract its text into the work folder."
     else if (!any_picked)
         "Tick the languages to build into the game."
-    else if (romStep(st) != null)
-        "Building needs your US ROM too: pick it on Assets."
     else
-        "Press Build Assets to put them in the game.");
+        romStep(st) orelse "Ready to build them in.");
+    return y + kButtonH;
 }
 
 // ------------------------------------------------------------------- extras
 
-fn drawExtras(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window) void {
-    var y = pageHeading(ui, "Helpers for working on the game itself.");
-    if (ui.pathRow(y, "Snapshot", st.get(.snapshot), "A .sav from the saves folder", .file)) openDialog(window, .snapshot);
-    y += 40;
+fn drawExtras(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window, pg: Page) f32 {
     const idle = !jobRunning();
     const snapshot_ok = st.get(.snapshot).len != 0 and Must.file.satisfiedBy(st.get(.snapshot));
-    var x: f32 = kMarginX + 20;
-    if (ui.button(&x, y, "SAVE INPUT LOG", idle and snapshot_ok, .other)) startJob(alloc, st, .input_log);
-    y += kButtonH + 22;
-
-    if (ui.pathRow(y, "Dialogue", st.get(.dialogue), "A dialogue.txt, as Export writes", .file)) openDialog(window, .dialogue);
-    y += 40;
     const dialogue_ok = st.get(.dialogue).len != 0 and Must.file.satisfiedBy(st.get(.dialogue));
-    x = kMarginX + 20;
-    if (ui.button(&x, y, "FIND DICTIONARY", idle and dialogue_ok, .other)) startJob(alloc, st, .text_dict);
+    const field_w = pg.w - 180;
 
-    nextStep(ui, y + kButtonH + 18, if (!snapshot_ok and !dialogue_ok)
-        "Both write a text file beside the one you pick."
-    else if (dialogue_ok)
-        "The dictionary search takes a few minutes."
-    else
-        "Saves the input log as text beside the snapshot.");
+    var y: f32 = kPageTop;
+    if (ui.field(pg.x, y, field_w, "Input log from a snapshot", st.get(.snapshot), "A .sav from the saves folder", mustTag(st.get(.snapshot), .file))) openDialog(window, .snapshot);
+    if (ui.buttons(pg.x + field_w + 16, y + 25, &.{.{ .label = "Save Input Log", .enabled = idle and snapshot_ok, .main = false }}) != null) startJob(alloc, st, .input_log);
+    y += kFieldStep;
+    ui.p.text(.small, pg.x, y - 14, kTextDim, "Writes the buttons pressed since the snapshot as text, beside it.");
+    y += 16;
+
+    if (ui.field(pg.x, y, field_w, "Dictionary for the dialogue", st.get(.dialogue), "A dialogue.txt, as Export writes", mustTag(st.get(.dialogue), .file))) openDialog(window, .dialogue);
+    if (ui.buttons(pg.x + field_w + 16, y + 25, &.{.{ .label = "Find Dictionary", .enabled = idle and dialogue_ok, .main = false }}) != null) startJob(alloc, st, .text_dict);
+    y += kFieldStep;
+    ui.p.text(.small, pg.x, y - 14, kTextDim, "Searches for the best text compression dictionary. Takes a few minutes.");
+    y += 16;
+
+    if (jobRunning()) statusLine(ui, pg.x, y, "");
+    return y + 20;
 }
 
 // ------------------------------------------------------------- the frame
 
-/// The update offer takes the line under the title while there is one, as
-/// on the start menu.
+/// The update offer shows in the sidebar while there is one.
 fn updateShown() bool {
     return switch (updater.phase()) {
         .available, .downloading, .installing, .ready, .failed => true,
@@ -1172,187 +1259,267 @@ fn updateShown() bool {
     };
 }
 
-fn updateButtonLabel(buf: []u8) []const u8 {
-    return std.fmt.bufPrint(buf, "UPDATE TO {s}", .{updater.offerLabel()}) catch "UPDATE";
+/// The updater's labels are capitals, for the start menu's font: "V1.9",
+/// "NIGHTLY 1A2B3C4". Here they read "v1.9" and "Nightly 1a2b3c4".
+fn softLabel(label: []const u8, buf: []u8) []const u8 {
+    const s = std.ascii.lowerString(buf[0..@min(buf.len, label.len)], label[0..@min(buf.len, label.len)]);
+    if (s.len > 0 and s[0] == 'n') s[0] = 'N';
+    return s;
 }
 
-/// The game's title, then what this is, or the offer of something newer.
-fn drawHeader(ui: *Ui, st: *State) void {
-    const cx: f32 = kWindowW / 2;
-    kit.drawTextCentered(ui.r, cx, 36, kit.kColorSelect, "THE LEGEND OF ZELDA", kScale);
-    kit.drawTextCentered(ui.r, cx, 36 + kRowH, kit.kColorSelect, "A LINK TO THE PAST DX", kScale);
+/// The game's name, and a small gold triangle of three.
+fn drawBrand(ui: *Ui) void {
+    const x: f32 = 22;
+    const y: f32 = 26;
+    const s: f32 = 22;
+    const col = kBrand;
+    const fc = c.SDL_FColor{ .r = @as(f32, @floatFromInt(col.r)) / 255, .g = @as(f32, @floatFromInt(col.g)) / 255, .b = @as(f32, @floatFromInt(col.b)) / 255, .a = 1 };
+    const h = s * 0.866;
+    const pts = [_][2]f32{
+        .{ x + s / 2, y },            .{ x + s * 0.75, y + h / 2 }, .{ x + s / 4, y + h / 2 },
+        .{ x + s / 4, y + h / 2 },    .{ x + s / 2, y + h },        .{ x, y + h },
+        .{ x + s * 0.75, y + h / 2 }, .{ x + s, y + h },            .{ x + s / 2, y + h },
+    };
+    var verts: [9]c.SDL_Vertex = undefined;
+    for (pts, &verts) |p, *v| v.* = .{ .position = .{ .x = p[0], .y = p[1] }, .color = fc, .tex_coord = .{ .x = 0, .y = 0 } };
+    _ = c.SDL_RenderGeometry(ui.p.r, null, &verts, verts.len, null, 0);
+    ui.p.text(.brand, x + s + 12, y - 5, kText, "A Link to the Past DX");
+    ui.p.text(.small, x + s + 12, y + 16, kTextDim, "Tools");
+}
+
+/// Down the left: the pages, then the update offer, how the assets stand,
+/// Play and the version.
+fn drawSidebar(ui: *Ui, alloc: std.mem.Allocator, st: *State) void {
+    ui.p.fill(.{ .x = 0, .y = 0, .w = kSideW, .h = ui.h }, kSide);
+    ui.p.fill(.{ .x = kSideW - 1, .y = 0, .w = 1, .h = ui.h }, kBorder);
+    drawBrand(ui);
+
+    var y: f32 = 84;
+    for (std.enums.values(Screen)) |screen| {
+        const row = Rect{ .x = 12, .y = y, .w = kSideW - 24, .h = 36 };
+        const hit = ui.item(row, true);
+        const current = st.screen == screen;
+        if (hit.ring) ui.ring(row, kRadius, kSide);
+        if (current) {
+            ui.p.fillRound(row, kRadius, kSurfaceHi);
+            ui.p.fillRound(.{ .x = row.x + 6, .y = row.y + 10, .w = 3, .h = 16 }, 1.5, kAccent);
+        } else if (hit.lit) {
+            ui.p.fillRound(row, kRadius, kSurface);
+        }
+        ui.p.text(if (current) .strong else .body, row.x + 20, row.y + 8, if (current or hit.lit) kText else kTextDim, screen.label());
+        if (hit.pressed) st.open(screen);
+        y += 38;
+    }
+
+    // From the bottom up.
+    var buf: [40]u8 = undefined;
+    var soft: [40]u8 = undefined;
+    const ver = if (updater.installed == .dev) "Dev build" else softLabel(updater.installedLabel(&buf), &soft);
+    ui.p.text(.small, 22, ui.h - 30, kTextFaint, ver);
+
+    const can_play = st.canPlay();
+    const play_rect = Rect{ .x = 16, .y = ui.h - 44 - 44, .w = kSideW - 32, .h = 44 };
+    const hit = ui.item(play_rect, can_play);
+    if (hit.ring) ui.ring(play_rect, 10, kSide);
+    ui.p.fillRound(play_rect, 10, if (!can_play) kSurface else if (hit.lit) kPlayHi else kPlay);
+    ui.p.textCentered(.strong, play_rect.x + play_rect.w / 2, play_rect.y + 12, if (can_play) kOnPlay else kTextFaint, "\u{25b6}  Play");
+    if (hit.pressed) play(alloc, st);
+
+    const line: struct { []const u8, []const u8, Color } = switch (st.assetsNow(alloc)) {
+        .standard => .{ "Assets ready", "Built from your US ROM", kOk },
+        .custom => .{ "Custom assets", "From a mod or translation", kOk },
+        .missing => .{ "No assets yet", "Build them from your ROM", kWarn },
+        .old => .{ "Assets out of date", "Build them again", kWarn },
+    };
+    const status = Rect{ .x = 12, .y = play_rect.y - 56, .w = kSideW - 24, .h = 46 };
+    // Clicking it when there's something to do goes and does it.
+    const fixable = st.assets == .missing or st.assets == .old;
+    const shit = ui.item(status, fixable);
+    if (shit.ring) ui.ring(status, kRadius, kSide);
+    if (shit.lit) ui.p.fillRound(status, kRadius, kSurface);
+    ui.p.disc(status.x + 16, status.y + 15, 4, line[2]);
+    ui.p.text(.strong, status.x + 28, status.y + 5, kText, line[0]);
+    ui.p.text(.small, status.x + 28, status.y + 24, kTextDim, if (can_play) line[1] else "Keep the tools by the game");
+    if (shit.pressed) st.open(.assets);
+
     if (updateShown()) {
-        var buf: [64]u8 = undefined;
-        const label = updateButtonLabel(&buf);
-        const w = kit.textWidth(label, kScale) + 40;
-        const u = Rect{ .x = cx - w / 2, .y = 36 + kRowH * 2 - 2, .w = w, .h = kRowH + 2 };
-        const hit = ui.item(u, true);
-        kit.fillRound(ui.r, u.x, u.y, u.w, u.h, 8, if (hit.focused) kit.kColorRowHi else kit.kColorPanel);
-        kit.outlineRound(ui.r, u.x, u.y, u.w, u.h, 8, if (hit.focused) 2 else 1, if (hit.focused) kit.kColorSelect else kit.kColorOk);
-        kit.drawTextCentered(ui.r, cx, u.y + 3, if (hit.focused) kit.kColorSelect else kit.kColorOk, label, kScale);
-        if (hit.pressed) st.openModal(ui, .update, 0);
-    } else {
-        kit.drawTextCentered(ui.r, cx, 36 + kRowH * 2, kit.kColorTextDim, "TOOLS", kScale);
-    }
-    kit.fillRect(ui.r, 60, 36 + kRowH * 3 + 7, kWindowW - 120, 1, kit.kColorLine);
-}
-
-/// The sections, side by side under the title. They're the first things
-/// registered, so tab N is always item N.
-fn drawTabs(ui: *Ui, st: *State) void {
-    const gap: f32 = 10;
-    const pad: f32 = 32;
-    var total: f32 = -gap;
-    inline for (@typeInfo(Page).@"enum".field_values) |value| {
-        const page: Page = @fromBackingInt(@intCast(value));
-        total += kit.textWidth(page.title(), kScale) + pad + gap;
-    }
-    var x: f32 = (kWindowW - total) / 2;
-    inline for (@typeInfo(Page).@"enum".field_values) |value| {
-        const page: Page = @fromBackingInt(@intCast(value));
-        const rect = Rect{ .x = x, .y = kTabsY, .w = kit.textWidth(page.title(), kScale) + pad, .h = kRowH + 10 };
-        x += rect.w + gap;
-        const hit = ui.item(rect, true);
-        const current = st.page == page;
-        if (current) kit.fillRound(ui.r, rect.x, rect.y, rect.w, rect.h, 8, kit.kColorRowHi);
-        if (hit.focused) kit.outlineRound(ui.r, rect.x, rect.y, rect.w, rect.h, 8, 2, kit.kColorSelect);
-        const col = if (hit.focused) kit.kColorSelect else if (current) kit.kColorText else kit.kColorTextDim;
-        kit.drawTextCentered(ui.r, rect.x + rect.w / 2, rect.y + 7, col, page.title(), kScale);
-        if (hit.pressed or (hit.focused and ui.stepped)) st.page = page;
+        var lbuf: [64]u8 = undefined;
+        var sbuf: [40]u8 = undefined;
+        const label = std.fmt.bufPrint(&lbuf, "Update to {s}", .{softLabel(updater.offerLabel(), &sbuf)}) catch "Update";
+        const u = Rect{ .x = 16, .y = status.y - 48, .w = kSideW - 32, .h = 36 };
+        const uhit = ui.item(u, true);
+        if (uhit.ring) ui.ring(u, kRadius, kSide);
+        ui.p.box(u, kRadius, 1, kAccent, if (uhit.lit) kSurfaceHi else kSide);
+        ui.p.textCentered(.strong, u.x + u.w / 2, u.y + 8, kAccentHi, label);
+        if (uhit.pressed) st.openModal(ui, .update, 0);
     }
 }
 
-fn drawLog(ui: *Ui) void {
-    kit.fillRound(ui.r, kMarginX, kLogY, kContentW, kLogH, 10, kColorLogBg);
-    // While a job runs, a gold bar slides along the top of the log.
+/// What the last job said, filling the rest of the page, once there's
+/// something to show.
+fn drawLog(ui: *Ui, rect: Rect) void {
+    if (rect.h < 80) return;
+    if (g_log_count == 0 and !jobRunning()) return;
+    ui.p.text(.strong, rect.x, rect.y, kTextDim, "Activity");
+    const panel = Rect{ .x = rect.x, .y = rect.y + 26, .w = rect.w, .h = rect.h - 26 };
+    ui.p.box(panel, 10, 1, kBorder, kSurface);
+    // While a job runs, a bar slides along the top of the panel.
     if (jobRunning()) {
-        const track = kContentW - 40;
-        const seg: f32 = 140;
+        const track = panel.w - 32;
+        const seg: f32 = 120;
         const t: f32 = @floatFromInt(c.SDL_GetTicks() % 1400);
         const at = (t / 1400) * (track + seg) - seg;
         const from = @max(0, at);
         const to = @min(track, at + seg);
-        if (to > from) kit.fillRound(ui.r, kMarginX + 20 + from, kLogY + 4, to - from, 3, 1.5, kit.kColorSelect);
+        if (to > from) ui.p.fillRound(.{ .x = panel.x + 16 + from, .y = panel.y + 1, .w = to - from, .h = 2 }, 1, kAccent);
     }
+
     c.SDL_LockMutex(g_log_lock);
     defer c.SDL_UnlockMutex(g_log_lock);
-    const end = g_log_count - @min(g_log_scroll, g_log_count);
-    const start = end -| kLogRows;
-    var y: f32 = kLogY + 12;
-    for (g_log[start..end]) |line| {
-        const col = switch (line.level) {
-            .info => kit.kColorTextDim,
-            .ok => kit.kColorOk,
-            .err => kit.kColorWarn,
+    const inner = Rect{ .x = panel.x + 16, .y = panel.y + 12, .w = panel.w - 32, .h = panel.h - 24 };
+    const rows: usize = @intFromFloat(@max(1, @floor(inner.h / kLogLineH)));
+
+    // From the newest line back, wrapped to the panel, skipping what's
+    // scrolled past, until the panel's full.
+    const Seg = struct { level: ops.Log.Level, text: []const u8 };
+    var segs: [64]Seg = undefined;
+    var count: usize = 0;
+    var skip = g_log_scroll;
+    var i = g_log_count;
+    outer: while (i > 0) {
+        i -= 1;
+        const line = &g_log[i];
+        var pieces: [24][]const u8 = undefined;
+        var np: usize = 0;
+        var rest: []const u8 = line.text[0..line.len];
+        if (rest.len == 0) {
+            pieces[0] = rest;
+            np = 1;
+        }
+        while (rest.len > 0 and np < pieces.len) {
+            const n = ui.p.breakAt(.small, rest, inner.w);
+            pieces[np] = rest[0..n];
+            np += 1;
+            rest = std.mem.trimStart(u8, rest[n..], " ");
+        }
+        var k = np;
+        while (k > 0) {
+            k -= 1;
+            if (skip > 0) {
+                skip -= 1;
+                continue;
+            }
+            if (count == rows or count == segs.len) break :outer;
+            segs[count] = .{ .level = line.level, .text = pieces[k] };
+            count += 1;
+        }
+    }
+    // Scrolled further up than there is: back off to the top.
+    g_log_scroll -= skip;
+
+    var y = inner.y;
+    var j = count;
+    while (j > 0) {
+        j -= 1;
+        const col = switch (segs[j].level) {
+            .info => kTextDim,
+            .ok => kOk,
+            .err => kWarn,
         };
-        ui.text(kMarginX + 16, y, col, line.text[0..line.len]);
+        ui.p.text(.small, inner.x, y, col, segs[j].text);
         y += kLogLineH;
     }
 }
 
-fn drawFooter(ui: *Ui, st: *State) void {
-    if (st.modal != .none) {
-        const hint = switch (st.modal) {
-            .update => switch (updater.phase()) {
-                .downloading => "B/Esc: cancel",
-                .installing, .ready => "",
-                else => "Left/Right: choose   A/Enter: confirm   B/Esc: cancel",
-            },
-            else => "Left/Right: choose   A/Enter: confirm   B/Esc: cancel",
-        };
-        ui.text(kMarginX, kFooterY, kit.kColorTextDim, hint);
-        return;
-    }
-    if (jobRunning()) {
-        var buf: [64]u8 = undefined;
-        ui.text(kMarginX, kFooterY, kit.kColorSelect, std.fmt.bufPrint(&buf, "{s}...", .{g_job.doing()}) catch "WORKING...");
-    } else {
-        ui.text(kMarginX, kFooterY, kit.kColorTextDim, "A/Enter: pick  Tab/L/R: page  B/Esc: quit");
-    }
-    // Which version this is, out of the way in the corner.
-    var buf: [40]u8 = undefined;
-    const ver = if (updater.installed == .dev) "DEV BUILD" else updater.installedLabel(&buf);
-    ui.text(kWindowW - kMarginX - kit.textWidth(ver, kScale), kFooterY, kit.kColorTextDim, ver);
+fn modalRect(ui: *const Ui) Rect {
+    const w: f32 = 480;
+    const h: f32 = 172;
+    return .{ .x = @round((ui.w - w) / 2), .y = @round((ui.h - h) / 2), .w = w, .h = h };
 }
 
-/// Lines of a modal, spaced so they read as separate sentences.
-const kModalLineH: f32 = kRowH + 8;
-
-fn modalRect() Rect {
-    const w: f32 = 700;
-    const h: f32 = 200;
-    return .{ .x = (kWindowW - w) / 2, .y = (kWindowH - h) / 2 - 20, .w = w, .h = h };
-}
-
-/// The modal's two answers, side by side. Says which was pressed, if one was.
-fn drawChoices(ui: *Ui, st: *State, labels: []const []const u8) ?usize {
-    const box = modalRect();
-    const w: f32 = 180;
-    const gap: f32 = 30;
+/// The modal's answers at its bottom right, the one that does it last.
+/// Says which was pressed, if one was.
+fn drawChoices(ui: *Ui, st: *State, labels: [2][]const u8) ?usize {
+    const box = modalRect(ui);
     var pressed: ?usize = null;
+    var x = box.x + box.w - 24;
+    // Registered in index order, drawn right to left.
     for (labels, 0..) |label, i| {
-        const x = box.x + (box.w - (w * 2 + gap)) / 2 + (w + gap) * @as(f32, @floatFromInt(i));
-        const r = Rect{ .x = x, .y = box.y + box.h - 62, .w = w, .h = kRowH + 16 };
+        const w = ui.p.textWidth(.strong, label) + 40;
+        x -= w;
+        const r = Rect{ .x = x, .y = box.y + box.h - 24 - 36, .w = w, .h = 36 };
+        x -= 12;
         const hit = ui.item(r, true);
         if (hit.focused) st.choice = i;
-        const selected = i == st.choice;
-        kit.fillRound(ui.r, r.x, r.y, r.w, r.h, 8, if (selected) kit.kColorRowHi else kit.kColorPanel);
-        kit.outlineRound(ui.r, r.x, r.y, r.w, r.h, 8, if (selected) 2 else 1, if (selected) kit.kColorSelect else kit.kColorLine);
-        kit.drawTextCentered(ui.r, r.x + r.w / 2, r.y + 8, if (selected) kit.kColorSelect else kit.kColorText, label, kScale);
+        if (hit.ring) ui.ring(r, kRadius, kSurface);
+        if (i == 0) {
+            ui.p.fillRound(r, kRadius, if (hit.lit) kAccentHi else kAccent);
+            ui.p.textCentered(.strong, r.x + r.w / 2, r.y + 8, kOnAccent, label);
+        } else {
+            ui.p.box(r, kRadius, 1, kBorder, if (hit.lit) kSurfaceHi else kSurface);
+            ui.p.textCentered(.strong, r.x + r.w / 2, r.y + 8, kText, label);
+        }
         if (hit.pressed) pressed = i;
     }
     return pressed;
 }
 
 fn drawModal(ui: *Ui, st: *State) void {
-    const box = modalRect();
-    const cx = box.x + box.w / 2;
-    // A frame paints its own interior, which is what blanks the page behind.
-    kit.drawFrame(ui.r, box.x, box.y, box.w, box.h);
-    var buf: [64]u8 = undefined;
+    ui.p.fill(.{ .x = 0, .y = 0, .w = ui.w, .h = ui.h }, Color.hex(0x000000).alpha(150));
+    const box = modalRect(ui);
+    ui.p.shadow(box, 14);
+    ui.p.box(box, 14, 1, kBorder, kSurface);
+    const x = box.x + 24;
+    const title_y = box.y + 22;
+    const body_y = box.y + 60;
+    var buf: [96]u8 = undefined;
+    var soft: [40]u8 = undefined;
     switch (st.modal) {
         .quit => {
-            kit.drawTextCentered(ui.r, cx, box.y + 34, kit.kColorSelect, "QUIT THE TOOLS?", kScale);
-            if (jobRunning()) kit.drawTextCentered(ui.r, cx, box.y + 34 + kModalLineH, kit.kColorWarn, "A job is still running. Quitting stops it.", kScale);
-            if (drawChoices(ui, st, &kQuitChoices)) |i| {
+            ui.p.text(.brand, x, title_y, kText, "Quit the tools?");
+            ui.p.text(.body, x, body_y, if (jobRunning()) kWarn else kTextDim, if (jobRunning()) "A job is still running. Quitting stops it." else "Anything you've built is saved.");
+            if (drawChoices(ui, st, .{ "Quit", "Stay" })) |i| {
                 if (i == 0) st.quit = true else st.closeModal(ui);
             }
         },
         .update => switch (updater.phase()) {
             .downloading, .installing, .ready => |p| {
                 const title = switch (p) {
-                    .downloading => std.fmt.bufPrint(&buf, "DOWNLOADING {s}", .{updater.offerLabel()}) catch "DOWNLOADING",
-                    .installing => "INSTALLING...",
-                    else => if (jobRunning()) "RESTARTING WHEN THE JOB'S DONE..." else "RESTARTING...",
+                    .downloading => std.fmt.bufPrint(&buf, "Downloading {s}", .{softLabel(updater.offerLabel(), &soft)}) catch "Downloading",
+                    .installing => "Installing\u{2026}",
+                    else => if (jobRunning()) "Restarting when the job's done\u{2026}" else "Restarting\u{2026}",
                 };
-                kit.drawTextCentered(ui.r, cx, box.y + 34, kit.kColorSelect, title, kScale);
+                ui.p.text(.brand, x, title_y, kText, title);
 
                 const pr = updater.progress();
                 const frac: f32 = if (p != .downloading) 1 else if (pr.total == 0) 0 else @min(1, @as(f32, @floatFromInt(pr.done)) / @as(f32, @floatFromInt(pr.total)));
-                const bar = Rect{ .x = box.x + 60, .y = box.y + 84, .w = box.w - 120, .h = 14 };
-                kit.fillRound(ui.r, bar.x, bar.y, bar.w, bar.h, 6, kit.kColorRowHi);
-                if (frac > 0) kit.fillRound(ui.r, bar.x, bar.y, @max(bar.w * frac, 12), bar.h, 6, kit.kColorOk);
-
+                const bar = Rect{ .x = x, .y = body_y + 8, .w = box.w - 48, .h = 8 };
+                ui.p.fillRound(bar, 4, kSurfaceHi);
+                if (frac > 0) ui.p.fillRound(.{ .x = bar.x, .y = bar.y, .w = @max(bar.w * frac, 8), .h = bar.h }, 4, kAccent);
                 const mb = 1024.0 * 1024.0;
-                const size = std.fmt.bufPrint(&buf, "{d:.1} OF {d:.1} MB", .{ @as(f32, @floatFromInt(pr.done)) / mb, @as(f32, @floatFromInt(pr.total)) / mb }) catch "";
-                if (p == .downloading) kit.drawTextCentered(ui.r, cx, bar.y + 30, kit.kColorTextDim, size, kScale);
+                if (p == .downloading) {
+                    const size = std.fmt.bufPrint(&buf, "{d:.1} of {d:.1} MB. Esc cancels.", .{ @as(f32, @floatFromInt(pr.done)) / mb, @as(f32, @floatFromInt(pr.total)) / mb }) catch "";
+                    ui.p.text(.small, x, bar.y + 20, kTextDim, size);
+                }
             },
             .failed => {
-                kit.drawTextCentered(ui.r, cx, box.y + 26, kit.kColorWarn, "COULD NOT UPDATE", kScale);
-                kit.drawTextCentered(ui.r, cx, box.y + 26 + kModalLineH, kit.kColorText, updater.message(), kScale);
-                kit.drawTextCentered(ui.r, cx, box.y + 26 + kModalLineH * 2, kit.kColorTextDim, "Or get it by hand from the release page.", kScale);
-                if (drawChoices(ui, st, &kUpdateFailedChoices)) |i| {
+                ui.p.text(.brand, x, title_y, kWarn, "Couldn't update");
+                ui.p.text(.body, x, body_y, kText, updater.message());
+                ui.p.text(.body, x, body_y + 24, kTextDim, "You can get it by hand from the release page.");
+                if (drawChoices(ui, st, .{ "Open Page", "Close" })) |i| {
                     if (i == 0) _ = c.SDL_OpenURL(updater.pageUrl().ptr);
                     updater.dismiss();
                     st.closeModal(ui);
                 }
             },
             else => {
-                kit.drawTextCentered(ui.r, cx, box.y + 26, kit.kColorSelect, std.fmt.bufPrint(&buf, "UPDATE THE TOOLS TO {s}?", .{updater.offerLabel()}) catch "UPDATE?", kScale);
+                ui.p.text(.brand, x, title_y, kText, std.fmt.bufPrint(&buf, "Update the tools to {s}?", .{softLabel(updater.offerLabel(), &soft)}) catch "Update?");
                 var mine: [40]u8 = undefined;
-                kit.drawTextCentered(ui.r, cx, box.y + 26 + kModalLineH, kit.kColorText, std.fmt.bufPrint(&buf, "You have {s} now.", .{updater.installedLabel(&mine)}) catch "", kScale);
-                kit.drawTextCentered(ui.r, cx, box.y + 26 + kModalLineH * 2, kit.kColorTextDim, "Downloads from GitHub, then restarts.", kScale);
-                if (drawChoices(ui, st, &kUpdateChoices)) |i| {
+                var mine_soft: [40]u8 = undefined;
+                var line_buf: [64]u8 = undefined;
+                ui.p.text(.body, x, body_y, kText, std.fmt.bufPrint(&line_buf, "You have {s} now.", .{softLabel(updater.installedLabel(&mine), &mine_soft)}) catch "");
+                ui.p.text(.body, x, body_y + 24, kTextDim, "It downloads from GitHub, then restarts the tools.");
+                if (drawChoices(ui, st, .{ "Update", "Not Now" })) |i| {
                     if (i == 0) updater.install() else st.closeModal(ui);
                 }
             },
@@ -1376,36 +1543,9 @@ fn initialState(alloc: std.mem.Allocator) State {
     return st;
 }
 
-/// The first thing in the log: what's ready and what isn't, a line each, so
-/// the next step is plain before anything's been pressed.
-fn reportReadiness(alloc: std.mem.Allocator, st: *State) void {
-    if (st.get(.rom).len == 0) {
-        g_logger.info("No ROM picked yet.", .{});
-    } else if (!Must.file.satisfiedBy(st.get(.rom))) {
-        g_logger.info("Your ROM isn't where it was. Pick it again.", .{});
-    } else switch (romKind(st)) {
-        .us => g_logger.ok("Your ROM is the US release: ready to build.", .{}),
-        .other => g_logger.info("Your ROM isn't the US release the build needs.", .{}),
-        .unreadable => g_logger.info("Your ROM couldn't be read. Pick it again.", .{}),
-    }
-
-    switch (assetState(alloc, st.get(.out))) {
-        .missing => g_logger.info("The assets aren't built yet.", .{}),
-        .standard => g_logger.ok("The assets are built and match this version.", .{}),
-        .custom => g_logger.ok("The assets are custom: a mod, or extra languages.", .{}),
-        .old => g_logger.info("The assets are from another version. Build again.", .{}),
-    }
-
-    if (st.game != null) {
-        g_logger.ok("The game is beside the tools: Play starts it.", .{});
-    } else if (!st.canPlay()) {
-        g_logger.info("The game isn't beside the tools, so Play is off.", .{});
-    }
-}
-
 /// Whether the asset file at `path` is there, whether it's the one this
 /// version builds from the US ROM, and if not, whether the game loads it.
-fn assetState(alloc: std.mem.Allocator, path: []const u8) enum { missing, standard, custom, old } {
+fn assetState(alloc: std.mem.Allocator, path: []const u8) AssetState {
     const z = alloc.dupeSentinel(u8, path, 0) catch return .missing;
     defer alloc.free(z);
     const data = fileio.readWholeFile(alloc, z.ptr) catch return .missing;
@@ -1417,8 +1557,8 @@ fn assetState(alloc: std.mem.Allocator, path: []const u8) enum { missing, standa
     return if (@import("asset_pack.zig").loadsInGame(data)) .custom else .old;
 }
 
-/// Takes a dropped file or folder for whichever row it belongs in, by what
-/// it is, and goes to that page.
+/// Takes a dropped file or folder for whichever field it belongs in, by
+/// what it is, and opens the page that uses it.
 fn dropped(alloc: std.mem.Allocator, st: *State, path: []const u8) void {
     var buf: [4096]u8 = undefined;
     const z = std.fmt.bufPrintSentinel(&buf, "{s}", .{path}, 0) catch return;
@@ -1434,25 +1574,30 @@ fn dropped(alloc: std.mem.Allocator, st: *State, path: []const u8) void {
     } else if (is(ext, ".zspr")) {
         st.set(alloc, .zspr, path);
         st.gfx.index = 0;
-        st.page = .graphics;
-    } else if (is(ext, ".zip") or (is_dir and st.page == .music)) {
+        st.open(.graphics);
+    } else if (is(ext, ".zip") or (is_dir and st.screen == .msu)) {
         st.set(alloc, .msu, path);
-        st.page = .music;
+        st.open(.msu);
     } else if (is(ext, ".sav")) {
         st.set(alloc, .snapshot, path);
-        st.page = .extras;
+        st.open(.extras);
     } else if (is(ext, ".txt")) {
         st.set(alloc, .dialogue, path);
-        st.page = .extras;
+        st.open(.extras);
     } else if (is_dir) {
         st.set(alloc, .folder, path);
+    } else if (st.screen == .languages) {
+        st.set(alloc, .lang_rom, path);
     } else {
-        st.set(alloc, if (st.page == .languages) .lang_rom else .rom, path);
+        st.set(alloc, .rom, path);
+        // A ROM dropped on a page without a ROM goes to the one that
+        // builds from it.
+        if (st.screen != .modding) st.open(.assets);
     }
 }
 
-/// A dialog's answer, into its row. A track picked for an MSU-1 pack means
-/// the folder it's in.
+/// A dialog's answer, into its field. A track picked for an MSU-1 pack
+/// means the folder it's in.
 fn picked(alloc: std.mem.Allocator, st: *State, field: Field, path: []const u8) void {
     if (field == .msu and !std.ascii.endsWithIgnoreCase(path, ".zip")) {
         st.set(alloc, .msu, std.fs.path.dirname(path) orelse path);
@@ -1463,24 +1608,29 @@ fn picked(alloc: std.mem.Allocator, st: *State, field: Field, path: []const u8) 
 
 fn drawFrame(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window) void {
     ui.begin();
-    // Under a modal the page is still drawn, but only the modal takes input.
+    // Under a modal the window is still drawn, but only the modal takes input.
     ui.blocked = st.modal != .none;
-    kit.fillBackground(ui.r, kWindowW, kWindowH);
-    kit.drawFrame(ui.r, 16, 16, kWindowW - 32, kWindowH - 32);
-    drawTabs(ui, st);
-    switch (st.page) {
-        .assets => drawAssets(ui, alloc, st, window),
-        .modding => drawModding(ui, alloc, st, window),
-        .graphics => drawGraphics(ui, alloc, st, window),
-        .music => drawMusic(ui, alloc, st, window),
-        .languages => drawLanguages(ui, alloc, st, window),
-        .extras => drawExtras(ui, alloc, st, window),
-    }
-    // After the page, so an update turning up doesn't shift what the focus
-    // is on.
-    drawHeader(ui, st);
-    if (st.page != .graphics) drawLog(ui);
-    drawFooter(ui, st);
+    ui.p.fill(.{ .x = 0, .y = 0, .w = ui.w, .h = ui.h }, kBg);
+    // The sidebar first, so its entries keep their places in the focus order
+    // whichever page is open.
+    drawSidebar(ui, alloc, st);
+
+    const left = kSideW + kPad;
+    const pg = Page{ .x = left, .w = @min(kMaxPageW, ui.w - left - kPad), .bottom = ui.h - 28 };
+    ui.p.text(.heading, pg.x, 32, kText, st.screen.label());
+    var buf: [256]u8 = undefined;
+    ui.p.text(.body, pg.x, 70, kTextDim, ui.p.fit(.body, st.screen.about(), pg.w, &buf));
+
+    const bottom = switch (st.screen) {
+        .assets => drawAssets(ui, alloc, st, window, pg),
+        .modding => drawModding(ui, alloc, st, window, pg),
+        .graphics => drawGraphics(ui, alloc, st, window, pg),
+        .music => drawMusic(ui, alloc, st, pg),
+        .msu => drawMsu(ui, alloc, st, window, pg),
+        .languages => drawLanguages(ui, alloc, st, window, pg),
+        .extras => drawExtras(ui, alloc, st, window, pg),
+    };
+    if (st.screen != .graphics) drawLog(ui, .{ .x = pg.x, .y = bottom + 32, .w = pg.w, .h = pg.bottom - bottom - 32 });
     if (st.modal != .none) {
         ui.blocked = false;
         drawModal(ui, st);
@@ -1488,30 +1638,44 @@ fn drawFrame(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Wind
 }
 
 /// Draws one frame of a page into a BMP with no window, for looking at the
-/// layout while working on it: `zelda3-tools gui-screenshot out.bmp [page]`.
+/// layout while working on it: `zelda3-tools gui-screenshot out.bmp [page]`,
+/// the page being assets, modding, graphics, music, msu, languages or
+/// extras.
 /// `log` lines are fed through the real log first, so it shows populated;
 /// ones like "@rom=path" set a field instead (any of the Field names),
 /// "@pick=de,fr" ticks languages, "@sprites" ticks the sprite sheets,
 /// "@watch" turns on rebuilding, "@picture=N" and "@song=N" pick from those
-/// lists, "@focus=N" puts the focus on the Nth thing that can have it,
-/// "@busy=build" shows a job running, "@update=available" (or downloading,
-/// failed...) an update on offer, "@modal=quit" or "@modal=update" a
-/// question up, and "@us=path" takes path to be a US ROM.
+/// lists, "@focus=N" puts the focus on the Nth thing that can have it and
+/// shows it as the keys would, "@busy=build" shows a job running,
+/// "@update=available" (or downloading, failed...) an update on offer,
+/// "@modal=quit" or "@modal=update" a question up, "@us=path" takes path to
+/// be a US ROM, "@scale=2" draws it as a Retina screen would, and
+/// "@size=WxH" sizes the window.
 pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]const u8, log_lines: []const [:0]const u8) !void {
-    const surface = c.SDL_CreateSurface(kWindowW, kWindowH, c.SDL_PIXELFORMAT_XRGB8888) orelse return error.SdlSurface;
+    var scale: f32 = 1;
+    var w: f32 = kWindowW;
+    var h: f32 = kWindowH;
+    for (log_lines) |line| {
+        if (std.mem.startsWith(u8, line, "@scale=")) scale = std.fmt.parseFloat(f32, line[7..]) catch 1;
+        if (std.mem.startsWith(u8, line, "@size=")) {
+            var it = std.mem.splitScalar(u8, line[6..], 'x');
+            w = std.fmt.parseFloat(f32, it.next() orelse "") catch w;
+            h = std.fmt.parseFloat(f32, it.next() orelse "") catch h;
+        }
+    }
+    const surface = c.SDL_CreateSurface(@intFromFloat(w * scale), @intFromFloat(h * scale), c.SDL_PIXELFORMAT_XRGB8888) orelse return error.SdlSurface;
     defer c.SDL_DestroySurface(surface);
     const renderer = c.SDL_CreateSoftwareRenderer(surface) orelse return error.SdlRenderer;
     defer c.SDL_DestroyRenderer(renderer);
+    var paint = Paint.init(renderer, scale);
+    defer paint.deinit();
     var st = initialState(alloc);
-    var ui = Ui{ .r = renderer };
+    var ui = Ui{ .p = &paint, .w = w, .h = h, .focus = kMaxItems };
     if (page_name) |name| {
-        const info = @typeInfo(Page).@"enum";
-        inline for (info.field_names, info.field_values) |field_name, value| {
-            if (std.ascii.eqlIgnoreCase(field_name, name)) st.page = @fromBackingInt(@intCast(value));
-        }
+        st.screen = std.meta.stringToEnum(Screen, name) orelse .assets;
     }
     var picks: ?[]const u8 = null;
-    // Settings first, so the opening report is about them, then the log.
+    // Settings first, then the log.
     for (log_lines) |line| {
         if (std.mem.startsWith(u8, line, "@")) {
             const eq = std.mem.indexOfScalar(u8, line, '=') orelse line.len;
@@ -1530,6 +1694,7 @@ pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]co
                 st.tunes.index = number;
             } else if (std.mem.eql(u8, key, "focus")) {
                 ui.focus = number;
+                ui.keys = true;
             } else if (std.mem.eql(u8, key, "busy")) {
                 g_job = std.meta.stringToEnum(Job, value) orelse .build;
                 g_job_running.store(true, .release);
@@ -1545,7 +1710,6 @@ pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]co
             } else if (std.meta.stringToEnum(Field, key)) |f| st.set(alloc, f, value);
         }
     }
-    reportReadiness(alloc, &st);
     for (log_lines) |line| {
         if (std.mem.startsWith(u8, line, "@")) continue;
         const level: ops.Log.Level = if (std.mem.startsWith(u8, line, "!")) .err else if (std.mem.startsWith(u8, line, "+")) .ok else .info;
@@ -1560,7 +1724,7 @@ pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]co
     }
     // The pictures list on the first frame, and the picked one loads on it.
     drawFrame(&ui, alloc, &st, null);
-    if (st.page == .graphics) drawFrame(&ui, alloc, &st, null);
+    drawFrame(&ui, alloc, &st, null);
     _ = c.SDL_RenderPresent(renderer);
     if (!c.SDL_SaveBMP(surface, path.ptr)) return error.SaveFailed;
 }
@@ -1581,6 +1745,13 @@ fn checkForUpdates(alloc: std.mem.Allocator) void {
     if (menu.updatesOnIn(&ini)) updater.check(menu.updateChannelIn(&ini));
 }
 
+/// How many of the screen's pixels a point is, for the window where it is
+/// now: 2 on a Retina screen, 1.5 on a Windows one at 150%.
+fn windowScale(window: *c.SDL_Window) f32 {
+    const s = c.SDL_GetWindowDisplayScale(window);
+    return if (s > 0) s else 1;
+}
+
 pub fn run(alloc: std.mem.Allocator) !void {
     kit.configureJoysticks();
     if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_GAMEPAD | c.SDL_INIT_AUDIO)) {
@@ -1588,14 +1759,31 @@ pub fn run(alloc: std.mem.Allocator) !void {
         return error.SdlInit;
     }
     defer c.SDL_Quit();
-    const window = c.SDL_CreateWindow("ALTTP-DX Tools", kWindowW, kWindowH, 0) orelse return error.SdlWindow;
+    // Windows sizes a window in pixels and says how big its points are on
+    // the side; a Mac or Wayland sizes it in points already, and says 1.
+    const content = c.SDL_GetDisplayContentScale(c.SDL_GetPrimaryDisplay());
+    const start: f32 = if (content > 0) content else 1;
+    const window = c.SDL_CreateWindow(
+        "ALttP DX Tools",
+        @intFromFloat(kWindowW * start),
+        @intFromFloat(kWindowH * start),
+        c.SDL_WINDOW_HIGH_PIXEL_DENSITY | c.SDL_WINDOW_RESIZABLE,
+    ) orelse return error.SdlWindow;
     defer c.SDL_DestroyWindow(window);
+    _ = c.SDL_SetWindowMinimumSize(window, @intFromFloat(kMinW * start), @intFromFloat(kMinH * start));
     const renderer = c.SDL_CreateRenderer(window, null) orelse return error.SdlRenderer;
     defer c.SDL_DestroyRenderer(renderer);
     _ = c.SDL_SetRenderVSync(renderer, 1);
     g_dialog_lock = c.SDL_CreateMutex();
     defer c.SDL_DestroyMutex(g_dialog_lock);
     g_log_lock = c.SDL_CreateMutex();
+
+    const arrow = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT);
+    const hand = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER);
+    defer {
+        if (arrow) |a| c.SDL_DestroyCursor(a);
+        if (hand) |h| c.SDL_DestroyCursor(h);
+    }
 
     // On Windows the updater names the tools' files from their own folder,
     // as the game does from its.
@@ -1606,7 +1794,6 @@ pub fn run(alloc: std.mem.Allocator) !void {
     checkForUpdates(alloc);
 
     var st = initialState(alloc);
-    reportReadiness(alloc, &st);
     defer {
         st.tunes.drop(alloc);
         if (st.gfx.tex) |t| c.SDL_DestroyTexture(t);
@@ -1624,17 +1811,18 @@ pub fn run(alloc: std.mem.Allocator) !void {
     var vrepeat = kit.Repeat{};
     var hrepeat = kit.Repeat{};
 
-    var ui = Ui{ .r = renderer };
+    var paint = Paint.init(renderer, windowScale(window));
+    defer paint.deinit();
+    var ui = Ui{ .p = &paint };
     var was_running = false;
+    var cursor_hand = false;
     while (!st.quit) {
         const now = c.SDL_GetTicks();
         ui.moved = false;
         ui.clicked = false;
         ui.confirm = false;
-        ui.stepped = false;
         ui.adjust = 0;
         var back = false;
-        var page_step: i32 = 0;
         // Presses arrive as events so that a tap shorter than a frame still
         // counts; the poll below only decides when a held direction repeats.
         var tap_v: i32 = 0;
@@ -1642,6 +1830,8 @@ pub fn run(alloc: std.mem.Allocator) !void {
 
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event)) {
+            // Mouse positions in points, as everything's laid out.
+            _ = c.SDL_ConvertEventToRenderCoordinates(renderer, &event);
             switch (event.type) {
                 c.SDL_EVENT_QUIT => st.quit = true,
                 c.SDL_EVENT_GAMEPAD_ADDED => pads.open(event.gdevice.which),
@@ -1650,18 +1840,15 @@ pub fn run(alloc: std.mem.Allocator) !void {
                     ui.mouse_x = event.motion.x;
                     ui.mouse_y = event.motion.y;
                     ui.moved = true;
+                    ui.keys = false;
                 },
                 c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                     ui.mouse_x = event.button.x;
                     ui.mouse_y = event.button.y;
+                    ui.keys = false;
                     if (event.button.button == c.SDL_BUTTON_LEFT) ui.clicked = true;
-                    if (event.button.button == c.SDL_BUTTON_RIGHT) back = true;
                 },
-                c.SDL_EVENT_MOUSE_WHEEL => {
-                    if (ui.mouse_y >= kLogY and ui.mouse_y < kLogY + kLogH and st.page != .graphics) {
-                        scrollLog(if (event.wheel.y > 0) 1 else if (event.wheel.y < 0) -1 else 0);
-                    }
-                },
+                c.SDL_EVENT_MOUSE_WHEEL => scrollLog(if (event.wheel.y > 0) 3 else if (event.wheel.y < 0) -3 else 0),
                 // Anything that stops the window seeing releases has to
                 // clear what it thinks is held, or a direction sticks on.
                 c.SDL_EVENT_WINDOW_FOCUS_LOST => held = .{},
@@ -1676,27 +1863,28 @@ pub fn run(alloc: std.mem.Allocator) !void {
                         }
                     } else switch (event.key.key) {
                         c.SDLK_ESCAPE => back = true,
-                        c.SDLK_RETURN, c.SDLK_SPACE => ui.confirm = true,
-                        c.SDLK_TAB => page_step = if (event.key.mod & c.SDL_KMOD_SHIFT != 0) -1 else 1,
-                        c.SDLK_PAGEUP => scrollLog(@intCast(kLogRows - 1)),
-                        c.SDLK_PAGEDOWN => scrollLog(-@as(i32, @intCast(kLogRows - 1))),
+                        c.SDLK_RETURN, c.SDLK_SPACE => {
+                            ui.confirm = true;
+                            ui.keys = true;
+                        },
+                        c.SDLK_PAGEUP => scrollLog(8),
+                        c.SDLK_PAGEDOWN => scrollLog(-8),
                         else => {},
                     }
                 },
                 c.SDL_EVENT_KEY_UP => _ = held.set(event.key.key, false),
                 c.SDL_EVENT_GAMEPAD_BUTTON_UP => _ = held.setButton(event.gbutton.button, false),
-                // The d-pad and shoulders go by position; the face buttons
-                // by the letter printed on them.
+                // The d-pad goes by position; the face buttons by the
+                // letter printed on them.
                 c.SDL_EVENT_GAMEPAD_BUTTON_DOWN => {
                     _ = held.setButton(event.gbutton.button, true);
+                    ui.keys = true;
                     switch (event.gbutton.button) {
                         c.SDL_GAMEPAD_BUTTON_START => ui.confirm = true,
                         c.SDL_GAMEPAD_BUTTON_DPAD_UP => tap_v -= 1,
                         c.SDL_GAMEPAD_BUTTON_DPAD_DOWN => tap_v += 1,
                         c.SDL_GAMEPAD_BUTTON_DPAD_LEFT => tap_h -= 1,
                         c.SDL_GAMEPAD_BUTTON_DPAD_RIGHT => tap_h += 1,
-                        c.SDL_GAMEPAD_BUTTON_LEFT_SHOULDER => page_step = -1,
-                        c.SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER => page_step = 1,
                         else => switch (kit.faceAction(event.gbutton.which, event.gbutton.button)) {
                             .confirm => ui.confirm = true,
                             .back => back = true,
@@ -1727,21 +1915,13 @@ pub fn run(alloc: std.mem.Allocator) !void {
 
         switch (st.modal) {
             .none => {
-                if (move_v != 0) {
-                    ui.move(0, @floatFromInt(move_v));
-                    // Up into the tabs lands on this page's, not whichever
-                    // is nearest, which would change the page.
-                    if (ui.focus < kPageCount) ui.focus = @backingInt(st.page);
-                }
+                if (move_v != 0) ui.move(0, @floatFromInt(move_v));
                 // A chooser keeps left and right for itself.
                 if (move_h != 0) {
-                    if (ui.focusAdjusts()) ui.adjust = move_h else ui.move(@floatFromInt(move_h), 0);
-                }
-                if (page_step != 0) {
-                    st.page = st.page.step(page_step);
-                    // The focus goes to the page's own tab, so the arrows
-                    // carry on from the top of it.
-                    ui.focus = @backingInt(st.page);
+                    if (ui.focusAdjusts()) {
+                        ui.adjust = move_h;
+                        ui.keys = true;
+                    } else ui.move(@floatFromInt(move_h), 0);
                 }
                 if (back) st.openModal(&ui, .quit, 1);
             },
@@ -1782,8 +1962,21 @@ pub fn run(alloc: std.mem.Allocator) !void {
         was_running = running;
         watchFolder(alloc, &st, now);
 
+        // The window may have moved to a screen with other pixels, or been
+        // resized.
+        paint.setScale(windowScale(window));
+        var pw: c_int = 0;
+        var ph: c_int = 0;
+        _ = c.SDL_GetCurrentRenderOutputSize(renderer, &pw, &ph);
+        ui.w = @as(f32, @floatFromInt(pw)) / paint.scale;
+        ui.h = @as(f32, @floatFromInt(ph)) / paint.scale;
+
         drawFrame(&ui, alloc, &st, window);
         _ = c.SDL_RenderPresent(renderer);
+        if (ui.over_any != cursor_hand) {
+            cursor_hand = ui.over_any;
+            _ = c.SDL_SetCursor(if (cursor_hand) hand else arrow);
+        }
 
         // Installed: start the new tools, once no job is halfway through.
         if (updater.phase() == .ready and !running) {
