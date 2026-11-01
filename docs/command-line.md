@@ -15,6 +15,10 @@ For working on ALTTP-DX rather than playing it.
   snapshot in `saves/ref` with no window and saves the last frame. `s<n>` in
   place of the chapter starts from your own quick-save slot n instead. A script
   is steps of frames and the buttons held for them: `60,1:start,20,1:select,30`.
+  `CRT=arcade` (or any look) draws that frame through the real CRT shaders,
+  with the look's own curve and bezel, in a window that never shows, and
+  `SCALE=n` makes it n pixels to a SNES pixel (3 unless said). It needs SDL's
+  GPU renderer. This is how the README's CRT pictures are made.
 - `zelda3 --menu-shot <screen> <out.bmp> [seed]` draws a start menu screen
   (`main`, `settings`, `features`, `controls`, `achievements`, `hub`,
   `alttpr`, `details`) with no window. `LIST_ROW=n` picks a row on the lists, `INFO=1` opens the

@@ -168,7 +168,6 @@ const kDefaultSamples = 2048;
 
 /// SDL3 dropped SDL_MIX_MAXVOLUME along with SDL_MixAudioFormat; the volume is
 /// a stream gain now. The old scale is kept so the printed value reads as it did.
-
 const kWindowTitle = "The Legend of Zelda: A Link to the Past DX";
 
 var g_win_flags: c.SDL_WindowFlags = c.SDL_WINDOW_RESIZABLE;
@@ -449,10 +448,70 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
     ZeldaDrawPpuFrame(@ptrCast(pixels.ptr), width * 4, g_ppu_render_flags & ~kPpuRenderFlags_4x4Mode7);
     title_dx.drawOver(@ptrCast(pixels.ptr), width * 4, width, height, 1);
     settings_menu.drawOver(@ptrCast(pixels.ptr), width * 4, width, height, 1);
+    if (std.c.getenv("CRT")) |name| return crtShot(pixels, width, height, std.mem.span(name), out);
     frame_capture.writeBmp(out, pixels, width, height) catch |err| {
         std.debug.print("--render: could not write {s}: {s}\n", .{ out, @errorName(err) });
         return 1;
     };
+    return 0;
+}
+
+/// For `CRT=<look> zelda3 --render ...`: the frame through a CRT look as the
+/// window would show it, drawn by the real shaders in a window nobody sees.
+/// `SCALE=n` makes it n screen pixels to a SNES pixel (3 unless said), and
+/// the look's own curve and bezel come with it, as when it's picked in the
+/// menu. Needs SDL's GPU renderer, which is the only one with the shaders.
+fn crtShot(pixels: []const u32, width: usize, height: usize, name: []const u8, out: [*:0]const u8) c_int {
+    const preset = crt.Preset.fromName(name) orelse {
+        std.debug.print("--render: CRT={s}? off, scanlines, arcade, soft, tv, composite or lcd\n", .{name});
+        return 1;
+    };
+    const scale: usize = if (std.c.getenv("SCALE")) |s| std.fmt.parseInt(usize, std.mem.span(s), 10) catch 3 else 3;
+    const out_w: c_int = @intCast(width * scale);
+    const out_h: c_int = @intCast(height * scale);
+    if (!c.SDL_Init(c.SDL_INIT_VIDEO)) return 1;
+    defer c.SDL_Quit();
+    g_window = c.SDL_CreateWindow("CRT", out_w, out_h, c.SDL_WINDOW_HIDDEN) orelse return 1;
+    defer c.SDL_DestroyWindow(g_window);
+    config.g_config.hdr = false;
+    const r = createGpuRenderer() orelse {
+        std.debug.print("--render: CRT needs SDL's GPU renderer: {s}\n", .{c.SDL_GetError()});
+        return 1;
+    };
+    defer c.SDL_DestroyRenderer(r);
+    crt_gpu.init(r);
+    defer crt_gpu.destroy();
+    if (!crt_gpu.shaderReady()) {
+        std.debug.print("--render: the CRT shaders wouldn't load\n", .{});
+        return 1;
+    }
+
+    const game = c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_XRGB8888, c.SDL_TEXTUREACCESS_STATIC, @intCast(width), @intCast(height)) orelse return 1;
+    defer c.SDL_DestroyTexture(game);
+    _ = c.SDL_UpdateTexture(game, null, pixels.ptr, @intCast(width * 4));
+    _ = c.SDL_SetTextureBlendMode(game, c.SDL_BLENDMODE_NONE);
+    const target = c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_ARGB8888, c.SDL_TEXTUREACCESS_TARGET, out_w, out_h) orelse return 1;
+    defer c.SDL_DestroyTexture(target);
+    _ = c.SDL_SetRenderTarget(r, target);
+
+    const d = crt.defaultsFor(preset);
+    const src = c.SDL_FRect{ .x = 0, .y = 0, .w = @floatFromInt(width), .h = @floatFromInt(height) };
+    const area = c.SDL_FRect{ .x = 0, .y = 0, .w = @floatFromInt(out_w), .h = @floatFromInt(out_h) };
+    const frame_scale = crt.scaleFor(out_h, @intCast(height));
+    // The same frame a few times over, so the afterglow settles as it
+    // would on a picture that's held still.
+    for (0..8) |_| {
+        const f = crt_gpu.draw(r, game, src, @intCast(width), @intCast(height), preset, .{}, frame_scale, d.bezel, false, null) orelse return 1;
+        _ = c.SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
+        _ = c.SDL_RenderClear(r);
+        crt_gpu.present(r, f, area, area, @as(f32, @floatFromInt(d.curvature)) / 100, d.bezel);
+    }
+    const shot = c.SDL_RenderReadPixels(r, null) orelse return 1;
+    defer c.SDL_DestroySurface(shot);
+    if (!c.SDL_SaveBMP(shot, out)) {
+        std.debug.print("--render: could not write {s}: {s}\n", .{ out, c.SDL_GetError() });
+        return 1;
+    }
     return 0;
 }
 
@@ -836,7 +895,6 @@ fn portSetup() void {
     // after the rate above is settled.
     audio.ZeldaEnableMsu(config.g_config.enable_msu);
     ZeldaSetLanguage(config.g_config.language);
-
 }
 
 fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
