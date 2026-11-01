@@ -123,17 +123,30 @@ Most settings take effect straight away. The ones that can't say so.
 
 **CRT Filter**, under Graphics, draws the picture like an old screen. With
 SDL's GPU renderer (Metal on a Mac, Vulkan on Windows and Linux) the looks run
-as real shaders:
+as real shaders.
 
-| Look | What it is |
-| --- | --- |
-| **Scanlines** | Scanlines alone, the beams fattening on bright colors and thinning in the dark |
-| **Arcade** | Hard lines and a strong grille, like an arcade monitor up close |
-| **Soft** | Gentle lines and a faint shadow mask |
-| **Consumer TV** | A home TV: soft lines, a slot mask, a glow, a little smear and darker corners, curved and framed |
-| **Composite** | A real NTSC signal taken apart by a cheap TV: rainbows on dithering, dot crawl, color bleeding, halos and a ghost from the cable |
-| **LCD** | A handheld's screen: a fine grid between the pixels, no lines |
-| **Off** | Plain pixels |
+<img src="docs/screenshots/crt-tv-full.png" alt="Consumer TV: the Tower of Hera in widescreen on a curved tube, framed by a TV bezel that catches the screen's light" width="796">
+
+Up close, at the size they're drawn:
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/crt-off.png" alt="Off: plain, even pixels" width="420"><br><b>Off</b>: plain pixels</td>
+    <td><img src="docs/screenshots/crt-scanlines.png" alt="Scanlines: dark gaps between the lines" width="420"><br><b>Scanlines</b>: scanlines alone, the beams fattening on bright colors and thinning in the dark</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/crt-arcade.png" alt="Arcade: hard lines and a strong aperture grille" width="420"><br><b>Arcade</b>: hard lines and a strong grille, like an arcade monitor up close</td>
+    <td><img src="docs/screenshots/crt-soft.png" alt="Soft: gentle lines and a faint shadow mask" width="420"><br><b>Soft</b>: gentle lines and a faint shadow mask</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/crt-tv.png" alt="Consumer TV: soft lines, a slot mask and a glow" width="420"><br><b>Consumer TV</b>: a home TV: soft lines, a slot mask, a glow, a little smear and darker corners, curved and framed</td>
+    <td><img src="docs/screenshots/crt-composite.png" alt="Composite: color bleeding past its edges, halos and a ghost" width="420"><br><b>Composite</b>: a real NTSC signal taken apart by a cheap TV: rainbows on dithering, dot crawl, color bleeding, halos and a ghost from the cable</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/crt-lcd.png" alt="LCD: a fine grid between the pixels" width="420"><br><b>LCD</b>: a handheld's screen: a fine grid between the pixels, no lines</td>
+    <td></td>
+  </tr>
+</table>
 
 **CRT Scanlines**, **CRT Mask**, **CRT Glow** and **CRT Afterglow** turn each
 part up or down, from 0 to 200% of the look as it comes. **CRT Curvature**
