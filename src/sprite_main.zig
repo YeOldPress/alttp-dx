@@ -21889,6 +21889,13 @@ pub export fn Sprite_SpawnBigSplash(k: c_int) callconv(.c) void {
             v.sprite_z[ju] = 0;
             v.sprite_flags3[ju] |= 0x40;
             v.sprite_ignore_projectile[ju] = v.sprite_flags3[ju];
+            // The droplets are octoroks wearing a drowning costume. Kill the
+            // splasher while they are still up and they die as octoroks, which
+            // index tables with C and with the D they copied from the splasher,
+            // where Arrghus keeps a signed speed. The SNES reads past the end
+            // and draws a few frames of garbage; give them an octorok's values.
+            v.sprite_C[ju] = 0;
+            v.sprite_D[ju] = 0;
         }
     }
 }
@@ -22906,4 +22913,35 @@ test "the debirando pit drags the player back one pixel, not 255 forward" {
     link_x = 100;
     link_x +%= fwd;
     try testing.expectEqual(@as(u16, 101), link_x);
+}
+
+test "arrghus's splash droplets die without reading octorok tables off the end" {
+    // The droplets thrown up by a big splash are sprite type 8, the octorok,
+    // parked in the drowning state. They copy sprite_D from whoever splashed,
+    // and Arrghus keeps a signed speed there. Killing Arrghus kills his
+    // friends, the droplets included, and a dying sprite still runs its own
+    // routine for a few frames, so a droplet in the air on the last hit ran
+    // the octorok code with a direction of 0xf7.
+    @memset(v.g_ram[0..0x20000], 0);
+    v.player_is_indoors.* = 1;
+    v.oam_cur_ptr.* = 0x800; // the start of the OAM buffer
+    v.oam_ext_cur_ptr.* = 0xa20;
+    v.sprite_type[0] = 0x8c;
+    v.sprite_state[0] = 9;
+    v.sprite_D[0] = 0xf7; // -9, a y speed toward Link
+    for (1..16) |n| v.sprite_C[n] = 0xff; // whatever the slot held last
+    Sprite_SpawnBigSplash(0);
+
+    v.cur_object_index.* = 0;
+    a.Sprite_KillFriends();
+    var droplets: usize = 0;
+    for (1..16) |n| {
+        if (v.sprite_type[n] != 8) continue;
+        droplets += 1;
+        try testing.expectEqual(@as(u8, 6), v.sprite_state[n]);
+        a.SpriteDeath_MainEx(@intCast(n), false);
+    }
+    try testing.expectEqual(@as(usize, 8), droplets);
+
+    @memset(v.g_ram[0..0x20000], 0);
 }
