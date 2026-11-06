@@ -146,9 +146,17 @@ fn lanternLit() bool {
     if (!g_lantern_up or vars.TS_copy.* & 1 == 0) return false;
     // Out of a dark room into a lit one, the light's on the screen until it
     // fades out, before the scroll; from the scroll on, layer 1's the rooms'.
-    if (vars.submodule_index.* == 2 and vars.subsubmodule_index.* >= 8 and vars.dung_want_lights_out.* == 0)
+    if (vars.main_module_index.* == 7 and vars.submodule_index.* == 2 and
+        vars.subsubmodule_index.* >= 8 and vars.dung_want_lights_out.* == 0)
         return false;
     return true;
+}
+
+/// Playing in a room, or a text box or the item menu opened over one (the
+/// game runs those as a module of their own, with the room's kept behind).
+fn inRoomPlay() bool {
+    const module = vars.main_module_index.*;
+    return module == 7 or (module == 14 and vars.saved_module_for_menu.* == 7);
 }
 
 /// Whether the light's up: the game places it each frame Link walks around a
@@ -160,7 +168,7 @@ var g_lantern_up = false;
 /// Whether the lantern's light is drawn from here, so the margins can show
 /// a dark room the same as a lit one.
 pub fn drawsLanternLight() bool {
-    return enabled() and vars.main_module_index.* == 7 and lanternLit();
+    return enabled() and inRoomPlay() and lanternLit();
 }
 
 /// Which of the four pictures of the light the game put on Link, by its
