@@ -25,6 +25,7 @@
 
 const std = @import("std");
 const vars = @import("variables.zig");
+const ancilla = @import("ancilla.zig");
 const config = @import("config.zig");
 const snes_pkg = @import("snes");
 const Ppu = snes_pkg.ppu_types.Ppu;
@@ -382,6 +383,26 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
 
     var add = Adder{ .out = out, .n = n, .tick = tick, .left = left, .cam_x = cam_x, .cam_y = cam_y };
 
+    // Sconces on the walls, two candles to each.
+    for (kSconces) |sc| {
+        const tiles = SrcPtr(sc.src)[0 .. sc.w * sc.h];
+        var found: [16]u16 = undefined;
+        var nf = findBlock(vars.dung_bg2, tiles, sc.w, sc.h, sc.by_rows, kIgnorePriority, &found);
+        if (bg1_is_room) nf += findBlock(vars.dung_bg1, tiles, sc.w, sc.h, sc.by_rows, kIgnorePriority, found[nf..]);
+        for (found[0..nf]) |t| {
+            const lx: i32 = @intCast((t & 63) * 8);
+            const ly: i32 = @intCast((t >> 6) * 8);
+            const seed: u32 = 0x50000 + @as(u32, t) * 2;
+            if (sc.w > sc.h) {
+                add.tile(kCandle, lx + 10, ly + 8, seed, 1);
+                add.tile(kCandle, lx + 22, ly + 8, seed + 1, 1);
+            } else {
+                add.tile(kCandle, lx + 8, ly + 10, seed, 1);
+                add.tile(kCandle, lx + 8, ly + 22, seed + 1, 1);
+            }
+        }
+    }
+
     // Link's things: fire, sparks, magic, explosions, spells.
     for (0..10) |k| {
         const ax: i32 = @as(i32, vars.ancilla_x_lo[k]) | @as(i32, vars.ancilla_x_hi[k]) << 8;
@@ -395,7 +416,21 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
             // it hits.
             0x30, 0x31, 0x01, 0x0c, 0x04 => add.world(kSpark, ax + 8, ay + 8, seed, 1),
             // Sparkles off the sword, spin attacks, hits on walls.
-            0x0d, 0x16, 0x1b, 0x06, 0x26, 0x2a, 0x2b, 0x3b, 0x3c => add.world(kTinySpark, ax + 4, ay + 4, seed, 1),
+            0x0d, 0x16, 0x1b, 0x06, 0x26, 0x2a, 0x3b, 0x3c => add.world(kTinySpark, ax + 4, ay + 4, seed, 1),
+            // A spin attack's sparks, which circle where it was let go. The
+            // game keeps their angles and the circle's size apart from the
+            // ancilla's own position, which it doesn't use for them.
+            0x2b => if (vars.ancilla_L[k] == 0) {
+                const cx: i32 = std.mem.readInt(u16, vars.g_ram[0x1580e..][0..2], .little);
+                const cy: i32 = std.mem.readInt(u16, vars.g_ram[0x15810..][0..2], .little);
+                const radius = vars.g_ram[0x15808];
+                for (0..@min(@as(usize, vars.ancilla_step[k]) + 1, 4)) |spark| {
+                    const p = ancilla.Ancilla_GetRadialProjection(vars.g_ram[0x15800 + spark], radius);
+                    const dx: i32 = if (p.r6 != 0) -@as(i32, p.r4) else p.r4;
+                    const dy: i32 = if (p.r2 != 0) -@as(i32, p.r0) else p.r0;
+                    add.world(kSpinSpark, cx + dx, cy + dy, seed + @as(u32, @intCast(spark)) * 16, 1);
+                }
+            },
             // Magic powder.
             0x1a => add.world(kMagic, ax + 8, ay + 8, seed, 1),
             // The ice rod, cold and faint.
@@ -486,9 +521,11 @@ const Source = struct {
     glow: f32 = 0,
 };
 
+const kCandle = Source{ .r = 48, .c = kFlame, .strength = 1.2, .burn = kTorchBurn, .glow_r = 6, .glow = 0.4 };
 const kFire = Source{ .r = 44, .c = kFlame, .strength = 1.3, .burn = kFireBurn, .glow_r = 8, .glow = 0.55 };
 const kSmallFire = Source{ .r = 30, .c = kFlame, .strength = 1.2, .burn = kFireBurn, .glow_r = 6, .glow = 0.5 };
 const kSpark = Source{ .r = 30, .c = kSparkColor, .strength = 1.2, .burn = kSparkBurn, .glow_r = 5, .glow = 0.6 };
+const kSpinSpark = Source{ .r = 34, .c = kSparkColor, .strength = 1.3, .burn = kSparkBurn, .glow_r = 5, .glow = 0.7 };
 const kTinySpark = Source{ .r = 18, .c = kSparkColor, .strength = 1.0, .burn = kSparkBurn, .glow_r = 3, .glow = 0.5 };
 const kElectric = Source{ .r = 40, .c = .{ 0.7, 0.85, 1.0 }, .strength = 1.3, .burn = kSparkBurn, .glow_r = 6, .glow = 0.6 };
 const kMagic = Source{ .r = 34, .c = .{ 0.85, 0.55, 1.0 }, .strength = 1.2, .burn = kSparkBurn, .glow_r = 6, .glow = 0.6 };
@@ -546,6 +583,11 @@ const Adder = struct {
         self.n += 1;
     }
 
+    /// A light of kind `s` at (x, y) in the room's 512 pixel tile map.
+    fn tile(self: *Adder, s: Source, x: i32, y: i32, seed: u32, amount: f32) void {
+        self.world(s, wrapToScreen(x, self.cam_x) + self.cam_x, wrapToScreen(y, self.cam_y) + self.cam_y, seed, amount);
+    }
+
     /// A light filling the room, centered on Link.
     fn link(self: *Adder, s: Source, seed: u32) void {
         self.world(s, @as(i32, vars.link_x_coord.*) + 8, @as(i32, vars.link_y_coord.*) + 12, seed, 1);
@@ -580,6 +622,37 @@ const kLitTorchTiles = 0xeca;
 /// `out.len` of them.
 pub fn findLitTorches(map: [*]align(1) const u16, out: []u16) usize {
     return findTiles2x2(map, SrcPtr(kLitTorchTiles)[0..4].*, 0, out);
+}
+
+/// The wall sconce objects, as the room's object data draws them: on a
+/// north or south wall four tiles across and two down, a row at a time; on a
+/// west or east wall two across and four down, a column at a time.
+const Sconce = struct { src: u16, w: usize, h: usize, by_rows: bool };
+const kSconces = [_]Sconce{
+    .{ .src = 0xa14, .w = 4, .h = 2, .by_rows = true },
+    .{ .src = 0xa24, .w = 4, .h = 2, .by_rows = true },
+    .{ .src = 0xa34, .w = 2, .h = 4, .by_rows = false },
+    .{ .src = 0xa44, .w = 2, .h = 4, .by_rows = false },
+};
+
+/// Finds a `w` by `h` block of tiles in a 64x64 map, `tiles` listed a row
+/// at a time (`by_rows`) or a column at a time, with the bits in `ignore`
+/// not counting. Gives the top left tile of each.
+pub fn findBlock(map: [*]align(1) const u16, tiles: []align(1) const u16, w: usize, h: usize, by_rows: bool, ignore: u16, out: []u16) usize {
+    const keep = ~ignore;
+    var n: usize = 0;
+    for (0..64 - h + 1) |y| {
+        x: for (0..64 - w + 1) |x| {
+            for (0..h) |dy| for (0..w) |dx| {
+                const want = tiles[if (by_rows) dy * w + dx else dx * h + dy];
+                if (map[(y + dy) * 64 + x + dx] & keep != want & keep) continue :x;
+            };
+            if (n == out.len) return n;
+            out[n] = @intCast(y * 64 + x);
+            n += 1;
+        }
+    }
+    return n;
 }
 
 /// A brazier's four tiles: its bowl of fire on top, its stand below, the
@@ -798,4 +871,18 @@ test "braziers are found whichever way their priority bit is set" {
     var found: [2]u16 = undefined;
     try testing.expectEqual(@as(usize, 1), findTiles2x2(&map, kBrazierTiles, kIgnorePriority, &found));
     try testing.expectEqual(@as(usize, 0), findTiles2x2(&map, kBrazierTiles, 0, &found));
+}
+
+test "blocks are found laid out by rows or by columns" {
+    var map: [64 * 64]u16 = @splat(0);
+    // A 4x2 block at (10, 5), listed a row at a time.
+    const rows = [_]u16{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    for (0..2) |dy| for (0..4) |dx| {
+        map[(5 + dy) * 64 + 10 + dx] = rows[dy * 4 + dx];
+    };
+    var found: [4]u16 = undefined;
+    try testing.expectEqual(@as(usize, 1), findBlock(&map, &rows, 4, 2, true, 0, &found));
+    try testing.expectEqual(@as(u16, 5 * 64 + 10), found[0]);
+    // The same tiles read a column at a time are a different picture.
+    try testing.expectEqual(@as(usize, 0), findBlock(&map, &rows, 2, 4, false, 0, &found));
 }
