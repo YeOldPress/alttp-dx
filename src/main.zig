@@ -442,6 +442,19 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
         vars.player_is_indoors.* = 1;
         LoadDungeonRoomRebuildHUD();
     }
+    // POKE=addr:value,... writes bytes of the game's RAM first, to set up
+    // whatever the script needs (0x202:6 has the fire rod in hand).
+    if (std.c.getenv("POKE")) |pokes| {
+        var pit = std.mem.tokenizeScalar(u8, std.mem.span(pokes), ',');
+        while (pit.next()) |poke| {
+            const colon = std.mem.indexOfScalar(u8, poke, ':') orelse {
+                std.debug.print("--render: POKE wants addr:value, not '{s}'\n", .{poke});
+                return 1;
+            };
+            const addr = std.fmt.parseInt(u17, poke[0..colon], 0) catch return 1;
+            vars.g_ram[addr] = std.fmt.parseInt(u8, poke[colon + 1 ..], 0) catch return 1;
+        }
+    }
 
     var it = std.mem.tokenizeScalar(u8, std.mem.span(script), ',');
     while (it.next()) |text| {

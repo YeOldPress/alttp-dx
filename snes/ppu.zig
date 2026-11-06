@@ -477,13 +477,17 @@ pub var g_bg_tile_source_layers: u8 = 0;
 
 var g_bg_row: [4][64]u16 = undefined;
 
-/// Dynamic lighting's hold on the frame. While it's set, a line drawn with
-/// subtractive color math, which is how a dark room is darkened, skips the
-/// math and is drawn at full brightness instead, and the pixels the math
-/// would have darkened are marked 1 in `mask`, the rest of the scene 2
-/// (sprites the game leaves lit), and the HUD 0. A light pass lays its own
-/// light over them afterwards. Only the whole-line renderer knows about it.
-pub const LightMask = struct { mask: [*]u8, pitch: usize };
+/// Dynamic lighting's hold on the frame: a mask, a byte a pixel, saying what
+/// each one is, for a light pass to lay its own light over afterwards. Only
+/// the whole-line renderer knows about it.
+///
+/// In a dark room (`dark`), a line drawn with subtractive color math, which
+/// is how a dark room is darkened, skips the math and is drawn at full
+/// brightness instead; the pixels the math would have darkened are marked
+/// 1, the rest of the scene 2 (sprites the game leaves lit), and the HUD 0.
+/// Anywhere else the picture's drawn as it always is, and the whole scene is
+/// marked 1, the HUD 0.
+pub const LightMask = struct { mask: [*]u8, pitch: usize, dark: bool };
 pub var g_light_mask: ?LightMask = null;
 
 /// The mask's row for the line being drawn, while there is one.
@@ -1296,7 +1300,7 @@ fn PpuDrawWholeLine(ppu: *Ppu, y: u32) void {
     // A dark room's darkness is subtractive math: with dynamic lighting on,
     // the line skips it and marks where it would have gone (g_light_mask).
     // Its subscreen, the lantern's light picture, isn't needed then.
-    const relight = g_light_row != null and ppu.subtractColor;
+    const relight = g_light_row != null and g_light_mask.?.dark and ppu.subtractColor;
 
     // Render also the subscreen?
     var rendered_subscreen = false;
@@ -1316,6 +1320,16 @@ fn PpuDrawWholeLine(ppu: *Ppu, y: u32) void {
 
     const dst_org: [*]u8 = ppu.renderBuffer.? + row * ppu.renderPitch;
     var dst: [*]u8 = dst_org + @as(usize, ppu.extraLeftRight - ppu.extraLeftCur) * 4;
+
+    // Outside a dark room, the mask is just the scene, everything but the
+    // HUD on BG3; the line's drawn as it always is.
+    if (g_light_row) |lit_row| if (!g_light_mask.?.dark) {
+        const first = bufIndex(cwin.edges[0]);
+        const x0: usize = ppu.extraLeftRight - ppu.extraLeftCur;
+        for (first..bufIndex(cwin.edges[cwin.nr]), x0..) |i, x| {
+            lit_row[x] = @intFromBool((ppu.bgBuffers[0].data[i] >> 8) & 0xf != 2);
+        }
+    };
 
     var windex: u32 = 0;
     while (true) {

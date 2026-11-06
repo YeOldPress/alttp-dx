@@ -11,7 +11,7 @@ struct Params
     float4 map;
     float4 dark;
     float4 look;
-    float4 lights[48];
+    float4 lights[96];
 };
 
 struct main0_out
@@ -39,26 +39,26 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params& _24 [[buffer
     if ((m > 0.5) && (m < 1.5))
     {
         float3 light = u_light.sample(u_lightSmplr, (p * _24.map.zw)).xyz;
-        float3 base = fast::max(c - _24.dark.xyz, float3(0.0));
+        float3 base = fast::max(c - _24.dark.xyz, float3(0.0)) * _24.look.w;
         float3 lit = base + (c * fast::min(light, float3(1.0)));
         float3 over = (c * fast::max(light - float3(1.0), float3(0.0))) * _24.look.x;
         c = fast::min(lit, c) + over;
     }
-    bool _126 = m > 0.5;
-    bool _133;
-    if (_126)
+    bool _130 = m > 0.5;
+    bool _137;
+    if (_130)
     {
-        _133 = _24.look.y > 0.0;
+        _137 = _24.look.y > 0.0;
     }
     else
     {
-        _133 = _126;
+        _137 = _130;
     }
-    if (_133)
+    if (_137)
     {
         float3 glow = float3(0.0);
         int n = int(_24.dark.w);
-        for (int i = 0; i < 24; i++)
+        for (int i = 0; i < 48; i++)
         {
             if (i >= n)
             {
@@ -66,17 +66,17 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params& _24 [[buffer
             }
             float4 a = _24.lights[i * 2];
             float4 b = _24.lights[(i * 2) + 1];
-            bool _173 = a.w <= 0.0;
-            bool _180;
-            if (!_173)
+            bool _176 = a.w <= 0.0;
+            bool _183;
+            if (!_176)
             {
-                _180 = b.w <= 0.0;
+                _183 = b.w <= 0.0;
             }
             else
             {
-                _180 = _173;
+                _183 = _176;
             }
-            if (_180)
+            if (_183)
             {
                 continue;
             }

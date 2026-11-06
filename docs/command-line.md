@@ -20,7 +20,9 @@ For working on ALTTP-DX rather than playing it.
   `SCALE=n` makes it n pixels to a SNES pixel (3 unless said). It needs SDL's
   GPU renderer. This is how the README's CRT pictures are made.
   `ENTRANCE=n` goes in through dungeon entrance n before the script starts
-  and prints the room it lands in, as a way into any room.
+  and prints the room it lands in, as a way into any room. `POKE=addr:value`
+  (comma-separated, `0x` for hex) writes bytes of the game's RAM after that,
+  to set something up: `POKE=0x202:6` puts the fire rod in Link's hands.
 - `zelda3 --menu-shot <screen> <out.bmp> [seed]` draws a start menu screen
   (`main`, `settings`, `features`, `controls`, `achievements`, `hub`,
   `alttpr`, `details`) with no window. `LIST_ROW=n` picks a row on the lists, `INFO=1` opens the

@@ -9,7 +9,7 @@ struct Params
 {
     float4 tex;
     float4 look;
-    float4 lights[48];
+    float4 lights[96];
 };
 
 struct main0_out
@@ -90,7 +90,7 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params& _83 [[buffer
     float2 p = in.v_uv * _83.tex.xy;
     float3 light = float3(0.0);
     int n = int(_83.look.y);
-    for (int i = 0; i < 24; i++)
+    for (int i = 0; i < 48; i++)
     {
         if (i >= n)
         {

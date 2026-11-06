@@ -259,7 +259,7 @@ pub fn apply(r: *c.SDL_Renderer, frame: *c.SDL_Texture, tex_w: c_int, tex_h: c_i
             @as(f32, @floatFromInt(f.dark[2])) / 255,
             @floatFromInt(f.n),
         },
-        .look = .{ g_overbright, g_glow, @floatFromInt(g_frame_count % 4096), @floatFromInt(s) },
+        .look = .{ g_overbright, g_glow, @floatFromInt(g_frame_count % 4096), f.ambient },
         .lights = lights,
     };
     _ = c.SDL_SetTextureBlendMode(frame, c.SDL_BLENDMODE_NONE);

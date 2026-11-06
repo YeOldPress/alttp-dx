@@ -17,7 +17,7 @@ layout(location = 0) out vec4 o_color;
 
 layout(set = 2, binding = 0) uniform sampler2D u_mask;
 
-const int kMaxLights = 24;
+const int kMaxLights = 48;
 
 layout(set = 3, binding = 0) uniform Params {
     // The mask texture's width and height in SNES pixels, and one over each.

@@ -10,6 +10,10 @@
 //! light reaches the room looks just as it always did, then soft round light
 //! added back from the lantern, the room's lit torches and anything burning.
 //!
+//! Rooms that aren't dark get it too, gentler: the room's dimmed a little,
+//! by scaling its colors rather than taking a fixed amount off them, so the
+//! braziers, torches and anything burning have something to light.
+//!
 //! None of it touches the game's RAM, so the game plays the same with it on
 //! or off; it only changes what's drawn. The HUD and the sprites the game
 //! leaves lit in the dark (Link among them) stay as the game draws them.
@@ -71,6 +75,9 @@ pub const GpuFrame = struct {
     width: usize,
     height: usize,
     dark: [3]u8,
+    /// What's left of the room's light after `dark`'s taken off, as a share
+    /// of it: 1 in a dark room, less in one that isn't.
+    ambient: f32,
     lights: [kMaxGpuLights]Light,
     n: usize,
     /// Where the room's scrolled to, and how far the frame reaches past the
@@ -82,7 +89,7 @@ pub const GpuFrame = struct {
     /// ground in green, as light_map.frag reads them.
     mask: []const u32,
 };
-pub const kMaxGpuLights = 24;
+pub const kMaxGpuLights = 48;
 
 var g_gpu_frame: GpuFrame = undefined;
 var g_gpu_pending = false;
@@ -90,26 +97,39 @@ var g_gpu_mask: [kMaxHeight * kMaxWidth]u32 = undefined;
 
 const kLantern = [3]f32{ 1.0, 0.93, 0.78 };
 const kFlame = [3]f32{ 1.0, 0.78, 0.5 };
-const kSpark = [3]f32{ 0.75, 0.85, 1.0 };
+const kSparkColor = [3]f32{ 0.75, 0.85, 1.0 };
 
-/// A dark room is on screen and dynamic lighting's on: the game's own
-/// darkness rules, as the widescreen margins read them in zelda_rtl.zig.
-fn darkRoom() bool {
-    if (!config.g_config.dynamic_lighting) return false;
-    if (vars.player_is_indoors.* == 0) return false;
-    return vars.hdr_dungeon_dark_with_lantern.* != 0 or vars.dung_want_lights_out.* != 0;
+/// How a room's lit: a dark room, with the game's own darkness relit; any
+/// other room indoors, dimmed a little for its flames to light; or not at
+/// all (outdoors, or dynamic lighting off).
+pub const Mode = enum { off, dark, mood };
+
+/// How much of its light a room that isn't dark keeps, for the flames to
+/// make up.
+pub const kMoodAmbient: f32 = 0.82;
+
+fn roomMode() Mode {
+    if (!config.g_config.dynamic_lighting) return .off;
+    if (vars.player_is_indoors.* == 0) return .off;
+    // The game's own darkness rules, as the widescreen margins read them in
+    // zelda_rtl.zig.
+    if (vars.hdr_dungeon_dark_with_lantern.* != 0 or vars.dung_want_lights_out.* != 0) return .dark;
+    return .mood;
 }
+
+var g_mode: Mode = .off;
 
 /// Before the PPU draws a frame: in a dark room, hands it the mask to mark.
 /// Needs the whole-line renderer, the only one that knows about the mask.
 pub fn beginFrame(render_flags: u32, height: usize) void {
-    g_active = render_flags & snes_pkg.ppu_types.kPpuRenderFlags_NewRenderer != 0 and darkRoom();
+    g_mode = if (render_flags & snes_pkg.ppu_types.kPpuRenderFlags_NewRenderer != 0) roomMode() else .off;
+    g_active = g_mode != .off;
     if (!g_active) {
         ppu_mod.g_light_mask = null;
         return;
     }
     @memset(g_mask[0 .. height * kMaxWidth], 0);
-    ppu_mod.g_light_mask = .{ .mask = &g_mask, .pitch = kMaxWidth };
+    ppu_mod.g_light_mask = .{ .mask = &g_mask, .pitch = kMaxWidth, .dark = g_mode == .dark };
 }
 
 /// After the PPU's drawn the frame into `pixels` (XRGB, `pitch` bytes a
@@ -121,10 +141,12 @@ pub fn endFrame(ppu: *const Ppu, pixels: [*]u8, pitch: usize, height: usize) voi
     const width: usize = 256 + 2 * @as(usize, ppu.extraLeftRight);
 
     g_tick +%= 1;
-    var lights: [32]Light = undefined;
+    var lights: [64]Light = undefined;
     const n = gatherLights(ppu, &lights);
+    const dark: [3]u8 = if (g_mode == .dark) darkness(ppu) else .{ 0, 0, 0 };
+    const amb: f32 = if (g_mode == .dark) 1 else kMoodAmbient;
     if (!g_gpu) {
-        relight(pixels, pitch, width, height, darkness(ppu), lights[0..n]);
+        relight(pixels, pitch, width, height, dark, amb, lights[0..n]);
         return;
     }
     // For the GPU: the mask goes in each pixel's spare top byte, so that
@@ -139,7 +161,8 @@ pub fn endFrame(ppu: *const Ppu, pixels: [*]u8, pitch: usize, height: usize) voi
     g_gpu_frame = .{
         .width = width,
         .height = height,
-        .dark = darkness(ppu),
+        .dark = dark,
+        .ambient = amb,
         .lights = undefined,
         .n = k,
         .cam_x = vars.BG2HOFS_copy2.*,
@@ -165,7 +188,7 @@ pub fn solidness(attr: u8) u8 {
 /// Lights a frame left for the GPU on the CPU after all, when the GPU
 /// turns out not to be able to: the mask's still as the PPU left it.
 pub fn relightFrame(pixels: [*]u8, pitch: usize, f: *const GpuFrame) void {
-    relight(pixels, pitch, f.width, f.height, f.dark, f.lights[0..f.n]);
+    relight(pixels, pitch, f.width, f.height, f.dark, f.ambient, f.lights[0..f.n]);
 }
 
 /// Once everything's drawn over the window's frame: takes the mask back out
@@ -314,7 +337,7 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
 
     // The lantern, carried a little out in front of Link as the game's cone
     // is.
-    if (vars.link_item_torch.* != 0) {
+    if (g_mode == .dark and vars.link_item_torch.* != 0) {
         const dir = vars.link_direction_facing.* >> 1;
         const ahead = [4][2]f32{ .{ 0, -14 }, .{ 0, 14 }, .{ -14, 0 }, .{ 14, 0 } };
         const lx: f32 = @floatFromInt(@as(i32, vars.link_x_coord.*) - cam_x + 8);
@@ -332,13 +355,19 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
     // The room's lit torches, found by their tiles in the room's map: the
     // ones Link lights and the ones that are always lit are drawn alike.
     // Layer 1 holds the lantern's cone, not the room, while it's up.
-    var torches: [16]u16 = undefined;
+    var torches: [24]u16 = undefined;
     var nt = findLitTorches(vars.dung_bg2, &torches);
-    if (vars.hdr_dungeon_dark_with_lantern.* == 0) nt += findLitTorches(vars.dung_bg1, torches[nt..]);
-    for (torches[0..nt]) |t| {
+    const bg1_is_room = vars.hdr_dungeon_dark_with_lantern.* == 0;
+    if (bg1_is_room) nt += findLitTorches(vars.dung_bg1, torches[nt..]);
+    // Braziers on stands (the Sanctuary's, the potion shop's): their flame
+    // is in the top half of their tiles.
+    const torch_count = nt;
+    nt += findTiles2x2(vars.dung_bg2, kBrazierTiles, kIgnorePriority, torches[nt..]);
+    if (bg1_is_room) nt += findTiles2x2(vars.dung_bg1, kBrazierTiles, kIgnorePriority, torches[nt..]);
+    for (torches[0..nt], 0..) |t, ti| {
         if (n == out.len) break;
         const tx: i32 = @intCast((t & 63) * 8 + 8);
-        const ty: i32 = @intCast((t >> 6) * 8 + 8);
+        const ty: i32 = @intCast((t >> 6) * 8 + if (ti < torch_count) @as(usize, 8) else 4);
         const f = flame(tick, @as(u32, t) + 1, kTorchBurn);
         out[n] = .{
             .x = left + @as(f32, @floatFromInt(wrapToScreen(tx, cam_x))) + f.dx,
@@ -351,30 +380,195 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
         n += 1;
     }
 
-    // Things burning or sparking: fire rod shots and the fires they start,
-    // the lantern's flame, Byrna's sparks.
+    var add = Adder{ .out = out, .n = n, .tick = tick, .left = left, .cam_x = cam_x, .cam_y = cam_y };
+
+    // Link's things: fire, sparks, magic, explosions, spells.
     for (0..10) |k| {
-        if (n == out.len) break;
-        const kind: struct { r: f32, c: [3]f32, strength: f32, burn: Burn, glow_r: f32, glow: f32 } = switch (vars.ancilla_type[k]) {
-            0x02, 0x2f, 0x32, 0x34 => .{ .r = 44, .c = kFlame, .strength = 1.3, .burn = kFireBurn, .glow_r = 8, .glow = 0.55 },
-            0x30, 0x31 => .{ .r = 30, .c = kSpark, .strength = 1.2, .burn = kSparkBurn, .glow_r = 5, .glow = 0.6 },
-            else => continue,
-        };
         const ax: i32 = @as(i32, vars.ancilla_x_lo[k]) | @as(i32, vars.ancilla_x_hi[k]) << 8;
         const ay: i32 = @as(i32, vars.ancilla_y_lo[k]) | @as(i32, vars.ancilla_y_hi[k]) << 8;
-        const f = flame(tick, @as(u32, @intCast(k)) + 0x10000, kind.burn);
-        out[n] = .{
-            .x = left + @as(f32, @floatFromInt(ax - cam_x + 8)) + f.dx,
-            .y = @as(f32, @floatFromInt(ay - cam_y + 8)) + f.dy,
-            .radius = kind.r * f.reach,
-            .color = flameColor(kind.c, kind.strength, f.level),
-            .glow_radius = kind.glow_r * f.reach,
-            .glow = kind.glow * f.level,
-        };
-        n += 1;
+        const seed: u32 = @as(u32, @intCast(k)) + 0x10000;
+        switch (vars.ancilla_type[k]) {
+            // Fire rod shots and the fires they start, the lantern's flame,
+            // the blast wall's fireballs, Skull Woods' fire.
+            0x02, 0x2f, 0x32, 0x34 => add.world(kFire, ax + 8, ay + 8, seed, 1),
+            // Byrna, the Cane of Somaria's shots, the sword's beam and what
+            // it hits.
+            0x30, 0x31, 0x01, 0x0c, 0x04 => add.world(kSpark, ax + 8, ay + 8, seed, 1),
+            // Sparkles off the sword, spin attacks, hits on walls.
+            0x0d, 0x16, 0x1b, 0x06, 0x26, 0x2a, 0x2b, 0x3b, 0x3c => add.world(kTinySpark, ax + 4, ay + 4, seed, 1),
+            // Magic powder.
+            0x1a => add.world(kMagic, ax + 8, ay + 8, seed, 1),
+            // The ice rod, cold and faint.
+            0x0b, 0x11, 0x13 => add.world(kCold, ax + 8, ay + 8, seed, 1),
+            // A bomb, only once it goes off: brightest at the blast, fading
+            // over its last frames.
+            0x07 => {
+                const stage = vars.ancilla_item_to_link[k];
+                if (stage != 0) add.world(kBlast, ax + 8, ay + 8, seed, fade(stage, 11));
+            },
+            // Blown-open walls.
+            0x0e, 0x0f, 0x10, 0x12, 0x33 => add.world(kBlast, ax + 8, ay + 8, seed, 0.8),
+            0x3a => add.world(kBigBlast, ax + 8, ay + 8, seed, 1),
+            // A rising crystal.
+            0x3e => add.world(kFairy, ax + 8, ay + 8, seed, 1),
+            // Ether and Bombos light up the whole room round Link.
+            0x18 => add.link(kEther, seed),
+            0x19 => add.link(kBombos, seed),
+            else => {},
+        }
     }
-    return n;
+
+    // Enemies and the things they throw.
+    for (0..16) |k| {
+        if (vars.sprite_state[k] == 0) continue;
+        const sx: i32 = @as(i32, vars.sprite_x_lo[k]) | @as(i32, vars.sprite_x_hi[k]) << 8;
+        const sy: i32 = (@as(i32, vars.sprite_y_lo[k]) | @as(i32, vars.sprite_y_hi[k]) << 8) - vars.sprite_z[k];
+        const seed: u32 = @as(u32, @intCast(k)) + 0x20000;
+        switch (vars.sprite_type[k]) {
+            // A fireball (the Zora's sprite, carrying a fireball's flag), the
+            // Helmasaur King's, a Kodongo's fire, a fire snake.
+            0x55 => if (vars.sprite_E[k] != 0) add.world(kFire, sx + 8, sy + 8, seed, 0.8),
+            0x70, 0x87 => add.world(kFire, sx + 8, sy + 8, seed, 1),
+            0x80 => add.world(kFire, sx + 8, sy + 8, seed, 0.9),
+            // A fire bar: four fireballs down an arm that turns round its hub.
+            0x7e, 0x7f => {
+                const angle: u16 = @as(u16, vars.sprite_A[k]) | @as(u16, vars.sprite_B[k]) << 8;
+                const sin: i32 = GuruguruBarSin(angle, 0x40);
+                const cos: i32 = GuruguruBarSin((angle +% 0x80) & 0x1ff, 0x40);
+                for (1..5) |seg| {
+                    const n4: i32 = @intCast(seg);
+                    add.world(kSmallFire, sx + 8 + @divTrunc(sin * n4, 4), sy + 8 + @divTrunc(cos * n4, 4), seed + @as(u32, @intCast(seg)) * 64, 1);
+                }
+            },
+            // Sparks that run along the walls, Vitreous's lightning, Mothula's
+            // beam.
+            0x5b, 0x5c, 0xbf => add.world(kElectric, sx + 8, sy + 8, seed, 1),
+            0x89 => add.world(kSpark, sx + 8, sy + 8, seed, 1),
+            // Baris hum faintly.
+            0x23, 0x24 => add.world(kBari, sx + 8, sy + 8, seed, 1),
+            // Agahnim's magic, the bunny beam.
+            0x7b, 0xd1 => add.world(kMagic, sx + 8, sy + 8, seed, 1.2),
+            // Fairies, and the bubbles that pretend to be them.
+            0xe3, 0xc8 => add.world(kFairy, sx + 8, sy + 8, seed, 1),
+            0x15, 0x77, 0x82 => add.world(kTinySpark, sx + 8, sy + 8, seed, 1),
+            // A crystal switch, in whichever color it's showing.
+            0x1e => add.worldColored(kCrystal, sx + 8, sy + 8, seed, spriteHue(ppu, vars.sprite_oam_flags[k])),
+            else => {},
+        }
+    }
+
+    // What some of those leave behind: trails and sparkles.
+    for (0..30) |k| {
+        const gx: i32 = @as(i32, vars.garnish_x_lo[k]) | @as(i32, vars.garnish_x_hi[k]) << 8;
+        const gy: i32 = @as(i32, vars.garnish_y_lo[k]) | @as(i32, vars.garnish_y_hi[k]) << 8;
+        const seed: u32 = @as(u32, @intCast(k)) + 0x30000;
+        switch (vars.garnish_type[k]) {
+            // A fire snake's tail, Trinexx's fire breath, Ganon's fire bats.
+            0x01, 0x0e, 0x10, 0x11 => add.world(kSmallFire, gx + 4, gy + 4, seed, 0.8),
+            // Lasers: the eyes', the Beamos', Blind's.
+            0x04, 0x0f => add.world(kLaser, gx + 4, gy + 4, seed, 1),
+            // Mothula's beam, lightning, flashes, sparkles.
+            0x02, 0x07, 0x09, 0x12 => add.world(kTinySpark, gx + 4, gy + 4, seed, 1),
+            else => {},
+        }
+    }
+    return add.n;
 }
+
+/// A kind of light: how far it reaches, its color and strength, how it
+/// flickers, and its glow.
+const Source = struct {
+    r: f32,
+    c: [3]f32,
+    strength: f32,
+    burn: Burn,
+    glow_r: f32 = 0,
+    glow: f32 = 0,
+};
+
+const kFire = Source{ .r = 44, .c = kFlame, .strength = 1.3, .burn = kFireBurn, .glow_r = 8, .glow = 0.55 };
+const kSmallFire = Source{ .r = 30, .c = kFlame, .strength = 1.2, .burn = kFireBurn, .glow_r = 6, .glow = 0.5 };
+const kSpark = Source{ .r = 30, .c = kSparkColor, .strength = 1.2, .burn = kSparkBurn, .glow_r = 5, .glow = 0.6 };
+const kTinySpark = Source{ .r = 18, .c = kSparkColor, .strength = 1.0, .burn = kSparkBurn, .glow_r = 3, .glow = 0.5 };
+const kElectric = Source{ .r = 40, .c = .{ 0.7, 0.85, 1.0 }, .strength = 1.3, .burn = kSparkBurn, .glow_r = 6, .glow = 0.6 };
+const kMagic = Source{ .r = 34, .c = .{ 0.85, 0.55, 1.0 }, .strength = 1.2, .burn = kSparkBurn, .glow_r = 6, .glow = 0.6 };
+const kFairy = Source{ .r = 40, .c = .{ 1.0, 0.75, 0.9 }, .strength = 1.1, .burn = kLanternBurn, .glow_r = 6, .glow = 0.5 };
+const kCold = Source{ .r = 26, .c = .{ 0.6, 0.8, 1.0 }, .strength = 0.9, .burn = kLanternBurn, .glow_r = 4, .glow = 0.4 };
+const kLaser = Source{ .r = 22, .c = .{ 1.0, 0.25, 0.2 }, .strength = 1.3, .burn = kSparkBurn, .glow_r = 4, .glow = 0.7 };
+const kBari = Source{ .r = 26, .c = .{ 0.5, 0.9, 1.0 }, .strength = 0.8, .burn = kLanternBurn, .glow_r = 4, .glow = 0.35 };
+const kCrystal = Source{ .r = 34, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 5, .glow = 0.45 };
+const kBlast = Source{ .r = 84, .c = .{ 1.0, 0.85, 0.6 }, .strength = 1.7, .burn = kFireBurn, .glow_r = 14, .glow = 0.8 };
+const kBigBlast = Source{ .r = 130, .c = .{ 1.0, 0.85, 0.6 }, .strength = 1.8, .burn = kFireBurn, .glow_r = 20, .glow = 0.9 };
+const kEther = Source{ .r = 160, .c = .{ 0.75, 0.85, 1.0 }, .strength = 1.6, .burn = kSparkBurn };
+const kBombos = Source{ .r = 160, .c = kFlame, .strength = 1.6, .burn = kFireBurn };
+
+/// How much of a light is left at `stage` of something that's over at
+/// `last`: all of it at 1, none at `last`.
+fn fade(stage: u8, last: u8) f32 {
+    if (stage >= last) return 0;
+    return 1.0 - @as(f32, @floatFromInt(stage - 1)) / @as(f32, @floatFromInt(last - 1));
+}
+
+/// Collects lights into a frame's list, from where they are in the world.
+const Adder = struct {
+    out: []Light,
+    n: usize,
+    tick: u32,
+    left: f32,
+    cam_x: i32,
+    cam_y: i32,
+
+    /// A light of kind `s` at world position (x, y), `amount` of it.
+    fn world(self: *Adder, s: Source, x: i32, y: i32, seed: u32, amount: f32) void {
+        self.lightAt(s, x, y, seed, s.c, amount);
+    }
+
+    fn worldColored(self: *Adder, s: Source, x: i32, y: i32, seed: u32, color: [3]f32) void {
+        self.lightAt(s, x, y, seed, color, 1);
+    }
+
+    fn lightAt(self: *Adder, s: Source, x: i32, y: i32, seed: u32, color: [3]f32, amount: f32) void {
+        if (self.n == self.out.len or amount <= 0) return;
+        const r = s.r * @sqrt(amount);
+        const sx: f32 = self.left + @as(f32, @floatFromInt(x - self.cam_x));
+        const sy: f32 = @floatFromInt(y - self.cam_y);
+        // Nothing reaches the frame from that far off it.
+        if (sx < -r or sy < -r or sx > self.left * 2 + 256 + r or sy > 240 + r) return;
+        const f = flame(self.tick, seed, s.burn);
+        self.out[self.n] = .{
+            .x = sx + f.dx,
+            .y = sy + f.dy,
+            .radius = r * f.reach,
+            .color = flameColor(color, s.strength * amount, f.level),
+            .glow_radius = s.glow_r * f.reach,
+            .glow = s.glow * amount * f.level,
+        };
+        self.n += 1;
+    }
+
+    /// A light filling the room, centered on Link.
+    fn link(self: *Adder, s: Source, seed: u32) void {
+        self.world(s, @as(i32, vars.link_x_coord.*) + 8, @as(i32, vars.link_y_coord.*) + 12, seed, 1);
+    }
+};
+
+extern fn GuruguruBarSin(av: u16, b: u8) i8;
+
+/// The color of sprite palette `oam_flags` names, from what's in color
+/// memory now: its colors averaged, brightest channel at 1.
+fn spriteHue(ppu: *const Ppu, oam_flags: u8) [3]f32 {
+    const base: usize = 128 + @as(usize, (oam_flags >> 1) & 7) * 16;
+    var sum = [3]f32{ 0, 0, 0 };
+    for (ppu.cgram[base + 1 .. base + 16]) |col| {
+        sum[0] += @floatFromInt(col & 0x1f);
+        sum[1] += @floatFromInt((col >> 5) & 0x1f);
+        sum[2] += @floatFromInt((col >> 10) & 0x1f);
+    }
+    const top = @max(sum[0], @max(sum[1], sum[2]));
+    if (top <= 0) return .{ 1, 1, 1 };
+    return .{ sum[0] / top, sum[1] / top, sum[2] / top };
+}
+
 
 extern fn SrcPtr(src: u16) [*]align(1) const u16;
 
@@ -385,17 +579,26 @@ const kLitTorchTiles = 0xeca;
 /// The top-left tile of each lit torch in a room's 64x64 tile map, up to
 /// `out.len` of them.
 pub fn findLitTorches(map: [*]align(1) const u16, out: []u16) usize {
-    return findTiles2x2(map, SrcPtr(kLitTorchTiles)[0..4].*, out);
+    return findTiles2x2(map, SrcPtr(kLitTorchTiles)[0..4].*, 0, out);
 }
 
+/// A brazier's four tiles: its bowl of fire on top, its stand below, the
+/// right half the left mirrored.
+pub const kBrazierTiles = [4]u16{ 0x0dc2, 0x0dc3, 0x4dc2, 0x4dc3 };
+/// A tile's priority bit, which the same picture can have either way.
+pub const kIgnorePriority: u16 = 0x2000;
+
 /// Finds a 2x2 block of tiles in a 64x64 map, given in the order the game
-/// draws them: top left, bottom left, top right, bottom right.
-pub fn findTiles2x2(map: [*]align(1) const u16, tiles: [4]u16, out: []u16) usize {
+/// draws them: top left, bottom left, top right, bottom right, with the bits
+/// in `ignore` not counting.
+pub fn findTiles2x2(map: [*]align(1) const u16, tiles: [4]u16, ignore: u16, out: []u16) usize {
+    const keep = ~ignore;
     var n: usize = 0;
     var i: u16 = 0;
     while (i < 63 * 64) : (i += 1) {
         if (i & 63 == 63) continue;
-        if (map[i] != tiles[0] or map[i + 64] != tiles[1] or map[i + 1] != tiles[2] or map[i + 65] != tiles[3]) continue;
+        if (map[i] & keep != tiles[0] & keep or map[i + 64] & keep != tiles[1] & keep or
+            map[i + 1] & keep != tiles[2] & keep or map[i + 65] & keep != tiles[3] & keep) continue;
         if (n == out.len) break;
         out[n] = i;
         n += 1;
@@ -405,7 +608,8 @@ pub fn findTiles2x2(map: [*]align(1) const u16, tiles: [4]u16, out: []u16) usize
 
 /// Darkens each marked pixel as the game would have, then adds back the
 /// lights' glow on it.
-pub fn relight(pixels: [*]u8, pitch: usize, width: usize, height: usize, dark: [3]u8, lights: []const Light) void {
+pub fn relight(pixels: [*]u8, pitch: usize, width: usize, height: usize, dark: [3]u8, amb: f32, lights: []const Light) void {
+    const keep: u32 = @intFromFloat(@round(std.math.clamp(amb, 0, 1) * 256));
     for (0..height) |y| @memset(g_light[y * kMaxWidth ..][0..width], .{ 0, 0, 0 });
 
     for (lights) |l| addLight(width, height, l);
@@ -418,21 +622,21 @@ pub fn relight(pixels: [*]u8, pitch: usize, width: usize, height: usize, dark: [
             if (m != kMaskDark) continue;
             const px: *align(1) u32 = @ptrCast(row + x * 4);
             const c = px.*;
-            const r = lit(c >> 16, dark[0], lc[0]);
-            const g = lit(c >> 8, dark[1], lc[1]);
-            const b = lit(c, dark[2], lc[2]);
+            const r = lit(c >> 16, dark[0], keep, lc[0]);
+            const g = lit(c >> 8, dark[1], keep, lc[1]);
+            const b = lit(c, dark[2], keep, lc[2]);
             px.* = r << 16 | g << 8 | b;
         }
     }
 }
 
-/// One channel of a pixel: darkened by `dark` as the game does it, then
-/// `light` (256 is all of it) of the pixel added back. Never brighter than
-/// the pixel as drawn, so the art keeps its colors and the light only tints
-/// it.
-fn lit(channel: u32, dark: u8, light: u16) u32 {
+/// One channel of a pixel: darkened by `dark` as the game does it and
+/// scaled by `keep` (256 all of it), then `light` (256 is all of it) of the
+/// pixel added back. Never brighter than the pixel as drawn, so the art
+/// keeps its colors and the light only tints it.
+fn lit(channel: u32, dark: u8, keep: u32, light: u16) u32 {
     const ch = channel & 0xff;
-    const base = ch -| dark;
+    const base = ((ch -| dark) * keep) >> 8;
     return @min(ch, base + ((ch * @min(light, 256)) >> 8));
 }
 
@@ -523,7 +727,7 @@ test "with no light, marked pixels darken just as the game's math would" {
     var px: [w * h]u32 = @splat(0x00ff8040);
     @memset(g_mask[0 .. h * kMaxWidth], 0);
     for (0..w) |x| g_mask[x] = 1;
-    relight(@ptrCast(&px), w * 4, w, h, .{ 0x50, 0x50, 0x50 }, &.{});
+    relight(@ptrCast(&px), w * 4, w, h, .{ 0x50, 0x50, 0x50 }, 1, &.{});
     try testing.expectEqual(@as(u32, 0x00af3000), px[0]);
     try testing.expectEqual(@as(u32, 0x00ff8040), px[w]);
 }
@@ -534,10 +738,10 @@ test "light brings a pixel back as far as it was drawn and no further" {
     var px: [w * h]u32 = @splat(0x00ff8040);
     @memset(g_mask[0 .. h * kMaxWidth], 0);
     for (0..w) |x| g_mask[x] = 1;
-    relight(@ptrCast(&px), w * 4, w, h, .{ 255, 255, 255 }, &.{.{ .x = 0, .y = 0, .radius = 10, .color = .{ 4, 4, 4 } }});
+    relight(@ptrCast(&px), w * 4, w, h, .{ 255, 255, 255 }, 1, &.{.{ .x = 0, .y = 0, .radius = 10, .color = .{ 4, 4, 4 } }});
     try testing.expectEqual(@as(u32, 0x00ff8040), px[0]);
     @memset(&px, 0x00ff8040);
-    relight(@ptrCast(&px), w * 4, w, h, .{ 255, 255, 255 }, &.{.{ .x = 0, .y = 0, .radius = 10, .color = .{ 1, 1, 1 } }});
+    relight(@ptrCast(&px), w * 4, w, h, .{ 255, 255, 255 }, 1, &.{.{ .x = 0, .y = 0, .radius = 10, .color = .{ 1, 1, 1 } }});
     // Far out at the edge of the light, only a little comes back.
     try testing.expect(px[7] < 0x00ff8040 and px[7] != 0);
 }
@@ -556,7 +760,7 @@ test "torches are found by their four tiles, and nothing else is" {
     map[21 * 64 + 3] = torch[1];
     map[20 * 64 + 4] = torch[2];
     var found: [4]u16 = undefined;
-    const n = findTiles2x2(&map, torch, &found);
+    const n = findTiles2x2(&map, torch, 0, &found);
     try testing.expectEqualSlices(u16, &.{ 5 * 64 + 10, 40 * 64 + 62 }, found[0..n]);
 }
 
@@ -567,4 +771,31 @@ test "walls stop light, floors and water don't, diagonal walls about half" {
     try testing.expectEqual(@as(u8, 0), solidness(0x09));
     try testing.expectEqual(@as(u8, 0), solidness(0xc3)); // a torch
     try testing.expectEqual(@as(u8, 128), solidness(0x12));
+}
+
+test "an explosion's light fades out over its frames" {
+    try testing.expectEqual(@as(f32, 1), fade(1, 11));
+    try testing.expect(fade(6, 11) > 0.4 and fade(6, 11) < 0.6);
+    try testing.expectEqual(@as(f32, 0), fade(11, 11));
+}
+
+test "a room that isn't dark is dimmed by scaling, not by taking a fixed amount off" {
+    const w = 4;
+    var px: [w]u32 = @splat(0x00804020);
+    @memset(g_mask[0..kMaxWidth], 0);
+    for (0..w) |x| g_mask[x] = 1;
+    relight(@ptrCast(&px), w * 4, w, 1, .{ 0, 0, 0 }, 0.5, &.{});
+    try testing.expectEqual(@as(u32, 0x00402010), px[0]);
+}
+
+test "braziers are found whichever way their priority bit is set" {
+    var map: [64 * 64]u16 = @splat(0);
+    const at = 10 * 64 + 20;
+    map[at] = kBrazierTiles[0] | 0x2000;
+    map[at + 64] = kBrazierTiles[1] | 0x2000;
+    map[at + 1] = kBrazierTiles[2] | 0x2000;
+    map[at + 65] = kBrazierTiles[3] | 0x2000;
+    var found: [2]u16 = undefined;
+    try testing.expectEqual(@as(usize, 1), findTiles2x2(&map, kBrazierTiles, kIgnorePriority, &found));
+    try testing.expectEqual(@as(usize, 0), findTiles2x2(&map, kBrazierTiles, 0, &found));
 }

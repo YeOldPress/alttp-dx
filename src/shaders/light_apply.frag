@@ -3,7 +3,8 @@
 // the light laid over it.
 //
 // Pixels the room's darkness covers (red in the mask) are darkened the way
-// the SNES does it, a fixed amount taken off each channel, and then lit
+// the SNES does it, a fixed amount taken off each channel (in a room that
+// isn't dark, just dimmed a little), and then lit
 // again from the light map (light_map.frag), read with smooth filtering so
 // the light's edges are soft however big the pixels are. Close to a flame,
 // where the light is more than the art's own, surfaces brighten a little
@@ -22,7 +23,7 @@ layout(set = 2, binding = 0) uniform sampler2D u_frame;
 layout(set = 2, binding = 1) uniform sampler2D u_mask;
 layout(set = 2, binding = 2) uniform sampler2D u_light;
 
-const int kMaxLights = 24;
+const int kMaxLights = 48;
 
 layout(set = 3, binding = 0) uniform Params {
     // The frame and mask textures' width and height in SNES pixels, and one
@@ -34,8 +35,9 @@ layout(set = 3, binding = 0) uniform Params {
     // number of lights.
     vec4 dark;
     // How far surfaces may brighten past the art near a flame, how strong
-    // the glows are, the frame number for the noise, and the output's
-    // pixels to an SNES pixel.
+    // the glows are, the frame number for the noise, and how much of the
+    // room's light is left once the darkness is taken off (1 in a dark room,
+    // less in one that's only dimmed).
     vec4 look;
     // As in light_map.frag.
     vec4 lights[kMaxLights * 2];
@@ -53,7 +55,7 @@ void main() {
     if (m > 0.5 && m < 1.5) {
         // The light map's texels sit on SNES pixel centers.
         vec3 light = texture(u_light, p * map.zw).rgb;
-        vec3 base = max(c - dark.rgb, vec3(0.0));
+        vec3 base = max(c - dark.rgb, vec3(0.0)) * look.w;
         vec3 lit = base + c * min(light, vec3(1.0));
         vec3 over = c * max(light - vec3(1.0), vec3(0.0)) * look.x;
         c = min(lit, c) + over;
