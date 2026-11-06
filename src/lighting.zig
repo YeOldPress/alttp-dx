@@ -30,6 +30,7 @@ const config = @import("config.zig");
 const snes_pkg = @import("snes");
 const Ppu = snes_pkg.ppu_types.Ppu;
 const ppu_mod = snes_pkg.ppu;
+const particles = @import("particles.zig");
 
 const kMaxWidth = 256 + 2 * snes_pkg.ppu_types.kPpuExtraLeftRight;
 const kMaxHeight = 240;
@@ -102,16 +103,18 @@ const kSparkColor = [3]f32{ 0.75, 0.85, 1.0 };
 
 /// How a room's lit: a dark room, with the game's own darkness relit; any
 /// other room indoors, dimmed a little for its flames to light; or not at
-/// all (outdoors, or dynamic lighting off).
-pub const Mode = enum { off, dark, mood };
+/// all (outdoors, or dynamic lighting off). `plain` is not at all, but with
+/// particles to draw, which want the HUD told apart from the scene.
+pub const Mode = enum { off, dark, mood, plain };
 
 /// How much of its light a room that isn't dark keeps, for the flames to
 /// make up.
 pub const kMoodAmbient: f32 = 0.82;
 
 fn roomMode() Mode {
-    if (!config.g_config.dynamic_lighting) return .off;
-    if (vars.player_is_indoors.* == 0) return .off;
+    const plain: Mode = if (particles.enabled() and particles.count() != 0) .plain else .off;
+    if (!config.g_config.dynamic_lighting) return plain;
+    if (vars.player_is_indoors.* == 0) return plain;
     // The game's own darkness rules, as the widescreen margins read them in
     // zelda_rtl.zig.
     if (vars.hdr_dungeon_dark_with_lantern.* != 0 or vars.dung_want_lights_out.* != 0) return .dark;
@@ -143,11 +146,21 @@ pub fn endFrame(ppu: *const Ppu, pixels: [*]u8, pitch: usize, height: usize) voi
 
     g_tick +%= 1;
     var lights: [64]Light = undefined;
-    const n = gatherLights(ppu, &lights);
+    const n = if (g_mode == .plain) 0 else gatherLights(ppu, &lights);
     const dark: [3]u8 = if (g_mode == .dark) darkness(ppu) else .{ 0, 0, 0 };
-    const amb: f32 = if (g_mode == .dark) 1 else kMoodAmbient;
+    const amb: f32 = switch (g_mode) {
+        .mood => kMoodAmbient,
+        else => 1,
+    };
     if (!g_gpu) {
-        relight(pixels, pitch, width, height, dark, amb, lights[0..n]);
+        if (g_mode != .plain) relight(pixels, pitch, width, height, dark, amb, lights[0..n]);
+        particles.drawCpu(pixels, pitch, .{
+            .left = ppu.extraLeftRight,
+            .cam_x = vars.BG2HOFS_copy2.*,
+            .cam_y = vars.BG2VOFS_copy2.*,
+            .width = width,
+            .height = height,
+        }, &g_mask, kMaxWidth);
         return;
     }
     // For the GPU: the mask goes in each pixel's spare top byte, so that
@@ -622,6 +635,60 @@ const kLitTorchTiles = 0xeca;
 /// `out.len` of them.
 pub fn findLitTorches(map: [*]align(1) const u16, out: []u16) usize {
     return findTiles2x2(map, SrcPtr(kLitTorchTiles)[0..4].*, 0, out);
+}
+
+/// A fire that stays put in a room: where in the world, and what kind.
+pub const Spot = struct { x: i32, y: i32, kind: enum { torch, brazier, candle } };
+
+/// The room's fixed fires, the lit torches, braziers and sconces' candles,
+/// in world coordinates, up to `out.len` of them. Indoors only.
+pub fn flameSpots(out: []Spot) usize {
+    if (vars.player_is_indoors.* == 0) return 0;
+    const cam_x: i32 = vars.BG2HOFS_copy2.*;
+    const cam_y: i32 = vars.BG2VOFS_copy2.*;
+    const bg1_is_room = vars.hdr_dungeon_dark_with_lantern.* == 0;
+    var n: usize = 0;
+    const world = struct {
+        fn f(local: i32, cam: i32) i32 {
+            return wrapToScreen(local, cam) + cam;
+        }
+    }.f;
+    var tiles: [24]u16 = undefined;
+    for ([_]bool{ false, true }) |brazier| {
+        var nt: usize = 0;
+        for ([_][*]align(1) const u16{ vars.dung_bg2, vars.dung_bg1 }, 0..) |map, layer| {
+            if (layer == 1 and !bg1_is_room) break;
+            nt += if (brazier)
+                findTiles2x2(map, kBrazierTiles, kIgnorePriority, tiles[nt..])
+            else
+                findLitTorches(map, tiles[nt..]);
+        }
+        for (tiles[0..nt]) |t| {
+            if (n == out.len) return n;
+            const lx: i32 = @intCast((t & 63) * 8 + 8);
+            const ly: i32 = @intCast((t >> 6) * 8 + if (brazier) @as(usize, 4) else 8);
+            out[n] = .{ .x = world(lx, cam_x), .y = world(ly, cam_y), .kind = if (brazier) .brazier else .torch };
+            n += 1;
+        }
+    }
+    for (kSconces) |sc| {
+        const src = SrcPtr(sc.src)[0 .. sc.w * sc.h];
+        var nf = findBlock(vars.dung_bg2, src, sc.w, sc.h, sc.by_rows, kIgnorePriority, &tiles);
+        if (bg1_is_room) nf += findBlock(vars.dung_bg1, src, sc.w, sc.h, sc.by_rows, kIgnorePriority, tiles[nf..]);
+        for (tiles[0..nf]) |t| {
+            const lx: i32 = @intCast((t & 63) * 8);
+            const ly: i32 = @intCast((t >> 6) * 8);
+            for (0..2) |candle| {
+                if (n == out.len) return n;
+                const along: i32 = if (candle == 0) 10 else 22;
+                const cx = if (sc.w > sc.h) lx + along else lx + 8;
+                const cy = if (sc.w > sc.h) ly + 8 else ly + along;
+                out[n] = .{ .x = world(cx, cam_x), .y = world(cy, cam_y), .kind = .candle };
+                n += 1;
+            }
+        }
+    }
+    return n;
 }
 
 /// The wall sconce objects, as the room's object data draws them: on a

@@ -161,6 +161,8 @@ pub const Config = extern struct {
     /// Relight dark dungeon rooms with soft light from the lantern, torches
     /// and fire, in place of the SNES's flat darkness (lighting.zig).
     dynamic_lighting: bool,
+    /// Embers off flames, sparks off the sword (particles.zig).
+    particles: bool,
     features0: u32,
 
     link_graphics: ?[*:0]const u8,
@@ -993,6 +995,8 @@ fn handleGraphics(key: [*:0]const u8, value: [*:0]u8) bool {
         return ParseBool(value, &g_config.crt_bezel);
     } else if (util.StringEqualsNoCase(key, "DynamicLighting")) {
         return ParseBool(value, &g_config.dynamic_lighting);
+    } else if (util.StringEqualsNoCase(key, "Particles")) {
+        return ParseBool(value, &g_config.particles);
     } else if (util.StringEqualsNoCase(key, "NoSpriteLimits")) {
         return ParseBool(value, &g_config.no_sprite_limits);
     } else if (util.StringEqualsNoCase(key, "LinkGraphics")) {
@@ -1190,6 +1194,7 @@ export fn ParseConfigFile(filename_in: ?[*:0]const u8) callconv(.c) void {
     // As the shipped zelda3.ini has it, which is what the menus show for an
     // ini from before the setting existed.
     g_config.dynamic_lighting = true;
+    g_config.particles = true;
 
     var filename = filename_in;
     if (filename != null or !parseOneConfigFile("zelda3.user.ini", 0)) {

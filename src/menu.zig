@@ -154,6 +154,7 @@ pub const kSettings = [_]Setting{
     .{ .section = "Graphics", .key = "HDR", .label = "HDR", .kind = .toggle },
     .{ .section = "Graphics", .key = "CrtReset", .label = "Reset CRT Settings", .kind = .action },
     .{ .section = "Graphics", .key = "DynamicLighting", .label = "Dynamic Lighting", .kind = .toggle },
+    .{ .section = "Graphics", .key = "Particles", .label = "Particles", .kind = .toggle },
     .{ .section = "Graphics", .key = "DimFlashes", .label = "Dim Flashes", .kind = .toggle },
     .{ .section = "Graphics", .key = "WindowSize", .label = "Window Size", .kind = .text },
 
@@ -671,6 +672,7 @@ pub fn describe(s: Setting) []const u8 {
         .{ "CrtBezel", "Puts the picture in a TV's dark plastic frame, which catches a little of the screen's light. Works with any CRT Filter, or none." },
         .{ "CrtFilter", "Draws the picture like an old screen. Scanlines adds dark lines between the rows. Arcade is a monitor up close, Soft a gentler one. Consumer TV is a home TV, with a glow and soft edges. Composite blends the dithering the way a TV cable did. LCD is a handheld's grid." },
         .{ "DynamicLighting", "Light dark dungeon rooms with flickering light from the lantern, lit torches and fire, instead of the flat darkness and cone of the original. On a GPU, walls cast soft shadows and flames glow. Needs New Renderer." },
+        .{ "Particles", "Embers drifting up off torches and fire, and sparks when the sword strikes a wall. Needs New Renderer." },
         .{ "DimFlashes", "Tone down flashing effects, as the Virtual Console releases did." },
         .{ "Volume", "How loud the whole game plays, music and sound effects together, MSU music included. Changes as you move it. Shift and plus or minus on the keyboard change it too." },
         .{ "EnableAudio", "Play sound and music at all." },

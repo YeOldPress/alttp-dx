@@ -13,6 +13,7 @@
 const std = @import("std");
 const c = @import("sdl.zig").c;
 const lighting = @import("lighting.zig");
+const particles = @import("particles.zig");
 
 const kMaxLights = lighting.kMaxGpuLights;
 
@@ -128,6 +129,7 @@ pub fn ready() bool {
 }
 
 pub fn destroy() void {
+    particles.destroyGpu();
     if (g_apply_state) |s| c.SDL_DestroyGPURenderState(s);
     if (g_map_state) |s| c.SDL_DestroyGPURenderState(s);
     g_apply_state = null;
@@ -268,5 +270,8 @@ pub fn apply(r: *c.SDL_Renderer, frame: *c.SDL_Texture, tex_w: c_int, tex_h: c_i
     _ = c.SDL_SetGPURenderState(r, state);
     _ = c.SDL_RenderTexture(r, frame, &src, null);
     _ = c.SDL_SetGPURenderState(r, null);
+
+    // 3. The particles, over the lit frame.
+    particles.drawGpu(r, .{ .left = f.left, .cam_x = f.cam_x, .cam_y = f.cam_y, .width = f.width, .height = f.height }, f.mask, @floatFromInt(s));
     return out;
 }

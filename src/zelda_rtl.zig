@@ -16,6 +16,7 @@ const hud_second_item = @import("hud_second_item.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const features = @import("features.zig");
 const lighting = @import("lighting.zig");
+const particles = @import("particles.zig");
 const util = @import("util.zig");
 const audio = @import("audio.zig");
 const main_mod = @import("main.zig");
@@ -1083,6 +1084,7 @@ pub export fn ZeldaRunFrame(inputs_in: c_int) callconv(.c) bool {
     }
 
     audio.ZeldaPushApuState();
+    particles.step();
 
     return is_replay;
 }
