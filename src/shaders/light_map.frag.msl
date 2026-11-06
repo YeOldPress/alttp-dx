@@ -1,0 +1,114 @@
+#pragma clang diagnostic ignored "-Wmissing-prototypes"
+
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct Params
+{
+    float4 tex;
+    float4 look;
+    float4 lights[48];
+};
+
+struct main0_out
+{
+    float4 o_color [[color(0)]];
+};
+
+struct main0_in
+{
+    float2 v_uv [[user(locn1)]];
+};
+
+static inline __attribute__((always_inline))
+float ray(thread const float2& p, thread const float2& l, texture2d<float> u_mask, sampler u_maskSmplr, constant Params& _83)
+{
+    float2 d = l - p;
+    float len = length(d);
+    if (len < 4.0)
+    {
+        return 1.0;
+    }
+    int steps = int(fast::clamp(len * 0.5, 2.0, 64.0));
+    float2 _step = d / float2(float(steps));
+    float through = 1.0;
+    float run = 1.0;
+    bool out_in_open = false;
+    for (int s = 1; s < steps; s++)
+    {
+        float solid = u_mask.sample(u_maskSmplr, ((p + (_step * float(s))) * _83.tex.zw)).y;
+        if (solid > 0.25)
+        {
+            if (out_in_open)
+            {
+                run *= (1.0 - (solid * 0.60000002384185791015625));
+            }
+        }
+        else
+        {
+            out_in_open = true;
+            through *= run;
+            run = 1.0;
+            if (through < 0.00999999977648258209228515625)
+            {
+                break;
+            }
+        }
+    }
+    return through;
+}
+
+static inline __attribute__((always_inline))
+float reach(thread const float2& p, thread const float2& l, texture2d<float> u_mask, sampler u_maskSmplr, constant Params& _83)
+{
+    if (_83.look.x <= 0.0)
+    {
+        return 1.0;
+    }
+    float2 d = l - p;
+    float len = length(d);
+    if (len < 4.0)
+    {
+        return 1.0;
+    }
+    float2 side = (float2(-d.y, d.x) / float2(len)) * 3.5;
+    float2 param = p;
+    float2 param_1 = l - side;
+    float2 param_2 = p;
+    float2 param_3 = l;
+    float2 param_4 = p;
+    float2 param_5 = l + side;
+    float through = ((ray(param, param_1, u_mask, u_maskSmplr, _83) + (ray(param_2, param_3, u_mask, u_maskSmplr, _83) * 2.0)) + ray(param_4, param_5, u_mask, u_maskSmplr, _83)) * 0.25;
+    return mix(1.0, through, _83.look.x);
+}
+
+fragment main0_out main0(main0_in in [[stage_in]], constant Params& _83 [[buffer(0)]], texture2d<float> u_mask [[texture(0)]], sampler u_maskSmplr [[sampler(0)]])
+{
+    main0_out out = {};
+    float2 p = in.v_uv * _83.tex.xy;
+    float3 light = float3(0.0);
+    int n = int(_83.look.y);
+    for (int i = 0; i < 24; i++)
+    {
+        if (i >= n)
+        {
+            break;
+        }
+        float4 a = _83.lights[i * 2];
+        float4 b = _83.lights[(i * 2) + 1];
+        float t = length(p - a.xy) / a.z;
+        if (t >= 1.0)
+        {
+            continue;
+        }
+        float k = 1.0 - ((t * t) * (3.0 - (2.0 * t)));
+        float2 param = p;
+        float2 param_1 = a.xy;
+        light += ((b.xyz * k) * reach(param, param_1, u_mask, u_maskSmplr, _83));
+    }
+    out.o_color = float4(light, 1.0);
+    return out;
+}
+

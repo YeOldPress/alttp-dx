@@ -15,6 +15,7 @@ const settings_menu = @import("settings_menu.zig");
 const hud_second_item = @import("hud_second_item.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const features = @import("features.zig");
+const lighting = @import("lighting.zig");
 const util = @import("util.zig");
 const audio = @import("audio.zig");
 const main_mod = @import("main.zig");
@@ -515,6 +516,9 @@ pub export fn ZeldaDrawPpuFrame(pixel_buffer: [*]u8, pitch: usize, render_flags:
     ppu_mod.g_bg_tile_source_layers |= settings_menu.hudLayers(ppu);
     ppu_mod.g_bg_tile_source = frameTileSource;
     defer ppu_mod.g_bg_tile_source_layers = 0;
+
+    lighting.beginFrame(render_flags, @intCast(height));
+    defer lighting.endFrame(ppu, pixel_buffer, pitch, @intCast(height));
 
     const spot_chan: ?*const SimpleHdma = if (ppu.extraLeftRight == 0)
         null

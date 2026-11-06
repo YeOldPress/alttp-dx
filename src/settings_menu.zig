@@ -153,6 +153,7 @@ fn appliesLive(s: menu.Setting) bool {
         .{ "Graphics", "CrtGlow" },
         .{ "Graphics", "CrtAfterglow" },
         .{ "Graphics", "CrtBezel" },
+        .{ "Graphics", "DynamicLighting" },
         .{ "Sound", "Volume" },
         .{ "Sound", "ResumeMSU" },
         .{ "Sound", "MSUFinishCues" },

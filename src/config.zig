@@ -158,6 +158,9 @@ pub const Config = extern struct {
     /// Draw in linear light, for HDR displays: the CRT Filter's phosphors
     /// then shine past white as a tube's do.
     hdr: bool,
+    /// Relight dark dungeon rooms with soft light from the lantern, torches
+    /// and fire, in place of the SNES's flat darkness (lighting.zig).
+    dynamic_lighting: bool,
     features0: u32,
 
     link_graphics: ?[*:0]const u8,
@@ -988,6 +991,8 @@ fn handleGraphics(key: [*:0]const u8, value: [*:0]u8) bool {
         return ParseBool(value, &g_config.hdr);
     } else if (util.StringEqualsNoCase(key, "CrtBezel")) {
         return ParseBool(value, &g_config.crt_bezel);
+    } else if (util.StringEqualsNoCase(key, "DynamicLighting")) {
+        return ParseBool(value, &g_config.dynamic_lighting);
     } else if (util.StringEqualsNoCase(key, "NoSpriteLimits")) {
         return ParseBool(value, &g_config.no_sprite_limits);
     } else if (util.StringEqualsNoCase(key, "LinkGraphics")) {
@@ -1182,6 +1187,9 @@ export fn ParseConfigFile(filename_in: ?[*:0]const u8) callconv(.c) void {
     g_config.crt_mask = 100;
     g_config.crt_glow = 100;
     g_config.crt_afterglow = 100;
+    // As the shipped zelda3.ini has it, which is what the menus show for an
+    // ini from before the setting existed.
+    g_config.dynamic_lighting = true;
 
     var filename = filename_in;
     if (filename != null or !parseOneConfigFile("zelda3.user.ini", 0)) {

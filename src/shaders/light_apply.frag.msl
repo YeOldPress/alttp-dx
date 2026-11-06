@@ -1,0 +1,95 @@
+#pragma clang diagnostic ignored "-Wmissing-prototypes"
+
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct Params
+{
+    float4 tex;
+    float4 map;
+    float4 dark;
+    float4 look;
+    float4 lights[48];
+};
+
+struct main0_out
+{
+    float4 o_color [[color(0)]];
+};
+
+struct main0_in
+{
+    float2 v_uv [[user(locn1)]];
+};
+
+static inline __attribute__((always_inline))
+float _noise(thread const float2& p, constant Params& _24)
+{
+    return fract(sin(dot(p, float2(12.98980045318603515625, 78.233001708984375)) + (_24.look.z * 0.617999970912933349609375)) * 43758.546875);
+}
+
+fragment main0_out main0(main0_in in [[stage_in]], constant Params& _24 [[buffer(0)]], texture2d<float> u_frame [[texture(0)]], texture2d<float> u_mask [[texture(1)]], texture2d<float> u_light [[texture(2)]], sampler u_frameSmplr [[sampler(0)]], sampler u_maskSmplr [[sampler(1)]], sampler u_lightSmplr [[sampler(2)]], float4 gl_FragCoord [[position]])
+{
+    main0_out out = {};
+    float2 p = in.v_uv * _24.tex.xy;
+    float3 c = u_frame.sample(u_frameSmplr, in.v_uv).xyz;
+    float m = u_mask.sample(u_maskSmplr, in.v_uv).x * 255.0;
+    if ((m > 0.5) && (m < 1.5))
+    {
+        float3 light = u_light.sample(u_lightSmplr, (p * _24.map.zw)).xyz;
+        float3 base = fast::max(c - _24.dark.xyz, float3(0.0));
+        float3 lit = base + (c * fast::min(light, float3(1.0)));
+        float3 over = (c * fast::max(light - float3(1.0), float3(0.0))) * _24.look.x;
+        c = fast::min(lit, c) + over;
+    }
+    bool _126 = m > 0.5;
+    bool _133;
+    if (_126)
+    {
+        _133 = _24.look.y > 0.0;
+    }
+    else
+    {
+        _133 = _126;
+    }
+    if (_133)
+    {
+        float3 glow = float3(0.0);
+        int n = int(_24.dark.w);
+        for (int i = 0; i < 24; i++)
+        {
+            if (i >= n)
+            {
+                break;
+            }
+            float4 a = _24.lights[i * 2];
+            float4 b = _24.lights[(i * 2) + 1];
+            bool _173 = a.w <= 0.0;
+            bool _180;
+            if (!_173)
+            {
+                _180 = b.w <= 0.0;
+            }
+            else
+            {
+                _180 = _173;
+            }
+            if (_180)
+            {
+                continue;
+            }
+            float2 d = p - a.xy;
+            float g = exp((-dot(d, d)) / ((2.0 * a.w) * a.w));
+            glow += ((fast::normalize(b.xyz + float3(0.001000000047497451305389404296875)) * b.w) * g);
+        }
+        glow *= _24.look.y;
+        c += (glow * (float3(1.0) - c));
+    }
+    float2 param = floor(gl_FragCoord.xy);
+    c += float3((_noise(param, _24) - 0.5) / 255.0);
+    out.o_color = float4(fast::clamp(c, float3(0.0), float3(1.0)), 1.0);
+    return out;
+}
+

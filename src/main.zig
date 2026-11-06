@@ -14,10 +14,13 @@ const title_dx = @import("title_dx.zig");
 const achievements = @import("achievements.zig");
 const crt = @import("crt.zig");
 const crt_gpu = @import("crt_gpu.zig");
+const lighting = @import("lighting.zig");
+const light_gpu = @import("light_gpu.zig");
 const rando = @import("rando.zig");
 const tracker = @import("tracker.zig");
 const frame_capture = @import("frame_capture.zig");
 const rtl = @import("zelda_rtl_types.zig");
+const vars = @import("variables.zig");
 const emu = @import("zelda_cpu_infra.zig");
 const snes_pkg = @import("snes");
 const ppu_mod = snes_pkg.ppu;
@@ -54,6 +57,7 @@ extern fn ZeldaRunFrame(input_state: c_int) bool;
 extern fn ZeldaSetLanguage(language: ?[*:0]const u8) void;
 extern fn PatchCommand(cmd: u8) void;
 extern fn SaveLoadSlot(cmd: c_int, which: c_int) void;
+extern fn LoadDungeonRoomRebuildHUD() void;
 extern fn ZeldaReadSram() void;
 extern var g_wanted_zelda_features: u32;
 
@@ -427,6 +431,17 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
         };
         SaveLoadSlot(kSaveLoad_Load, 256 + ref);
     }
+    // ENTRANCE=n goes in through dungeon entrance n first (0x.. for hex), the
+    // way continuing a save made in a dungeon does: a way to any room.
+    if (std.c.getenv("ENTRANCE")) |e| {
+        const n = std.fmt.parseInt(u8, std.mem.span(e), 0) catch {
+            std.debug.print("--render: ENTRANCE is a number from 0 to 132\n", .{});
+            return 1;
+        };
+        vars.which_entrance.* = n;
+        vars.player_is_indoors.* = 1;
+        LoadDungeonRoomRebuildHUD();
+    }
 
     var it = std.mem.tokenizeScalar(u8, std.mem.span(script), ',');
     while (it.next()) |text| {
@@ -440,15 +455,25 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
         }
     }
 
+    if (std.c.getenv("ENTRANCE") != null) std.debug.print("room 0x{x:0>3}, lights out {d}, lantern {d}, lit torches {d}\n", .{
+        vars.dungeon_room_index.*,          vars.dung_want_lights_out.*,
+        vars.hdr_dungeon_dark_with_lantern.*, vars.dung_num_lit_torches.*,
+    });
+
     const width: usize = @intCast(g_snes_width);
     const height: usize = @intCast(g_snes_height);
     const pixels = std.heap.c_allocator.alloc(u32, width * height) catch return 1;
     defer std.heap.c_allocator.free(pixels);
-    // One pixel per SNES pixel, so no 4x Mode 7.
+    // One pixel per SNES pixel, so no 4x Mode 7. With CRT=, the frame's lit
+    // by the GPU, as the window does it.
+    const crt_name = std.c.getenv("CRT");
+    lighting.g_gpu = crt_name != null;
     ZeldaDrawPpuFrame(@ptrCast(pixels.ptr), width * 4, g_ppu_render_flags & ~kPpuRenderFlags_4x4Mode7);
     title_dx.drawOver(@ptrCast(pixels.ptr), width * 4, width, height, 1);
     settings_menu.drawOver(@ptrCast(pixels.ptr), width * 4, width, height, 1);
-    if (std.c.getenv("CRT")) |name| return crtShot(pixels, width, height, std.mem.span(name), out);
+    lighting.g_gpu = false;
+    const light = lighting.takeGpuFrame(@ptrCast(pixels.ptr), width * 4);
+    if (crt_name) |name| return crtShot(pixels, width, height, std.mem.span(name), out, light);
     frame_capture.writeBmp(out, pixels, width, height) catch |err| {
         std.debug.print("--render: could not write {s}: {s}\n", .{ out, @errorName(err) });
         return 1;
@@ -461,7 +486,7 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
 /// `SCALE=n` makes it n screen pixels to a SNES pixel (3 unless said), and
 /// the look's own curve and bezel come with it, as when it's picked in the
 /// menu. Needs SDL's GPU renderer, which is the only one with the shaders.
-fn crtShot(pixels: []const u32, width: usize, height: usize, name: []const u8, out: [*:0]const u8) c_int {
+fn crtShot(pixels: []u32, width: usize, height: usize, name: []const u8, out: [*:0]const u8, light: ?*const lighting.GpuFrame) c_int {
     const preset = crt.Preset.fromName(name) orelse {
         std.debug.print("--render: CRT={s}? off, scanlines, arcade, soft, tv, composite or lcd\n", .{name});
         return 1;
@@ -485,19 +510,34 @@ fn crtShot(pixels: []const u32, width: usize, height: usize, name: []const u8, o
         std.debug.print("--render: the CRT shaders wouldn't load\n", .{});
         return 1;
     }
+    light_gpu.init(r);
+    defer light_gpu.destroy();
+    if (light != null and !light_gpu.ready()) {
+        std.debug.print("--render: the lighting shaders wouldn't load; lit on the CPU\n", .{});
+        lighting.relightFrame(@ptrCast(pixels.ptr), width * 4, light.?);
+    }
 
-    const game = c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_XRGB8888, c.SDL_TEXTUREACCESS_STATIC, @intCast(width), @intCast(height)) orelse return 1;
-    defer c.SDL_DestroyTexture(game);
-    _ = c.SDL_UpdateTexture(game, null, pixels.ptr, @intCast(width * 4));
-    _ = c.SDL_SetTextureBlendMode(game, c.SDL_BLENDMODE_NONE);
+    const frame = c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_XRGB8888, c.SDL_TEXTUREACCESS_STATIC, @intCast(width), @intCast(height)) orelse return 1;
+    defer c.SDL_DestroyTexture(frame);
+    _ = c.SDL_UpdateTexture(frame, null, pixels.ptr, @intCast(width * 4));
+    _ = c.SDL_SetTextureBlendMode(frame, c.SDL_BLENDMODE_NONE);
     const target = c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_ARGB8888, c.SDL_TEXTUREACCESS_TARGET, out_w, out_h) orelse return 1;
     defer c.SDL_DestroyTexture(target);
     _ = c.SDL_SetRenderTarget(r, target);
 
     const d = crt.defaultsFor(preset);
-    const src = c.SDL_FRect{ .x = 0, .y = 0, .w = @floatFromInt(width), .h = @floatFromInt(height) };
+    var src = c.SDL_FRect{ .x = 0, .y = 0, .w = @floatFromInt(width), .h = @floatFromInt(height) };
     const area = c.SDL_FRect{ .x = 0, .y = 0, .w = @floatFromInt(out_w), .h = @floatFromInt(out_h) };
     const frame_scale = crt.scaleFor(out_h, @intCast(height));
+    var game = frame;
+    if (light) |l| {
+        const s: c_int = if (preset == .off) frame_scale else 1;
+        if (light_gpu.apply(r, frame, @intCast(width), @intCast(height), l, s)) |lit| {
+            game = lit;
+            src = .{ .x = 0, .y = 0, .w = src.w * @as(f32, @floatFromInt(s)), .h = src.h * @as(f32, @floatFromInt(s)) };
+        }
+    }
+    _ = c.SDL_SetRenderTarget(r, target);
     // The same frame a few times over, so the afterglow settles as it
     // would on a picture that's held still.
     for (0..8) |_| {
@@ -595,6 +635,9 @@ fn DrawPpuFrameWithPerf() void {
 
 /// The game's frame and everything drawn over it, into `pixel_buffer`.
 fn drawFrame(pixel_buffer: [*c]u8, pitch: c_int, render_scale: c_int) void {
+    // The frame's lit on the GPU as it's shown (SdlRenderer_EndDraw), if it
+    // can be; the light's mask rides along in the pixels until then.
+    lighting.g_gpu = g_renderer_funcs.EndDraw == kSdlRendererFuncs.EndDraw and light_gpu.ready() and render_scale == 1;
     if (g_display_perf or config.g_config.display_perf_title) {
         const before = c.SDL_GetPerformanceCounter();
         ZeldaDrawPpuFrame(pixel_buffer, @intCast(pitch), g_ppu_render_flags);
@@ -608,13 +651,18 @@ fn drawFrame(pixel_buffer: [*c]u8, pitch: c_int, render_scale: c_int) void {
     } else {
         ZeldaDrawPpuFrame(pixel_buffer, @intCast(pitch), g_ppu_render_flags);
     }
+    lighting.g_gpu = false;
     title_dx.drawOver(pixel_buffer, @intCast(pitch), @intCast(g_snes_width), @intCast(g_snes_height), @intCast(render_scale));
     settings_menu.drawOver(pixel_buffer, @intCast(pitch), @intCast(g_snes_width), @intCast(g_snes_height), @intCast(render_scale));
     achievements.hidden = settings_menu.isOpen();
     achievements.drawOver(pixel_buffer, @intCast(pitch), @intCast(g_snes_width), @intCast(g_snes_height), @intCast(render_scale));
     if (g_display_perf)
         RenderNumber(pixel_buffer + @as(usize, @intCast(pitch * render_scale)), @intCast(pitch), g_curr_fps, render_scale == 4);
+    g_light_frame = lighting.takeGpuFrame(pixel_buffer, @intCast(pitch));
 }
+
+/// The frame being drawn, left for the GPU to light as it's shown.
+var g_light_frame: ?*const lighting.GpuFrame = null;
 
 var g_audio_mutex: ?*c.SDL_Mutex = null;
 var g_audio_stream: ?*c.SDL_AudioStream = null;
@@ -716,6 +764,7 @@ fn SdlRenderer_Init(window: ?*c.SDL_Window) callconv(.c) bool {
     g_renderer = renderer;
     crt_gpu.init(renderer.?);
     crt_gpu.report(renderer.?);
+    light_gpu.init(renderer.?);
     if (!config.g_config.ignore_aspect_ratio)
         _ = c.SDL_SetRenderLogicalPresentation(renderer, g_snes_width, g_snes_height, c.SDL_LOGICAL_PRESENTATION_LETTERBOX);
 
@@ -729,6 +778,7 @@ fn SdlRenderer_Init(window: ?*c.SDL_Window) callconv(.c) bool {
 }
 
 fn SdlRenderer_Destroy() callconv(.c) void {
+    light_gpu.destroy();
     crt_gpu.destroy();
     c.SDL_DestroyTexture(g_texture);
     c.SDL_DestroyRenderer(g_renderer);
@@ -778,17 +828,28 @@ fn SdlRenderer_BeginDraw(width: c_int, height: c_int, pixels: *[*c]u8, pitch: *c
 
 fn SdlRenderer_EndDraw() callconv(.c) void {
     c.SDL_UnlockTexture(g_texture);
-    _ = c.SDL_RenderClear(g_renderer);
     // SDL_RenderCopy became SDL_RenderTexture, which takes float rects.
-    const src = c.SDL_FRect{
+    var src = c.SDL_FRect{
         .x = @floatFromInt(g_sdl_renderer_rect.x),
         .y = @floatFromInt(g_sdl_renderer_rect.y),
         .w = @floatFromInt(g_sdl_renderer_rect.w),
         .h = @floatFromInt(g_sdl_renderer_rect.h),
     };
-    if (!((g_port_frame or g_rando_frame) and crtWanted() and presentCrt(src))) {
-        _ = c.SDL_SetTextureScaleMode(g_texture, textureScaleMode());
-        _ = c.SDL_RenderTexture(g_renderer, g_texture, &src, null);
+    // Dynamic lighting: the frame lit at the size it'll be shown, or at the
+    // SNES's for the looks that go back down to that and work from there.
+    var shown = g_texture.?;
+    if (g_light_frame) |f| {
+        g_light_frame = null;
+        const s: c_int = if (crtPreset() != .off or config.g_config.pixel_scaling == 3) 1 else frameScale();
+        if (light_gpu.apply(g_renderer.?, g_texture.?, g_texture_w, g_texture_h, f, s)) |lit| {
+            shown = lit;
+            src = .{ .x = 0, .y = 0, .w = src.w * @as(f32, @floatFromInt(s)), .h = src.h * @as(f32, @floatFromInt(s)) };
+        }
+    }
+    _ = c.SDL_RenderClear(g_renderer);
+    if (!((g_port_frame or g_rando_frame) and crtWanted() and presentCrt(shown, src))) {
+        _ = c.SDL_SetTextureScaleMode(shown, textureScaleMode());
+        _ = c.SDL_RenderTexture(g_renderer, shown, &src, null);
     }
     _ = c.SDL_RenderPresent(g_renderer); // vsyncs to 60 FPS?
 }
@@ -797,7 +858,7 @@ fn SdlRenderer_EndDraw() callconv(.c) void {
 /// curve and the bezel. For a randomizer seed, the game part alone, and the
 /// tracker beside it or over it as it is. False if it couldn't, for the
 /// plain frame instead.
-fn presentCrt(src: c.SDL_FRect) bool {
+fn presentCrt(frame: *c.SDL_Texture, src: c.SDL_FRect) bool {
     const r = g_renderer.?;
     // The picture's area in the renderer's own coordinates, and what that
     // comes to on the screen.
@@ -826,7 +887,7 @@ fn presentCrt(src: c.SDL_FRect) bool {
         snes_h = @intCast(l.game.h / rando.kScale);
         area = .{ .x = game_src.x / k, .y = 0, .w = game_src.w / k, .h = game_src.h / k };
     }
-    const f = crt_gpu.draw(r, g_texture.?, game_src, snes_w, snes_h, crtPreset(), crtTuning(), frameScale(), config.g_config.crt_bezel, config.g_config.pixel_scaling == 3, crt_gpu.hdrOf(r)) orelse return false;
+    const f = crt_gpu.draw(r, frame, game_src, snes_w, snes_h, crtPreset(), crtTuning(), frameScale(), config.g_config.crt_bezel, config.g_config.pixel_scaling == 3, crt_gpu.hdrOf(r)) orelse return false;
     const game_px = c.SDL_FRect{ .x = pixels.x + area.x * to_px, .y = pixels.y + area.y * to_px, .w = area.w * to_px, .h = area.h * to_px };
     crt_gpu.present(r, f, area, game_px, @as(f32, @floatFromInt(config.g_config.crt_curvature)) / 100, config.g_config.crt_bezel);
 
