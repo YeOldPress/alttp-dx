@@ -214,6 +214,34 @@ fn strike(power: f32) void {
     }
 }
 
+/// Which sprite slots held a bolt of lightning last game frame, to catch a
+/// new one.
+var g_bolts: u16 = 0;
+
+/// How strong the cold wash is as a bolt comes down: softer than the storm's,
+/// since the game strobes the room on top of it.
+const kBoltFlash: f32 = 0.3;
+
+/// A bolt of Agahnim's or Vitreous's lightning just come down washes the
+/// room cold for a moment, as the storm's does outside.
+fn noteBolts() void {
+    var now: u16 = 0;
+    for (0..16) |k| {
+        if (vars.sprite_state[k] != 0 and vars.sprite_type[k] == 0xbf) now |= @as(u16, 1) << @intCast(k);
+    }
+    if (now & ~g_bolts != 0 and config.g_config.dynamic_lighting) g_flash = @max(g_flash, kBoltFlash);
+    g_bolts = now;
+}
+
+/// How much of each bolt's light there is: Agahnim brings four down at
+/// once, close together, which would be four times as bright, and while the
+/// game's flashing the room white for them there's less to add.
+fn boltAmount() f32 {
+    const n: f32 = @floatFromInt(@max(@popCount(g_bolts), 1));
+    const strobe: f32 = if (vars.intro_times_pal_flash.* != 0) 0.8 else 1.0;
+    return strobe / @sqrt(n);
+}
+
 /// Each game frame: a strike, a flicker, or the last one fading.
 pub fn stepWeather() void {
     const fc = vars.frame_counter.*;
@@ -222,6 +250,7 @@ pub fn stepWeather() void {
     g_flash_frame = fc;
     g_flash *= 0.72;
     if (g_flash < 0.02) g_flash = 0;
+    noteBolts();
     if (!raining()) {
         g_nstrikes = 0;
         return;
@@ -841,14 +870,17 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
                     add.world(kSmallFire, sx + 8 + @divTrunc(sin * n4, 4), sy + 8 + @divTrunc(cos * n4, 4), seed + @as(u32, @intCast(seg)) * 64, 1);
                 }
             },
-            // Sparks that run along the walls, Vitreous's lightning, Mothula's
-            // beam.
-            0x5b, 0x5c, 0xbf => add.world(kElectric, sx + 8, sy + 8, seed, 1),
+            // Sparks that run along the walls, Mothula's beam.
+            0x5b, 0x5c => add.world(kElectric, sx + 8, sy + 8, seed, 1),
+            // A bolt of Agahnim's or Vitreous's lightning: the room lit
+            // from it, hard and cold, the walls throwing their shadows away
+            // from where it strikes.
+            0xbf => add.world(kBolt, sx + 8, sy + 8, seed, boltAmount()),
             0x89 => add.world(kSpark, sx + 8, sy + 8, seed, 1),
             // Baris hum faintly.
             0x23, 0x24 => add.world(kBari, sx + 8, sy + 8, seed, 1),
-            // Agahnim's magic.
-            0x7b => add.world(kMagic, sx + 8, sy + 8, seed, 1.2),
+            // Agahnim's magic, in the colors it's drawn in.
+            0x7b => add.worldColored(kMagic, sx + 8, sy + 8, seed, spriteHue(ppu, vars.sprite_oam_flags[k])),
             // The bunny beam, once it's out: until then it waits unseen
             // inside a statue for Link to come by. (Outdoors the same sprite
             // is a chimney's smoke.)
@@ -939,8 +971,10 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
             0x0c => add.world(kCold, gx + 4, gy + 4, seed, 1),
             // Lasers: the eyes', the Beamos', Blind's.
             0x04, 0x0f => add.world(kLaser, gx + 4, gy + 4, seed, 1),
-            // Mothula's beam, lightning, flashes, sparkles.
-            0x02, 0x07, 0x09, 0x12 => add.world(kTinySpark, gx + 4, gy + 4, seed, 1),
+            // Mothula's beam, flashes, sparkles.
+            0x02, 0x07, 0x12 => add.world(kTinySpark, gx + 4, gy + 4, seed, 1),
+            // The trail a bolt leaves down the room, fading as it goes.
+            0x09 => add.world(kBoltTrail, gx + 8, gy + 8, seed, boltAmount() * @as(f32, @floatFromInt(vars.garnish_countdown[k])) / 32.0),
             else => {},
         }
     }
@@ -978,6 +1012,10 @@ const kEye = Source{ .r = 22, .c = .{ 1.0, 0.3, 0.25 }, .strength = 1.1, .burn =
 /// Lava breathes: a slow swell and ebb, never guttering like a flame.
 pub const kLavaBurn = Burn{ .waver = 0.12, .speed = 0.035, .gutter = 0, .gutter_odds = 0, .sway = 0 };
 const kLava = Source{ .r = 64, .c = .{ 1.0, 0.42, 0.16 }, .strength = 1.15, .burn = kLavaBurn };
+const kBolt = Source{ .r = 84, .c = .{ 0.72, 0.84, 1.0 }, .strength = 2.0, .burn = kSparkBurn, .glow_r = 11, .glow = 0.5 };
+/// A bolt's trail lights the floor but has no glow of its own: there are a
+/// dozen and more of it at once, and their glows would pile up into white.
+const kBoltTrail = Source{ .r = 56, .c = .{ 0.72, 0.84, 1.0 }, .strength = 1.6, .burn = kSparkBurn };
 const kOutdoorWarp = Source{ .r = 40, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 10, .glow = 0.3 };
 const kPortal = Source{ .r = 36, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 9, .glow = 0.4 };
 const kWarp = Source{ .r = 44, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 9, .glow = 0.35 };
@@ -1107,6 +1145,9 @@ pub const Spot = struct {
     color: [3]f32 = .{ 1, 1, 1 },
     /// How much of a stretch of lava there is, 0 to 1.
     amount: f32 = 1,
+    /// Frames in a row it's failed to look like it's burning since it last
+    /// did (see refreshSpots).
+    misses: u8 = 0,
 };
 
 /// The room's fixed fires, as last checked against the frame: what
@@ -1205,6 +1246,9 @@ fn refreshSpots(frame: Frame, left: i32) void {
     const n = candidateSpots(&found);
     const cam_x: i32 = vars.BG2HOFS_copy2.*;
     const cam_y: i32 = vars.BG2VOFS_copy2.*;
+    var prev: [48]Spot = undefined;
+    const nprev = g_nspots;
+    @memcpy(prev[0..nprev], g_spots[0..nprev]);
     g_nspots = 0;
     for (found[0..n]) |spot| {
         const r: i32 = if (spot.kind == .candle) 4 else 6;
@@ -1213,11 +1257,31 @@ fn refreshSpots(frame: Frame, left: i32) void {
             // Outdoors the scan has already checked the ground's warp.
             if (vars.player_is_indoors.* != 0 and !isWarp(spot.x, spot.y)) continue;
             keep.color = frame.colorAt(spot.x - cam_x + left, spot.y - cam_y, 6) orelse continue;
-        } else if (!frame.burnsAt(spot.x - cam_x + left, spot.y - cam_y, r)) continue;
+        } else if (!frame.burnsAt(spot.x - cam_x + left, spot.y - cam_y, r)) {
+            // A fire seen burning a moment ago, its tiles still a lit
+            // torch's: kept through a few frames that don't look it, while
+            // the game flashes the room white for lightning, say, and every
+            // flame on the screen goes pale with it.
+            const was = findSpot(prev[0..nprev], spot) orelse continue;
+            if (was.misses >= kSpotMisses) continue;
+            keep.misses = was.misses + 1;
+        }
+        if (g_nspots == g_spots.len) break;
         g_spots[g_nspots] = keep;
         g_nspots += 1;
     }
     if (vars.player_is_indoors.* != 0) findLava(frame, left, cam_x, cam_y);
+}
+
+/// How many frames in a row a fire that was burning may fail to look it
+/// and still be kept.
+const kSpotMisses = 40;
+
+fn findSpot(spots: []const Spot, want: Spot) ?Spot {
+    for (spots) |s| {
+        if (s.x == want.x and s.y == want.y and s.kind == want.kind) return s;
+    }
+    return null;
 }
 
 /// The size of the squares lava's looked for in, pinned to the room so they
