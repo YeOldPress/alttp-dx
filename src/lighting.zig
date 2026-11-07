@@ -267,6 +267,7 @@ fn noteRoomFires() void {
         g_room_has_fire = false;
     }
     for (g_spots[0..g_nspots]) |spot| {
+        // Lava counts: it's what lights the room.
         if (spot.kind != .warp) g_room_has_fire = true;
     }
 }
@@ -750,6 +751,7 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
         switch (spot.kind) {
             .candle => add.world(kCandle, spot.x, spot.y, seed, 1),
             .warp => add.worldColored(kWarp, spot.x, spot.y, seed, spot.color),
+            .lava => add.world(kLava, spot.x, spot.y, seed, spot.amount),
             else => add.world(kTorch, spot.x, spot.y, seed, 1),
         }
     }
@@ -973,6 +975,9 @@ const kCrystal = Source{ .r = 34, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kL
 const kBlast = Source{ .r = 84, .c = .{ 1.0, 0.85, 0.6 }, .strength = 1.7, .burn = kFireBurn, .glow_r = 14, .glow = 0.8 };
 const kBigBlast = Source{ .r = 130, .c = .{ 1.0, 0.85, 0.6 }, .strength = 1.8, .burn = kFireBurn, .glow_r = 20, .glow = 0.9 };
 const kEye = Source{ .r = 22, .c = .{ 1.0, 0.3, 0.25 }, .strength = 1.1, .burn = kLanternBurn, .glow_r = 3, .glow = 0.6 };
+/// Lava breathes: a slow swell and ebb, never guttering like a flame.
+pub const kLavaBurn = Burn{ .waver = 0.12, .speed = 0.035, .gutter = 0, .gutter_odds = 0, .sway = 0 };
+const kLava = Source{ .r = 64, .c = .{ 1.0, 0.42, 0.16 }, .strength = 1.15, .burn = kLavaBurn };
 const kOutdoorWarp = Source{ .r = 40, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 10, .glow = 0.3 };
 const kPortal = Source{ .r = 36, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 9, .glow = 0.4 };
 const kWarp = Source{ .r = 44, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 9, .glow = 0.35 };
@@ -1097,9 +1102,11 @@ pub fn findLitTorches(map: [*]align(1) const u16, out: []u16) usize {
 pub const Spot = struct {
     x: i32,
     y: i32,
-    kind: enum { torch, brazier, candle, warp },
+    kind: enum { torch, brazier, candle, warp, lava },
     /// A warp tile's light, the color of the tile as drawn.
     color: [3]f32 = .{ 1, 1, 1 },
+    /// How much of a stretch of lava there is, 0 to 1.
+    amount: f32 = 1,
 };
 
 /// The room's fixed fires, as last checked against the frame: what
@@ -1122,6 +1129,13 @@ const Frame = struct {
     pitch: usize,
     width: usize,
     height: usize,
+
+    /// The pixel at (x, y), if it's on the frame.
+    fn at(self: Frame, x: i32, y: i32) ?u32 {
+        if (x < 0 or y < 0 or x >= self.width or y >= self.height) return null;
+        const row: [*]align(1) const u32 = @ptrCast(self.pixels + @as(usize, @intCast(y)) * self.pitch);
+        return row[@intCast(x)];
+    }
 
     /// The average color within `r` pixels of (x, y) on the frame, its
     /// brightest channel at 1. Null if that's mostly off the frame, or black.
@@ -1203,6 +1217,67 @@ fn refreshSpots(frame: Frame, left: i32) void {
         g_spots[g_nspots] = keep;
         g_nspots += 1;
     }
+    if (vars.player_is_indoors.* != 0) findLava(frame, left, cam_x, cam_y);
+}
+
+/// The size of the squares lava's looked for in, pinned to the room so they
+/// don't slide about as the camera moves.
+const kLavaCell = 64;
+
+/// Lava on the frame just drawn: the floor that's a pit (Turtle Rock's lava
+/// is, to the game) and lava colored, bright reds and oranges with next to
+/// no blue. In each square of the room on the screen with enough of it, a
+/// light where its lava is, as much as there is of it.
+fn findLava(frame: Frame, left: i32, cam_x: i32, cam_y: i32) void {
+    const x_lo = @divFloor(cam_x - left, kLavaCell);
+    const x_hi = @divFloor(cam_x - left + @as(i32, @intCast(frame.width)) - 1, kLavaCell);
+    const y_lo = @divFloor(cam_y, kLavaCell);
+    const y_hi = @divFloor(cam_y + @as(i32, @intCast(frame.height)) - 1, kLavaCell);
+    var cy = y_lo;
+    while (cy <= y_hi) : (cy += 1) {
+        var cx = x_lo;
+        while (cx <= x_hi) : (cx += 1) {
+            var count: i32 = 0;
+            var sum_x: i32 = 0;
+            var sum_y: i32 = 0;
+            var sy: i32 = 4;
+            while (sy < kLavaCell) : (sy += 8) {
+                var sx: i32 = 4;
+                while (sx < kLavaCell) : (sx += 8) {
+                    const wx = cx * kLavaCell + sx;
+                    const wy = cy * kLavaCell + sy;
+                    const px = frame.at(wx - cam_x + left, wy - cam_y) orelse continue;
+                    if (!looksLikeLava(px)) continue;
+                    const t: usize = @intCast((@mod(wy, 512) >> 3) * 64 + (@mod(wx, 512) >> 3));
+                    if (vars.dung_bg2_attr_table[t] != kPitAttr and vars.dung_bg1_attr_table[t] != kPitAttr) continue;
+                    count += 1;
+                    sum_x += wx;
+                    sum_y += wy;
+                }
+            }
+            // A few pixels' worth is a sprite's red or a sliver at the
+            // edge, not a stretch of lava.
+            if (count < 6 or g_nspots == g_spots.len) continue;
+            g_spots[g_nspots] = .{
+                .x = @divTrunc(sum_x, count),
+                .y = @divTrunc(sum_y, count),
+                .kind = .lava,
+                .amount = @min(1.0, @as(f32, @floatFromInt(count)) / 40.0),
+            };
+            g_nspots += 1;
+        }
+    }
+}
+
+/// The attribute of floor Link falls through, which Turtle Rock's lava is.
+const kPitAttr = 0x20;
+
+/// A pixel lava might be: bright to dark red or orange, and next to no blue.
+pub fn looksLikeLava(px: u32) bool {
+    const r = (px >> 16) & 0xff;
+    const g = (px >> 8) & 0xff;
+    const b = px & 0xff;
+    return r >= 0x90 and g + 0x60 <= r and b <= 0x30;
 }
 
 /// The room's fixed fires, the lit torches, braziers and sconces' candles,
@@ -1656,4 +1731,14 @@ test "too many lights keeps the ones that matter most" {
     var few = [_]Light{ .{ .x = 0, .y = 0, .radius = 5, .color = .{ 1, 1, 1 } }, .{ .x = 0, .y = 0, .radius = 50, .color = .{ 1, 1, 1 } } };
     try testing.expectEqual(@as(usize, 2), keepBrightest(&few, 3));
     try testing.expectEqual(@as(f32, 5), few[0].radius);
+}
+
+test "lava is bright to dark red or orange with no blue, and not a flame's yellow" {
+    try testing.expect(looksLikeLava(0xe72121));
+    try testing.expect(looksLikeLava(0xff7b21));
+    try testing.expect(looksLikeLava(0x941818));
+    try testing.expect(!looksLikeLava(0xffd060)); // a flame's yellow
+    try testing.expect(!looksLikeLava(0xc6c6a5)); // stone
+    try testing.expect(!looksLikeLava(0x701010)); // too dark
+    try testing.expect(!looksLikeLava(0xe02080)); // pink
 }

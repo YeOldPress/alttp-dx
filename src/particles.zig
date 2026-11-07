@@ -317,8 +317,12 @@ fn emit() void {
             .torch, .brazier => 0.1,
             .candle => 0.04,
             .warp => 0,
+            .lava => 0,
         };
         if (rand() < rate) ember(@floatFromInt(s.x), @floatFromInt(s.y - 4), 3);
+        // Lava spits an ember now and then from anywhere across its stretch.
+        if (s.kind == .lava and rand() < 0.05 * s.amount)
+            ember(@as(f32, @floatFromInt(s.x)) + range(-24, 24), @as(f32, @floatFromInt(s.y)) + range(-20, 20), 2);
     }
 
     for (0..10) |k| {
