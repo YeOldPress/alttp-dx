@@ -100,6 +100,31 @@ pub const GpuFrame = struct {
 };
 pub const kMaxGpuLights = 48;
 
+/// How many lights a frame gathers before the ones that matter least are
+/// let go: a room full of laser eyes firing can make more than the shaders
+/// take.
+const kMaxGathered = 128;
+
+/// How much a light matters, to choose which to keep when there are too
+/// many: how bright, how far it reaches, and its glow.
+fn lightWeight(l: Light) f32 {
+    const bright = @max(l.color[0], @max(l.color[1], l.color[2]));
+    return bright * l.radius + l.glow * l.glow_radius;
+}
+
+/// Puts the `limit` lights that matter most first, if there are more than
+/// that, and says how many to use. In the order they came otherwise, so a
+/// room under the limit lights the same as ever.
+pub fn keepBrightest(lights: []Light, limit: usize) usize {
+    if (lights.len <= limit) return lights.len;
+    std.sort.pdq(Light, lights, {}, struct {
+        fn more(_: void, a: Light, b: Light) bool {
+            return lightWeight(a) > lightWeight(b);
+        }
+    }.more);
+    return limit;
+}
+
 var g_gpu_frame: GpuFrame = undefined;
 var g_gpu_pending = false;
 var g_gpu_mask: [kMaxHeight * kMaxWidth]u32 = undefined;
@@ -308,12 +333,13 @@ pub fn endFrame(ppu: *Ppu, pixels: [*]u8, pitch: usize, height: usize) void {
     } else {
         g_mood_ambient = 1;
     }
-    var lights: [64]Light = undefined;
-    const n = switch (g_mode) {
+    var lights: [kMaxGathered]Light = undefined;
+    const gathered = switch (g_mode) {
         .plain => 0,
         .storm => stormLights(ppu, &lights),
         else => gatherLights(ppu, &lights),
     };
+    const n = keepBrightest(lights[0..gathered], kMaxGpuLights);
     const dark: [3]u8 = if (g_mode == .dark) darkness(ppu) else .{ 0, 0, 0 };
     const amb: f32 = switch (g_mode) {
         .mood => g_mood_ambient,
@@ -1504,4 +1530,18 @@ test "the dimming eases toward where it's going and stops there" {
     try testing.expectApproxEqAbs(@as(f32, 0.8), easeToward(0.805, 0.8, 0.01), 0.0001);
     try testing.expectApproxEqAbs(@as(f32, 0.81), easeToward(0.8, 1, 0.01), 0.0001);
     try testing.expectApproxEqAbs(@as(f32, 1), easeToward(1, 1, 0.01), 0.0001);
+}
+
+test "too many lights keeps the ones that matter most" {
+    var lights: [6]Light = undefined;
+    const radii = [_]f32{ 10, 80, 20, 60, 5, 40 };
+    for (&lights, radii) |*l, r| l.* = .{ .x = 0, .y = 0, .radius = r, .color = .{ 1, 1, 1 } };
+    try testing.expectEqual(@as(usize, 3), keepBrightest(&lights, 3));
+    try testing.expectEqual(@as(f32, 80), lights[0].radius);
+    try testing.expectEqual(@as(f32, 60), lights[1].radius);
+    try testing.expectEqual(@as(f32, 40), lights[2].radius);
+    // Under the limit, nothing moves.
+    var few = [_]Light{ .{ .x = 0, .y = 0, .radius = 5, .color = .{ 1, 1, 1 } }, .{ .x = 0, .y = 0, .radius = 50, .color = .{ 1, 1, 1 } } };
+    try testing.expectEqual(@as(usize, 2), keepBrightest(&few, 3));
+    try testing.expectEqual(@as(f32, 5), few[0].radius);
 }
