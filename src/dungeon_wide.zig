@@ -20,6 +20,7 @@
 const std = @import("std");
 const vars = @import("variables.zig");
 const overworld = @import("overworld.zig");
+const rtl = @import("zelda_rtl.zig");
 const snes_pkg = @import("snes");
 const Ppu = snes_pkg.ppu_types.Ppu;
 const ppu_mod = snes_pkg.ppu;
@@ -265,11 +266,66 @@ fn roomRight() i32 {
 /// Which sides of the room on screen are one flat color, to carry on into
 /// the margins.
 pub fn plainSides(ppu: *const Ppu) Sides {
-    if (!enabled() or !inRoom() or !layerIsOneTile(ppu, 0)) return .{};
+    if (!enabled()) return .{};
+    if (verticalScroll()) return scrollPlainSides(ppu);
+    if (!inRoom() or !layerIsOneTile(ppu, 0)) return .{};
     return .{
         .left = columnIsPlain(ppu, roomLeft()),
         .right = columnIsPlain(ppu, roomRight() - 8),
     };
+}
+
+/// The plain sides of the room being left as a scroll up or down started,
+/// and where its edges were. Two caves one above the other, say, both a
+/// screen wide with the same flat ground past their walls: the margins keep
+/// that ground all the way through the scroll instead of going black for
+/// it, as long as the room being entered has its edges in the same places
+/// and its own edge columns plain too.
+var g_scroll_plain: Sides = .{};
+var g_scroll_edges: struct { left: i32 = 0, right: i32 = 0 } = .{};
+
+/// A scroll up or down under way, between rooms or between the halves of a
+/// tall one.
+fn verticalScroll() bool {
+    if (vars.main_module_index.* != 7) return false;
+    if (vars.submodule_index.* != 1 and vars.submodule_index.* != 2) return false;
+    const s = g_start orelse return false;
+    return s.dir < 2;
+}
+
+fn scrollPlainSides(ppu: *const Ppu) Sides {
+    var sides = g_scroll_plain;
+    if (!sides.left and !sides.right) return .{};
+    if (!layerIsOneTile(ppu, 0)) return .{};
+    // The bounds are the room being entered's from the start of the scroll.
+    if (roomLeft() != g_scroll_edges.left) sides.left = false;
+    if (roomRight() != g_scroll_edges.right) sides.right = false;
+    // Once the next room's drawn from its buffers, its edge columns have to
+    // be as plain as the room's being left, the same tile all down the part
+    // of it the camera can show.
+    if (transitionLayers() != 0) {
+        const so = g_shown orelse return .{};
+        const po = g_prev orelse return .{};
+        if (sides.left and !sameColumnTile(so, po, roomLeft())) sides.left = false;
+        if (sides.right and !sameColumnTile(so, po, roomRight() - 8)) sides.right = false;
+    }
+    return sides;
+}
+
+/// Whether the room at `so` (in the room buffers) has the room at `po`'s
+/// edge tile (as kept when it was left, at the row the camera started on)
+/// all down its column at `wx`, over the rows its camera bounds can show.
+fn sameColumnTile(so: Origin, po: Origin, wx: i32) bool {
+    const s = g_start orelse return false;
+    const want = g_prev_bg2[tileIn(po, wx, s.cam_y) orelse return false];
+    const qy: usize = vars.quadrant_fullsize_y.* >> 1;
+    var y: i32 = vars.room_bounds_y.v[qy];
+    const bottom: i32 = @as(i32, vars.room_bounds_y.v[qy + 2]) + 224;
+    while (y < bottom) : (y += 8) {
+        const i = tileIn(so, wx, y) orelse continue;
+        if (vars.dung_bg2[i] != want) return false;
+    }
+    return true;
 }
 
 /// Whether layer 2's column at x, in the scroll's coordinates, is one tile
@@ -325,7 +381,7 @@ fn layerIsOneTile(ppu: *const Ppu, layer: u32) bool {
 pub fn sourceLayers(ppu: *const Ppu) u8 {
     if (!enabled()) return 0;
     g_plain = plainSides(ppu);
-    if (g_plain.left or g_plain.right) return 0b10;
+    if (g_plain.left or g_plain.right) return 0b10 | transitionLayers();
     return transitionLayers();
 }
 
@@ -357,13 +413,25 @@ pub fn tileSource(ppu: *const Ppu, layer: u32, x: u32, y: u32) ?u16 {
     const wy = full_y + @as(i32, @as(i16, @bitCast(@as(u16, @truncate(y -% bg.vScroll)))));
     if (layer == 1 and (g_plain.left or g_plain.right)) {
         // Past a plain side, that side's edge column; anything else, VRAM.
-        const from: i32 = if (wx < roomLeft() and g_plain.left)
+        const from: ?i32 = if (wx < roomLeft() and g_plain.left)
             roomLeft()
         else if (wx >= roomRight() and g_plain.right)
             roomRight() - 8
         else
+            null;
+        if (from) |fx| {
+            if (transitionLayers() == 0)
+                return ppu_mod.bgTilemapWord(ppu, 1, x +% @as(u32, @bitCast(fx - wx)), y);
+            // Mid-scroll: the edge of whichever room this row's in.
+            if (g_shown) |so| {
+                if (tileIn(so, fx, wy)) |i| return vars.dung_bg2[i];
+            }
+            if (prevOrigin()) |po| {
+                if (tileIn(po, fx, wy)) |i| return g_prev_bg2[i];
+            }
             return null;
-        return ppu_mod.bgTilemapWord(ppu, 1, x +% @as(u32, @bitCast(from - wx)), y);
+        }
+        if (transitionLayers() == 0) return null;
     }
     if (g_shown) |so| {
         if (tileIn(so, wx, wy)) |i|
@@ -401,6 +469,9 @@ pub fn noteTransitionStart(dir: u8) void {
     const qm: usize = vars.quadrant_fullsize_x.* >> 1;
     const cam: i32 = vars.BG2HOFS_copy2.*;
     const dark = vars.hdr_dungeon_dark_with_lantern.* != 0 and vars.TS_copy.* != 0;
+    // The bounds are still this room's here, and VRAM holds it.
+    g_scroll_plain = if (dir < 2 and !dark) plainSides(rtl.zenvPpu()) else .{};
+    g_scroll_edges = .{ .left = roomLeft(), .right = roomRight() };
     g_start = .{
         .dir = dir,
         .cam_x = cam,
