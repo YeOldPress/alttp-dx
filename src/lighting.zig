@@ -33,6 +33,7 @@ const Ppu = snes_pkg.ppu_types.Ppu;
 const ppu_mod = snes_pkg.ppu;
 const particles = @import("particles.zig");
 const sprite_tables = @import("sprite_main_tables.zig");
+const dungeon_wide = @import("dungeon_wide.zig");
 
 const kMaxWidth = 256 + 2 * snes_pkg.ppu_types.kPpuExtraLeftRight;
 const kMaxHeight = 240;
@@ -138,7 +139,9 @@ const kSparkColor = [3]f32{ 0.75, 0.85, 1.0 };
 /// all (outdoors, or dynamic lighting off). `plain` is not at all, but with
 /// particles to draw, which want the HUD told apart from the scene. `storm`
 /// is outdoors in the rain: lightning, and Link's lantern in the dark.
-pub const Mode = enum { off, dark, mood, plain, storm };
+/// `glow` is outdoors otherwise, with something there that glows, a warp
+/// pad or the mirror's portal: their glow, and the day left as it is.
+pub const Mode = enum { off, dark, mood, plain, storm, glow };
 
 /// It's raining outside, by the game's own rule (OverworldOverlay_HandleRain):
 /// all over Hyrule until Zelda's rescued, and over the swamp in the Dark
@@ -279,7 +282,11 @@ fn roomMode() Mode {
     // room's fires checked for their embers.
     const plain: Mode = if (particles.enabled() and (particles.count() != 0 or vars.player_is_indoors.* != 0)) .plain else .off;
     if (!config.g_config.dynamic_lighting) return plain;
-    if (vars.player_is_indoors.* == 0) return if (raining()) .storm else plain;
+    if (vars.player_is_indoors.* == 0) {
+        if (raining()) return .storm;
+        if (outdoorGlows()) return .glow;
+        return plain;
+    }
     // The game's own darkness rules, as the widescreen margins read them in
     // zelda_rtl.zig.
     if (vars.hdr_dungeon_dark_with_lantern.* != 0 or vars.dung_want_lights_out.* != 0) return .dark;
@@ -337,6 +344,7 @@ pub fn endFrame(ppu: *Ppu, pixels: [*]u8, pitch: usize, height: usize) void {
     const gathered = switch (g_mode) {
         .plain => 0,
         .storm => stormLights(ppu, &lights),
+        .glow => glowLights(ppu, &lights),
         else => gatherLights(ppu, &lights),
     };
     const n = keepBrightest(lights[0..gathered], kMaxGpuLights);
@@ -387,6 +395,106 @@ pub fn endFrame(ppu: *Ppu, pixels: [*]u8, pitch: usize, height: usize) void {
     };
     @memcpy(g_gpu_frame.lights[0..k], lights[0..k]);
     g_gpu_pending = true;
+}
+
+/// Outdoors out of the rain: the warp pads refreshSpots saw, glowing in
+/// their own color, and the portal the mirror leaves in the Light World,
+/// shimmering in whatever color it's cycling through.
+fn glowLights(ppu: *const Ppu, out: []Light) usize {
+    var add = Adder{
+        .out = out,
+        .n = 0,
+        .tick = g_tick,
+        .left = @floatFromInt(ppu.extraLeftRight),
+        .cam_x = vars.BG2HOFS_copy2.*,
+        .cam_y = vars.BG2VOFS_copy2.*,
+    };
+    for (g_spots[0..g_nspots]) |spot| {
+        if (spot.kind != .warp) continue;
+        const seed: u32 = 0x50000 +% (@as(u32, @bitCast(spot.x)) *% 73856093 ^ @as(u32, @bitCast(spot.y)) *% 19349663);
+        add.worldColored(kOutdoorWarp, spot.x, spot.y, seed, spot.color);
+    }
+    for (0..16) |k| {
+        if (!mirrorPortalShown(k)) continue;
+        const sx: i32 = @as(i32, vars.sprite_x_lo[k]) | @as(i32, vars.sprite_x_hi[k]) << 8;
+        const sy: i32 = @as(i32, vars.sprite_y_lo[k]) | @as(i32, vars.sprite_y_hi[k]) << 8;
+        add.worldColored(kPortal, sx + 8, sy + 8, @as(u32, @intCast(k)) + 0x20000, spriteHue(ppu, vars.sprite_oam_flags[k]));
+    }
+    return add.n;
+}
+
+/// Whether the mirror's portal in slot `k` is drawn (Sprite_6C_MirrorPortal):
+/// in the Light World, out of the way while Link's going through it.
+fn mirrorPortalShown(k: usize) bool {
+    return vars.sprite_state[k] != 0 and vars.sprite_type[k] == 0x6c and
+        vars.savegame_is_darkworld.* == 0 and
+        @as(u8, @truncate(vars.overworld_screen_index.*)) < 0x80 and
+        vars.submodule_index.* != 0x23 and vars.byte_7E0FC6.* < 3;
+}
+
+/// Outdoors, whether there's anything to glow: a warp pad on or near the
+/// screen, or the mirror's portal.
+fn outdoorGlows() bool {
+    const cam_x: i32 = vars.BG2HOFS_copy2.*;
+    const cam_y: i32 = vars.BG2VOFS_copy2.*;
+    const reach: i32 = snes_pkg.ppu_types.kPpuExtraLeftRight + 32;
+    for (0..16) |k| {
+        if (!mirrorPortalShown(k)) continue;
+        // The game keeps the portal where it was left, which may be well
+        // off the screen.
+        const sx: i32 = (@as(i32, vars.sprite_x_lo[k]) | @as(i32, vars.sprite_x_hi[k]) << 8) - cam_x;
+        const sy: i32 = (@as(i32, vars.sprite_y_lo[k]) | @as(i32, vars.sprite_y_hi[k]) << 8) - cam_y;
+        if (sx > -reach and sx < 256 + reach and sy > -48 and sy < 224 + 48) return true;
+    }
+    var spots: [4]Spot = undefined;
+    return findOutdoorWarps(&spots) != 0;
+}
+
+extern fn Overworld_GetTileAttributeAtLocation(x: u16, y: u16) u8;
+
+/// The overworld's warp pads on the screen or its margins, in world
+/// coordinates: ground the game warps Link on (the same attribute as a
+/// dungeon's warp tile), a 16 pixel square at a time, each pad's squares
+/// counted as one at their middle. Out in the world only, not the title or
+/// file select, which keep their own maps.
+fn findOutdoorWarps(out: []Spot) usize {
+    var module = vars.main_module_index.*;
+    if (module == 14) module = vars.saved_module_for_menu.*;
+    if (module != 9) return 0;
+    const sv = vars.ow_scroll_vars0.*;
+    const cam_x: i32 = vars.BG2HOFS_copy2.*;
+    const cam_y: i32 = vars.BG2VOFS_copy2.*;
+    const reach = snes_pkg.ppu_types.kPpuExtraLeftRight;
+    // The area's bounds: its camera range, and a screen past the far end.
+    const x0 = @max(cam_x - reach, @as(i32, sv.xstart)) & ~@as(i32, 15);
+    const x1 = @min(cam_x + 256 + reach, @as(i32, sv.xend) + 256);
+    const y0 = @max(cam_y, @as(i32, sv.ystart)) & ~@as(i32, 15);
+    const y1 = @min(cam_y + 224, @as(i32, sv.yend) + 224);
+    const warpAt = struct {
+        fn f(x: i32, y: i32) bool {
+            // It takes x in 8 pixel steps and y in pixels, as its callers
+            // in the game pass them.
+            const tx: u16 = @truncate(@as(u32, @bitCast(x + 4)) >> 3);
+            return Overworld_GetTileAttributeAtLocation(tx, @truncate(@as(u32, @bitCast(y + 4)))) == kWarpAttr;
+        }
+    }.f;
+    var n: usize = 0;
+    var y = y0;
+    while (y < y1) : (y += 16) {
+        var x = x0;
+        while (x < x1) : (x += 16) {
+            // A pad's top left square only.
+            if (!warpAt(x, y) or warpAt(x - 16, y) or warpAt(x, y - 16)) continue;
+            var w: i32 = 1;
+            while (w < 4 and warpAt(x + w * 16, y)) w += 1;
+            var h: i32 = 1;
+            while (h < 4 and warpAt(x, y + h * 16)) h += 1;
+            if (n == out.len) return n;
+            out[n] = .{ .x = x + w * 8, .y = y + h * 8, .kind = .warp };
+            n += 1;
+        }
+    }
+    return n;
 }
 
 /// How much of the night's light the storm leaves, for the lantern's pool to
@@ -599,9 +707,10 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
     const cam_y: i32 = vars.BG2VOFS_copy2.*;
     const tick = g_tick;
 
-    // The lantern, carried a little out in front of Link as the game's cone
-    // is.
-    if (g_mode == .dark and vars.link_item_torch.* != 0) {
+    // The light Link carries, a little out in front of him as the game's
+    // cone is. The game shows its cone in a dark room whether he's found the
+    // lantern or not (the lantern lights torches), so it's lit by the cone.
+    if (g_mode == .dark and dungeon_wide.coneUp()) {
         const dir = vars.link_direction_facing.* >> 1;
         const ahead = [4][2]f32{ .{ 0, -14 }, .{ 0, 14 }, .{ -14, 0 }, .{ 14, 0 } };
         const lx: f32 = @floatFromInt(@as(i32, vars.link_x_coord.*) - cam_x + 8);
@@ -864,6 +973,8 @@ const kCrystal = Source{ .r = 34, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kL
 const kBlast = Source{ .r = 84, .c = .{ 1.0, 0.85, 0.6 }, .strength = 1.7, .burn = kFireBurn, .glow_r = 14, .glow = 0.8 };
 const kBigBlast = Source{ .r = 130, .c = .{ 1.0, 0.85, 0.6 }, .strength = 1.8, .burn = kFireBurn, .glow_r = 20, .glow = 0.9 };
 const kEye = Source{ .r = 22, .c = .{ 1.0, 0.3, 0.25 }, .strength = 1.1, .burn = kLanternBurn, .glow_r = 3, .glow = 0.6 };
+const kOutdoorWarp = Source{ .r = 40, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 10, .glow = 0.3 };
+const kPortal = Source{ .r = 36, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 9, .glow = 0.4 };
 const kWarp = Source{ .r = 44, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 9, .glow = 0.35 };
 const kTreasure = Source{ .r = 44, .c = .{ 1.0, 0.9, 0.62 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 8, .glow = 0.3 };
 const kMilestone = Source{ .r = 76, .c = .{ 1.0, 0.96, 0.88 }, .strength = 1.4, .burn = kLanternBurn, .glow_r = 13, .glow = 0.6 };
@@ -1085,7 +1196,8 @@ fn refreshSpots(frame: Frame, left: i32) void {
         const r: i32 = if (spot.kind == .candle) 4 else 6;
         var keep = spot;
         if (spot.kind == .warp) {
-            if (!isWarp(spot.x, spot.y)) continue;
+            // Outdoors the scan has already checked the ground's warp.
+            if (vars.player_is_indoors.* != 0 and !isWarp(spot.x, spot.y)) continue;
             keep.color = frame.colorAt(spot.x - cam_x + left, spot.y - cam_y, 6) orelse continue;
         } else if (!frame.burnsAt(spot.x - cam_x + left, spot.y - cam_y, r)) continue;
         g_spots[g_nspots] = keep;
@@ -1097,7 +1209,7 @@ fn refreshSpots(frame: Frame, left: i32) void {
 /// and its warp tiles, as their tiles say, in world coordinates, up to `out.len` of them.
 /// Indoors only.
 fn candidateSpots(out: []Spot) usize {
-    if (vars.player_is_indoors.* == 0) return 0;
+    if (vars.player_is_indoors.* == 0) return findOutdoorWarps(out);
     const cam_x: i32 = vars.BG2HOFS_copy2.*;
     const cam_y: i32 = vars.BG2VOFS_copy2.*;
     const bg1_is_room = vars.hdr_dungeon_dark_with_lantern.* == 0;

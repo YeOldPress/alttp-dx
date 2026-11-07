@@ -166,6 +166,13 @@ fn inRoomPlay() bool {
 /// layer goes back to being the room's.
 var g_lantern_up = false;
 
+/// Whether the game has its light cone up on Link in a dark room, lantern
+/// or no lantern: the cone comes with the room, and the lantern only lets him
+/// light its torches.
+pub fn coneUp() bool {
+    return lanternLit();
+}
+
 /// Whether the lantern's light is drawn from here, so the margins can show
 /// a dark room the same as a lit one.
 pub fn drawsLanternLight() bool {
