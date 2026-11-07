@@ -770,6 +770,15 @@ const StateRecorder = struct {
 
 var state_recorder: StateRecorder = .{};
 
+/// Whether a recorded playthrough is being replayed (Ctrl and a chapter's
+/// key, or a quick-save slot's). It was played on the original's 4:3 screen
+/// with Select's own text box, so anything that would change how the game
+/// plays out (the widescreen camera, the Select menu) stands aside until it's
+/// done, or it drifts off the inputs it's following.
+pub fn replaying() bool {
+    return state_recorder.replay_mode;
+}
+
 fn StateRecorder_RecordCmd(sr: *StateRecorder, cmd: u8) void {
     const frames = sr.frames_since_last;
     sr.frames_since_last = 0;

@@ -249,7 +249,8 @@ pub fn isOpen() bool {
 /// update() for as long as the screen is up; false leaves Select to the
 /// game's own text box.
 pub fn openFromSelect() bool {
-    if (!enabled or !open(.game)) return false;
+    // A replay's Select was the original's text box.
+    if (!enabled or zelda_rtl.replaying() or !open(.game)) return false;
     g_page = 0;
     g_slide_y = -kSlideHeight;
     g_slide = .in;
