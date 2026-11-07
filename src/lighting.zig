@@ -128,9 +128,16 @@ pub fn raining() bool {
     return vars.save_ow_event_info[0x70] & 0x20 == 0;
 }
 
-/// The lightning's flash, 1 at a strike, fading to 0 over a few frames. The
-/// game lights the sky up itself at two points in its 256 frame cycle (the
-/// thunder comes between); this flashes with it.
+/// The lightning's flash, up to 1 at a strike, fading over a few frames.
+///
+/// The game flashes like clockwork, at the same three points in every 256
+/// frames (its frame counter going round), with the thunder at frame 36.
+/// With dynamic lighting on, that flash is kept off the screen (beginFrame)
+/// and the storm strikes on a schedule of its own instead: each time round,
+/// one strike a moment before the thunder, the gap different every time, as
+/// real thunder lags its lightning by however far off it struck; and now
+/// and then a fainter one somewhere in between, too far off to hear. Each
+/// strike flickers its own way, once, twice or three times.
 var g_flash: f32 = 0;
 var g_flash_frame: u8 = 0;
 
@@ -138,16 +145,65 @@ pub fn flash() f32 {
     return g_flash;
 }
 
-/// Each game frame: a strike, or the last one fading.
+/// The frame of the game's 256 that its thunder plays on.
+const kThunderFrame = 36;
+
+const Strike = struct { at: u8, power: f32 };
+var g_strikes: [3]Strike = undefined;
+var g_nstrikes: usize = 0;
+/// A strike's flickers still to come: frames to wait, and how bright.
+var g_pulses: [2]struct { wait: u8, power: f32 } = .{ .{ .wait = 0, .power = 0 }, .{ .wait = 0, .power = 0 } };
+var g_weather_rng = std.Random.DefaultPrng.init(0x7417_5701);
+
+fn weatherRand(lo: f32, hi: f32) f32 {
+    return lo + (hi - lo) * g_weather_rng.random().float(f32);
+}
+
+/// This time round's strikes.
+fn planStrikes() void {
+    g_nstrikes = 0;
+    const lead: u8 = @intFromFloat(weatherRand(6, 36));
+    g_strikes[0] = .{ .at = kThunderFrame - lead, .power = weatherRand(0.8, 1.0) };
+    g_nstrikes = 1;
+    const far: usize = @intFromFloat(weatherRand(0, 2.99));
+    for (0..far) |_| {
+        g_strikes[g_nstrikes] = .{ .at = @intFromFloat(weatherRand(60, 250)), .power = weatherRand(0.3, 0.6) };
+        g_nstrikes += 1;
+    }
+}
+
+fn strike(power: f32) void {
+    g_flash = @max(g_flash, power);
+    // One, two or three flickers.
+    const more: usize = @intFromFloat(weatherRand(0, 2.99));
+    for (&g_pulses, 0..) |*p, i| {
+        p.* = if (i < more)
+            .{ .wait = @intFromFloat(weatherRand(2, 4) + @as(f32, @floatFromInt(i)) * 3), .power = power * weatherRand(0.5, 0.95) }
+        else
+            .{ .wait = 0, .power = 0 };
+    }
+}
+
+/// Each game frame: a strike, a flicker, or the last one fading.
 pub fn stepWeather() void {
     const fc = vars.frame_counter.*;
     if (fc == g_flash_frame) return;
+    const wrapped = fc < g_flash_frame;
     g_flash_frame = fc;
-    if (raining() and (fc == 3 or fc == 88)) {
-        g_flash = 1;
-    } else {
-        g_flash *= 0.72;
-        if (g_flash < 0.02) g_flash = 0;
+    g_flash *= 0.72;
+    if (g_flash < 0.02) g_flash = 0;
+    if (!raining()) {
+        g_nstrikes = 0;
+        return;
+    }
+    if (wrapped or g_nstrikes == 0) planStrikes();
+    for (g_strikes[0..g_nstrikes]) |s| {
+        if (s.at == fc) strike(s.power);
+    }
+    for (&g_pulses) |*p| {
+        if (p.wait == 0) continue;
+        p.wait -= 1;
+        if (p.wait == 0) g_flash = @max(g_flash, p.power);
     }
 }
 
@@ -159,7 +215,9 @@ pub fn moodAmbient() f32 {
 }
 
 fn roomMode() Mode {
-    const plain: Mode = if (particles.enabled() and particles.count() != 0) .plain else .off;
+    // Particles want the HUD told apart from the scene, and indoors the
+    // room's fires checked for their embers.
+    const plain: Mode = if (particles.enabled() and (particles.count() != 0 or vars.player_is_indoors.* != 0)) .plain else .off;
     if (!config.g_config.dynamic_lighting) return plain;
     if (vars.player_is_indoors.* == 0) return if (raining()) .storm else plain;
     // The game's own darkness rules, as the widescreen margins read them in
@@ -170,11 +228,21 @@ fn roomMode() Mode {
 
 var g_mode: Mode = .off;
 
+/// The PPU's half-color math as the game set it, while a storm frame's
+/// drawn with the game's own flash kept off it.
+var g_saved_half_color: ?bool = null;
+
 /// Before the PPU draws a frame: in a dark room, hands it the mask to mark.
 /// Needs the whole-line renderer, the only one that knows about the mask.
-pub fn beginFrame(render_flags: u32, height: usize) void {
+pub fn beginFrame(ppu: *Ppu, render_flags: u32, height: usize) void {
     g_mode = if (render_flags & snes_pkg.ppu_types.kPpuRenderFlags_NewRenderer != 0) roomMode() else .off;
     g_active = g_mode != .off;
+    // The game's flash adds the rain layer on at full strength instead of
+    // half: drawn at half, the storm's own lightning does the flashing.
+    if (g_mode == .storm) {
+        g_saved_half_color = ppu.halfColor;
+        ppu.halfColor = true;
+    }
     if (!g_active) {
         ppu_mod.g_light_mask = null;
         return;
@@ -185,13 +253,16 @@ pub fn beginFrame(render_flags: u32, height: usize) void {
 
 /// After the PPU's drawn the frame into `pixels` (XRGB, `pitch` bytes a
 /// row): lays the light over the pixels it marked.
-pub fn endFrame(ppu: *const Ppu, pixels: [*]u8, pitch: usize, height: usize) void {
+pub fn endFrame(ppu: *Ppu, pixels: [*]u8, pitch: usize, height: usize) void {
     ppu_mod.g_light_mask = null;
+    if (g_saved_half_color) |h| ppu.halfColor = h;
+    g_saved_half_color = null;
     if (!g_active) return;
     g_active = false;
     const width: usize = 256 + 2 * @as(usize, ppu.extraLeftRight);
 
     g_tick +%= 1;
+    refreshSpots(.{ .pixels = pixels, .pitch = pitch, .width = width, .height = height }, ppu.extraLeftRight);
     var lights: [64]Light = undefined;
     const n = switch (g_mode) {
         .plain => 0,
@@ -201,6 +272,7 @@ pub fn endFrame(ppu: *const Ppu, pixels: [*]u8, pitch: usize, height: usize) voi
     const dark: [3]u8 = if (g_mode == .dark) darkness(ppu) else .{ 0, 0, 0 };
     const amb: f32 = switch (g_mode) {
         .mood => moodAmbient(),
+        .storm => kStormAmbient,
         else => 1,
     };
     if (!g_gpu) {
@@ -246,6 +318,10 @@ pub fn endFrame(ppu: *const Ppu, pixels: [*]u8, pitch: usize, height: usize) voi
     g_gpu_pending = true;
 }
 
+/// How much of the night's light the storm leaves, for the lantern's pool to
+/// stand out of.
+pub const kStormAmbient: f32 = 0.85;
+
 /// Outdoors in the storm: just Link's lantern, if he's got it, a warm pool
 /// that lifts the night around him.
 fn stormLights(ppu: *const Ppu, out: []Light) usize {
@@ -254,10 +330,10 @@ fn stormLights(ppu: *const Ppu, out: []Light) usize {
     out[0] = .{
         .x = @as(f32, @floatFromInt(ppu.extraLeftRight)) + @as(f32, @floatFromInt(@as(i32, vars.link_x_coord.*) - @as(i32, vars.BG2HOFS_copy2.*) + 8)) + f.dx,
         .y = @as(f32, @floatFromInt(@as(i32, vars.link_y_coord.*) - @as(i32, vars.BG2VOFS_copy2.*) + 12)) + f.dy,
-        .radius = 72 * f.reach,
-        .color = flameColor(kLantern, 2.3, f.level),
-        .glow_radius = 8 * f.reach,
-        .glow = 0.3 * f.level,
+        .radius = 84 * f.reach,
+        .color = flameColor(kLantern, 2.5, f.level),
+        .glow_radius = 13 * f.reach,
+        .glow = 0.4 * f.level,
     };
     return 1;
 }
@@ -285,8 +361,10 @@ fn flashCpu(pixels: [*]u8, pitch: usize, width: usize, height: usize, amount: f3
     }
 }
 
-/// How far the flash washes the scene toward white at its brightest.
-pub const kFlashStrength: f32 = 0.55;
+/// How far the flash washes the scene toward white at its brightest. The
+/// game's own flash is strong already, and over in two frames; this is
+/// mostly the afterglow, the cold light fading over the frames after.
+pub const kFlashStrength: f32 = 0.3;
 
 /// How much a room tile with this attribute stops light, 0 to 255: walls
 /// and anything else Link can't walk through, as the game's tile detection
@@ -467,54 +545,13 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
         n += 1;
     }
 
-    // The room's lit torches, found by their tiles in the room's map: the
-    // ones Link lights and the ones that are always lit are drawn alike.
-    // Layer 1 holds the lantern's cone, not the room, while it's up.
-    var torches: [24]u16 = undefined;
-    var nt = findLitTorches(vars.dung_bg2, &torches);
-    const bg1_is_room = vars.hdr_dungeon_dark_with_lantern.* == 0;
-    if (bg1_is_room) nt += findLitTorches(vars.dung_bg1, torches[nt..]);
-    // Braziers on stands (the Sanctuary's, the potion shop's): their flame
-    // is in the top half of their tiles.
-    const torch_count = nt;
-    nt += findTiles2x2(vars.dung_bg2, kBrazierTiles, kIgnorePriority, torches[nt..]);
-    if (bg1_is_room) nt += findTiles2x2(vars.dung_bg1, kBrazierTiles, kIgnorePriority, torches[nt..]);
-    for (torches[0..nt], 0..) |t, ti| {
-        if (n == out.len) break;
-        const tx: i32 = @intCast((t & 63) * 8 + 8);
-        const ty: i32 = @intCast((t >> 6) * 8 + if (ti < torch_count) @as(usize, 8) else 4);
-        const f = flame(tick, @as(u32, t) + 1, kTorchBurn);
-        out[n] = .{
-            .x = left + @as(f32, @floatFromInt(wrapToScreen(tx, cam_x))) + f.dx,
-            .y = @as(f32, @floatFromInt(wrapToScreen(ty, cam_y))) + f.dy,
-            .radius = 64.0 * f.reach,
-            .color = flameColor(kFlame, 1.3, f.level),
-            .glow_radius = 9.0 * f.reach,
-            .glow = 0.45 * f.level,
-        };
-        n += 1;
-    }
-
     var add = Adder{ .out = out, .n = n, .tick = tick, .left = left, .cam_x = cam_x, .cam_y = cam_y };
 
-    // Sconces on the walls, two candles to each.
-    for (kSconces) |sc| {
-        const tiles = SrcPtr(sc.src)[0 .. sc.w * sc.h];
-        var found: [16]u16 = undefined;
-        var nf = findBlock(vars.dung_bg2, tiles, sc.w, sc.h, sc.by_rows, kIgnorePriority, &found);
-        if (bg1_is_room) nf += findBlock(vars.dung_bg1, tiles, sc.w, sc.h, sc.by_rows, kIgnorePriority, found[nf..]);
-        for (found[0..nf]) |t| {
-            const lx: i32 = @intCast((t & 63) * 8);
-            const ly: i32 = @intCast((t >> 6) * 8);
-            const seed: u32 = 0x50000 + @as(u32, t) * 2;
-            if (sc.w > sc.h) {
-                add.tile(kCandle, lx + 10, ly + 8, seed, 1);
-                add.tile(kCandle, lx + 22, ly + 8, seed + 1, 1);
-            } else {
-                add.tile(kCandle, lx + 8, ly + 10, seed, 1);
-                add.tile(kCandle, lx + 8, ly + 22, seed + 1, 1);
-            }
-        }
+    // The room's fixed fires, the torches, braziers and sconces' candles, as
+    // refreshSpots found them and saw them burning on this frame.
+    for (g_spots[0..g_nspots]) |spot| {
+        const seed: u32 = 0x50000 +% (@as(u32, @bitCast(spot.x)) *% 73856093 ^ @as(u32, @bitCast(spot.y)) *% 19349663);
+        add.world(if (spot.kind == .candle) kCandle else kTorch, spot.x, spot.y, seed, 1);
     }
 
     // Link's things: fire, sparks, magic, explosions, spells.
@@ -635,6 +672,7 @@ const Source = struct {
     glow: f32 = 0,
 };
 
+const kTorch = Source{ .r = 64, .c = kFlame, .strength = 1.3, .burn = kTorchBurn, .glow_r = 9, .glow = 0.45 };
 const kCandle = Source{ .r = 48, .c = kFlame, .strength = 1.2, .burn = kTorchBurn, .glow_r = 6, .glow = 0.4 };
 const kFire = Source{ .r = 44, .c = kFlame, .strength = 1.3, .burn = kFireBurn, .glow_r = 8, .glow = 0.55 };
 const kSmallFire = Source{ .r = 30, .c = kFlame, .strength = 1.2, .burn = kFireBurn, .glow_r = 6, .glow = 0.5 };
@@ -749,9 +787,80 @@ pub fn findLitTorches(map: [*]align(1) const u16, out: []u16) usize {
 /// A fire that stays put in a room: where in the world, and what kind.
 pub const Spot = struct { x: i32, y: i32, kind: enum { torch, brazier, candle } };
 
-/// The room's fixed fires, the lit torches, braziers and sconces' candles,
-/// in world coordinates, up to `out.len` of them. Indoors only.
+/// The room's fixed fires, as last checked against the frame: what
+/// refreshSpots kept.
+var g_spots: [48]Spot = undefined;
+var g_nspots: usize = 0;
+
+/// The room's fixed fires that were burning on the last frame drawn, for
+/// the embers that rise off them.
 pub fn flameSpots(out: []Spot) usize {
+    const n = @min(out.len, g_nspots);
+    @memcpy(out[0..n], g_spots[0..n]);
+    return n;
+}
+
+/// The frame as the PPU drew it, before any light: to tell a fire from
+/// something drawn with the same tiles.
+const Frame = struct {
+    pixels: [*]const u8,
+    pitch: usize,
+    width: usize,
+    height: usize,
+
+    /// Whether there are flame colors, bright yellows and oranges, within
+    /// `r` pixels of (x, y) on the frame.
+    fn burnsAt(self: Frame, x: i32, y: i32, r: i32) bool {
+        var hits: u32 = 0;
+        var dy = -r;
+        while (dy <= r) : (dy += 1) {
+            var dx = -r;
+            while (dx <= r) : (dx += 1) {
+                const px = x + dx;
+                const py = y + dy;
+                if (px < 0 or py < 0 or px >= self.width or py >= self.height) continue;
+                const row: [*]align(1) const u32 = @ptrCast(self.pixels + @as(usize, @intCast(py)) * self.pitch);
+                if (looksLikeFlame(row[@intCast(px)])) hits += 1;
+                if (hits >= 2) return true;
+            }
+        }
+        return false;
+    }
+};
+
+/// A pixel a flame might be: bright, red over blue by a good way, and not
+/// washed out to white.
+pub fn looksLikeFlame(px: u32) bool {
+    const r = (px >> 16) & 0xff;
+    const g = (px >> 8) & 0xff;
+    const b = px & 0xff;
+    return r >= 0xc0 and g >= 0x60 and b <= 0xa0 and r >= b + 0x60;
+}
+
+/// Finds the room's fixed fires by their tiles and keeps the ones that are
+/// burning on the frame just drawn. The tiles alone aren't enough: a tile's
+/// number means a different picture in a different room's tile set (the
+/// castle's statues are made of a sconce's tiles), and between two rooms
+/// the next one's tiles arrive before the camera does. A fire off the frame
+/// can't be seen to burn, so it waits until it's on.
+fn refreshSpots(frame: Frame, left: i32) void {
+    var found: [48]Spot = undefined;
+    const n = candidateSpots(&found);
+    const cam_x: i32 = vars.BG2HOFS_copy2.*;
+    const cam_y: i32 = vars.BG2VOFS_copy2.*;
+    g_nspots = 0;
+    for (found[0..n]) |spot| {
+        const r: i32 = if (spot.kind == .candle) 4 else 6;
+        if (!frame.burnsAt(spot.x - cam_x + left, spot.y - cam_y, r)) continue;
+        g_spots[g_nspots] = spot;
+        g_nspots += 1;
+    }
+}
+
+/// The room's fixed fires, the lit torches, braziers and sconces' candles,
+/// as their tiles say, in world coordinates, up to `out.len` of them.
+/// Indoors only.
+fn candidateSpots(out: []Spot) usize {
     if (vars.player_is_indoors.* == 0) return 0;
     const cam_x: i32 = vars.BG2HOFS_copy2.*;
     const cam_y: i32 = vars.BG2VOFS_copy2.*;
@@ -768,7 +877,7 @@ pub fn flameSpots(out: []Spot) usize {
         for ([_][*]align(1) const u16{ vars.dung_bg2, vars.dung_bg1 }, 0..) |map, layer| {
             if (layer == 1 and !bg1_is_room) break;
             nt += if (brazier)
-                findTiles2x2(map, kBrazierTiles, kIgnorePriority, tiles[nt..])
+                findBraziers(map, tiles[nt..])
             else
                 findLitTorches(map, tiles[nt..]);
         }
@@ -831,9 +940,16 @@ pub fn findBlock(map: [*]align(1) const u16, tiles: []align(1) const u16, w: usi
     return n;
 }
 
-/// A brazier's four tiles: its bowl of fire on top, its stand below, the
-/// right half the left mirrored.
-pub const kBrazierTiles = [4]u16{ 0x0dc2, 0x0dc3, 0x4dc2, 0x4dc3 };
+/// A brazier's eight tiles, two across and four down, a row at a time: its
+/// bowl of fire on top, its stand below, the right half the left mirrored.
+/// All eight, since tile numbers mean different things in different rooms'
+/// tile sets, and the bowl's four alone turn up in the castle's statues.
+pub const kBrazierTiles = [8]u16{ 0x0dc2, 0x4dc2, 0x0dc3, 0x4dc3, 0x0d2c, 0x4d2c, 0x0d3c, 0x4d3c };
+
+/// Finds the room's braziers in a 64x64 tile map.
+pub fn findBraziers(map: [*]align(1) const u16, out: []u16) usize {
+    return findBlock(map, &kBrazierTiles, 2, 4, true, kIgnorePriority, out);
+}
 /// A tile's priority bit, which the same picture can have either way.
 pub const kIgnorePriority: u16 = 0x2000;
 
@@ -1037,16 +1153,18 @@ test "a room that isn't dark is dimmed by scaling, not by taking a fixed amount 
     try testing.expectEqual(@as(u32, 0x00402010), px[0]);
 }
 
-test "braziers are found whichever way their priority bit is set" {
+test "braziers are found whole, whichever way their priority bit is set, and not by their bowl alone" {
     var map: [64 * 64]u16 = @splat(0);
     const at = 10 * 64 + 20;
-    map[at] = kBrazierTiles[0] | 0x2000;
-    map[at + 64] = kBrazierTiles[1] | 0x2000;
-    map[at + 1] = kBrazierTiles[2] | 0x2000;
-    map[at + 65] = kBrazierTiles[3] | 0x2000;
+    for (0..4) |dy| for (0..2) |dx| {
+        map[at + dy * 64 + dx] = kBrazierTiles[dy * 2 + dx] | 0x2000;
+    };
     var found: [2]u16 = undefined;
-    try testing.expectEqual(@as(usize, 1), findTiles2x2(&map, kBrazierTiles, kIgnorePriority, &found));
-    try testing.expectEqual(@as(usize, 0), findTiles2x2(&map, kBrazierTiles, 0, &found));
+    try testing.expectEqual(@as(usize, 1), findBraziers(&map, &found));
+    try testing.expectEqual(@as(u16, at), found[0]);
+    // The bowl without its stand, as the castle's statues have it.
+    map[at + 2 * 64] = 0;
+    try testing.expectEqual(@as(usize, 0), findBraziers(&map, &found));
 }
 
 test "blocks are found laid out by rows or by columns" {
@@ -1091,4 +1209,26 @@ test "it rains until Zelda's rescued, and over the swamp until it's drained" {
     vars.save_ow_event_info[0x70] = 0;
     vars.player_is_indoors.* = 1;
     try testing.expect(!raining());
+}
+
+test "the storm strikes before the thunder, a different gap each time" {
+    var leads: [8]u8 = undefined;
+    for (&leads) |*l| {
+        planStrikes();
+        try testing.expect(g_strikes[0].at < kThunderFrame and g_strikes[0].at >= kThunderFrame - 36);
+        for (g_strikes[1..g_nstrikes]) |s| try testing.expect(s.at >= 60 and s.power < g_strikes[0].power);
+        l.* = g_strikes[0].at;
+    }
+    var all_same = true;
+    for (leads[1..]) |l| all_same = all_same and l == leads[0];
+    try testing.expect(!all_same);
+}
+
+test "flames are bright yellows and oranges, not white, gray or blue" {
+    try testing.expect(looksLikeFlame(0xfff060));
+    try testing.expect(looksLikeFlame(0xf08020));
+    try testing.expect(!looksLikeFlame(0xffffff));
+    try testing.expect(!looksLikeFlame(0xa0a0a8));
+    try testing.expect(!looksLikeFlame(0x4060f0));
+    try testing.expect(!looksLikeFlame(0x806040)); // brown, too dim
 }

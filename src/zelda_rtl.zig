@@ -518,7 +518,7 @@ pub export fn ZeldaDrawPpuFrame(pixel_buffer: [*]u8, pitch: usize, render_flags:
     ppu_mod.g_bg_tile_source = frameTileSource;
     defer ppu_mod.g_bg_tile_source_layers = 0;
 
-    lighting.beginFrame(render_flags, @intCast(height));
+    lighting.beginFrame(ppu, render_flags, @intCast(height));
     defer lighting.endFrame(ppu, pixel_buffer, pitch, @intCast(height));
 
     const spot_chan: ?*const SimpleHdma = if (ppu.extraLeftRight == 0)

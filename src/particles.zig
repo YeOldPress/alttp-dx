@@ -168,7 +168,7 @@ fn leaves(x: f32, y: f32, color: [3]f32) void {
     }
 }
 
-const kRain = [3]f32{ 0.72, 0.8, 0.92 };
+const kRain = [3]f32{ 0.76, 0.84, 0.96 };
 
 /// The rain: drops coming in above the view, all the way across it and its
 /// widescreen margins, falling at the slant the game's own rain falls at,
@@ -178,7 +178,7 @@ fn rain() void {
     const cam_x: f32 = @floatFromInt(vars.BG2HOFS_copy2.*);
     const cam_y: f32 = @floatFromInt(vars.BG2VOFS_copy2.*);
     for (0..kRainPerFrame) |_| {
-        const vy = range(4.2, 5.4);
+        const vy = range(5.0, 6.5);
         add(.{
             .x = cam_x + range(-margin, 256 + margin + 60),
             .y = cam_y - range(8, 40),
@@ -194,13 +194,13 @@ fn rain() void {
             .cool = kRain,
             .seed = 0,
             .glows = false,
-            .alpha = range(0.35, 0.55),
+            .alpha = range(0.42, 0.64),
             .crisp = true,
             .land = cam_y + range(8, 232),
         });
     }
 }
-const kRainPerFrame = 5;
+const kRainPerFrame = 6;
 
 /// A raindrop hitting the ground: a couple of tiny flecks hop up and drop.
 fn splashlet(x: f32, y: f32) void {
