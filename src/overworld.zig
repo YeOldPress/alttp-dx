@@ -1964,7 +1964,8 @@ fn wideScrollTarget(y: usize) u16 {
 }
 
 pub fn wideCameraOn() bool {
-    return config.g_widescreen_camera and config.g_config.extended_aspect_ratio != 0;
+    // A replay follows inputs played with the 4:3 camera.
+    return config.g_widescreen_camera and config.g_config.extended_aspect_ratio != 0 and !rtl.replaying();
 }
 
 /// Set while a sideways scroll transition runs with the widescreen camera: the

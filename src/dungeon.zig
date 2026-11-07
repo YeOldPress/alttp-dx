@@ -16,6 +16,7 @@ const main = @import("main.zig");
 const c = @import("dungeon_abi.zig");
 const overworld = @import("overworld.zig");
 const dungeon_wide = @import("dungeon_wide.zig");
+const particles = @import("particles.zig");
 const Words = [*]align(1) u16;
 const Tiles = [*]align(1) const u16;
 const RoomBounds = v.RoomBounds;
@@ -6956,6 +6957,8 @@ pub export fn Dungeon_ExtinguishTorch() callconv(.c) void { // 81f4a6
 
     r8 &= 0x3fff;
     c.RoomDraw_AdjustTorchLightingChange(r8, 0xec2, r8);
+    // Only what's drawn: smoke where it was.
+    particles.torchOut(r8 >> 1);
     v.nmi_copy_packets_flag.* = 1;
 
     if (v.dung_want_lights_out.* != 0 and v.dung_num_lit_torches.* != 0 and blk: {

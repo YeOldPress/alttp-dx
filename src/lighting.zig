@@ -214,6 +214,34 @@ fn strike(power: f32) void {
     }
 }
 
+/// Which sprite slots held a bolt of lightning last game frame, to catch a
+/// new one.
+var g_bolts: u16 = 0;
+
+/// How strong the cold wash is as a bolt comes down: softer than the storm's,
+/// since the game strobes the room on top of it.
+const kBoltFlash: f32 = 0.3;
+
+/// A bolt of Agahnim's or Vitreous's lightning just come down washes the
+/// room cold for a moment, as the storm's does outside.
+fn noteBolts() void {
+    var now: u16 = 0;
+    for (0..16) |k| {
+        if (vars.sprite_state[k] != 0 and vars.sprite_type[k] == 0xbf) now |= @as(u16, 1) << @intCast(k);
+    }
+    if (now & ~g_bolts != 0 and config.g_config.dynamic_lighting) g_flash = @max(g_flash, kBoltFlash);
+    g_bolts = now;
+}
+
+/// How much of each bolt's light there is: Agahnim brings four down at
+/// once, close together, which would be four times as bright, and while the
+/// game's flashing the room white for them there's less to add.
+fn boltAmount() f32 {
+    const n: f32 = @floatFromInt(@max(@popCount(g_bolts), 1));
+    const strobe: f32 = if (vars.intro_times_pal_flash.* != 0) 0.8 else 1.0;
+    return strobe / @sqrt(n);
+}
+
 /// Each game frame: a strike, a flicker, or the last one fading.
 pub fn stepWeather() void {
     const fc = vars.frame_counter.*;
@@ -222,6 +250,7 @@ pub fn stepWeather() void {
     g_flash_frame = fc;
     g_flash *= 0.72;
     if (g_flash < 0.02) g_flash = 0;
+    noteBolts();
     if (!raining()) {
         g_nstrikes = 0;
         return;
@@ -267,7 +296,8 @@ fn noteRoomFires() void {
         g_room_has_fire = false;
     }
     for (g_spots[0..g_nspots]) |spot| {
-        if (spot.kind != .warp) g_room_has_fire = true;
+        // Lava counts: it's what lights the room.
+        if (spot.kind != .warp and spot.kind != .waterfall) g_room_has_fire = true;
     }
 }
 
@@ -285,6 +315,8 @@ fn roomMode() Mode {
     if (vars.player_is_indoors.* == 0) {
         if (raining()) return .storm;
         if (outdoorGlows()) return .glow;
+        // A waterfall's mist wants the frame looked at.
+        if (particles.enabled() and outdoorWaterfallNear()) return .plain;
         return plain;
     }
     // The game's own darkness rules, as the widescreen margins read them in
@@ -330,6 +362,7 @@ pub fn endFrame(ppu: *Ppu, pixels: [*]u8, pitch: usize, height: usize) void {
 
     g_tick +%= 1;
     refreshSpots(.{ .pixels = pixels, .pitch = pitch, .width = width, .height = height }, ppu.extraLeftRight);
+    particles.iceGlints(pixels, pitch, width, height, &g_mask, kMaxWidth, ppu.extraLeftRight);
     if (g_mode == .mood) {
         noteRoomFires();
         const target: f32 = if (g_room_has_fire) moodAmbient() else 1;
@@ -495,6 +528,85 @@ fn findOutdoorWarps(out: []Spot) usize {
         }
     }
     return n;
+}
+
+/// Out in the world, the attribute of the face of falling water (the same
+/// as a cliff's), and of the deep water it falls into.
+const kFallAttr = 0x02;
+const kDeepWaterAttr = 0x08;
+
+fn overworldAttr(x: i32, y: i32) u8 {
+    // x in 8 pixel steps, y in pixels, as the game's callers pass them.
+    return Overworld_GetTileAttributeAtLocation(@truncate(@as(u32, @bitCast(x)) >> 3), @truncate(@as(u32, @bitCast(y))));
+}
+
+fn inOverworldPlay() bool {
+    var module = vars.main_module_index.*;
+    if (module == 14) module = vars.saved_module_for_menu.*;
+    return module == 9 or module == 11;
+}
+
+/// Whether there's any falling water's foot on the screen, by the tiles
+/// alone: a face of it right over deep water. A cliff that drops into water
+/// looks the same here, which only costs a look at the frame.
+fn outdoorWaterfallNear() bool {
+    if (!inOverworldPlay()) return false;
+    const cam_x: i32 = vars.BG2HOFS_copy2.*;
+    const cam_y: i32 = vars.BG2VOFS_copy2.*;
+    const reach: i32 = snes_pkg.ppu_types.kPpuExtraLeftRight;
+    var y = cam_y & ~@as(i32, 7);
+    while (y < cam_y + 224) : (y += 8) {
+        var x = (cam_x - reach) & ~@as(i32, 7);
+        while (x < cam_x + 256 + reach) : (x += 8) {
+            if (overworldAttr(x, y) == kFallAttr and overworldAttr(x, y + 8) == kDeepWaterAttr) return true;
+        }
+    }
+    return false;
+}
+
+/// The feet of the waterfalls on the frame just drawn, where the falling
+/// water meets the deep water under it: a face of it right over deep water,
+/// drawn in water's colors (not a cliff's browns). Along each, a spot every
+/// 24 pixels or so for its mist.
+fn findOutdoorWaterfalls(frame: Frame, left: i32, cam_x: i32, cam_y: i32) void {
+    if (!inOverworldPlay()) return;
+    var y = cam_y & ~@as(i32, 7);
+    while (y < cam_y + @as(i32, @intCast(frame.height))) : (y += 8) {
+        var run: i32 = 0;
+        var x = (cam_x - left) & ~@as(i32, 7);
+        const x_end = cam_x - left + @as(i32, @intCast(frame.width)) + 8;
+        while (x <= x_end) : (x += 8) {
+            const foot = x < x_end and overworldAttr(x, y) == kFallAttr and overworldAttr(x, y + 8) == kDeepWaterAttr and
+                fallingWaterAt(frame, x + 4 - cam_x + left, y + 4 - cam_y);
+            if (foot) {
+                run += 1;
+                continue;
+            }
+            if (run > 0) {
+                // The run ended at x: spots spread along it.
+                const start = x - run * 8;
+                const n: i32 = @max(1, @divTrunc(run + 1, 3));
+                var i: i32 = 0;
+                while (i < n) : (i += 1) {
+                    if (g_nspots == g_spots.len) return;
+                    g_spots[g_nspots] = .{ .x = start + @divTrunc((2 * i + 1) * run * 8, 2 * n), .y = y + 8, .kind = .waterfall };
+                    g_nspots += 1;
+                }
+                run = 0;
+            }
+        }
+    }
+}
+
+/// Whether the frame's falling water at (x, y): bright blues and the white
+/// of its foam, not a cliff's browns.
+fn fallingWaterAt(frame: Frame, x: i32, y: i32) bool {
+    const px = frame.at(x, y) orelse return false;
+    const r = (px >> 16) & 0xff;
+    const g = (px >> 8) & 0xff;
+    const b = px & 0xff;
+    const white = r >= 0xc8 and g >= 0xc8 and b >= 0xc8;
+    return white or (b >= 0x90 and b >= r + 0x30);
 }
 
 /// How much of the night's light the storm leaves, for the lantern's pool to
@@ -750,6 +862,9 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
         switch (spot.kind) {
             .candle => add.world(kCandle, spot.x, spot.y, seed, 1),
             .warp => add.worldColored(kWarp, spot.x, spot.y, seed, spot.color),
+            .lava => add.world(kLava, spot.x, spot.y, seed, spot.amount),
+            // A waterfall gives off mist (particles.zig), not light.
+            .waterfall => {},
             else => add.world(kTorch, spot.x, spot.y, seed, 1),
         }
     }
@@ -839,14 +954,17 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
                     add.world(kSmallFire, sx + 8 + @divTrunc(sin * n4, 4), sy + 8 + @divTrunc(cos * n4, 4), seed + @as(u32, @intCast(seg)) * 64, 1);
                 }
             },
-            // Sparks that run along the walls, Vitreous's lightning, Mothula's
-            // beam.
-            0x5b, 0x5c, 0xbf => add.world(kElectric, sx + 8, sy + 8, seed, 1),
+            // Sparks that run along the walls, Mothula's beam.
+            0x5b, 0x5c => add.world(kElectric, sx + 8, sy + 8, seed, 1),
+            // A bolt of Agahnim's or Vitreous's lightning: the room lit
+            // from it, hard and cold, the walls throwing their shadows away
+            // from where it strikes.
+            0xbf => add.world(kBolt, sx + 8, sy + 8, seed, boltAmount()),
             0x89 => add.world(kSpark, sx + 8, sy + 8, seed, 1),
             // Baris hum faintly.
             0x23, 0x24 => add.world(kBari, sx + 8, sy + 8, seed, 1),
-            // Agahnim's magic.
-            0x7b => add.world(kMagic, sx + 8, sy + 8, seed, 1.2),
+            // Agahnim's magic, in the colors it's drawn in.
+            0x7b => add.worldColored(kMagic, sx + 8, sy + 8, seed, spriteHue(ppu, vars.sprite_oam_flags[k])),
             // The bunny beam, once it's out: until then it waits unseen
             // inside a statue for Link to come by. (Outdoors the same sprite
             // is a chimney's smoke.)
@@ -937,8 +1055,10 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
             0x0c => add.world(kCold, gx + 4, gy + 4, seed, 1),
             // Lasers: the eyes', the Beamos', Blind's.
             0x04, 0x0f => add.world(kLaser, gx + 4, gy + 4, seed, 1),
-            // Mothula's beam, lightning, flashes, sparkles.
-            0x02, 0x07, 0x09, 0x12 => add.world(kTinySpark, gx + 4, gy + 4, seed, 1),
+            // Mothula's beam, flashes, sparkles.
+            0x02, 0x07, 0x12 => add.world(kTinySpark, gx + 4, gy + 4, seed, 1),
+            // The trail a bolt leaves down the room, fading as it goes.
+            0x09 => add.world(kBoltTrail, gx + 8, gy + 8, seed, boltAmount() * @as(f32, @floatFromInt(vars.garnish_countdown[k])) / 32.0),
             else => {},
         }
     }
@@ -973,6 +1093,13 @@ const kCrystal = Source{ .r = 34, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kL
 const kBlast = Source{ .r = 84, .c = .{ 1.0, 0.85, 0.6 }, .strength = 1.7, .burn = kFireBurn, .glow_r = 14, .glow = 0.8 };
 const kBigBlast = Source{ .r = 130, .c = .{ 1.0, 0.85, 0.6 }, .strength = 1.8, .burn = kFireBurn, .glow_r = 20, .glow = 0.9 };
 const kEye = Source{ .r = 22, .c = .{ 1.0, 0.3, 0.25 }, .strength = 1.1, .burn = kLanternBurn, .glow_r = 3, .glow = 0.6 };
+/// Lava breathes: a slow swell and ebb, never guttering like a flame.
+pub const kLavaBurn = Burn{ .waver = 0.12, .speed = 0.035, .gutter = 0, .gutter_odds = 0, .sway = 0 };
+const kLava = Source{ .r = 64, .c = .{ 1.0, 0.42, 0.16 }, .strength = 1.15, .burn = kLavaBurn };
+const kBolt = Source{ .r = 84, .c = .{ 0.72, 0.84, 1.0 }, .strength = 2.0, .burn = kSparkBurn, .glow_r = 11, .glow = 0.5 };
+/// A bolt's trail lights the floor but has no glow of its own: there are a
+/// dozen and more of it at once, and their glows would pile up into white.
+const kBoltTrail = Source{ .r = 56, .c = .{ 0.72, 0.84, 1.0 }, .strength = 1.6, .burn = kSparkBurn };
 const kOutdoorWarp = Source{ .r = 40, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 10, .glow = 0.3 };
 const kPortal = Source{ .r = 36, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 9, .glow = 0.4 };
 const kWarp = Source{ .r = 44, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 9, .glow = 0.35 };
@@ -1097,9 +1224,14 @@ pub fn findLitTorches(map: [*]align(1) const u16, out: []u16) usize {
 pub const Spot = struct {
     x: i32,
     y: i32,
-    kind: enum { torch, brazier, candle, warp },
+    kind: enum { torch, brazier, candle, warp, lava, waterfall },
     /// A warp tile's light, the color of the tile as drawn.
     color: [3]f32 = .{ 1, 1, 1 },
+    /// How much of a stretch of lava there is, 0 to 1.
+    amount: f32 = 1,
+    /// Frames in a row it's failed to look like it's burning since it last
+    /// did (see refreshSpots).
+    misses: u8 = 0,
 };
 
 /// The room's fixed fires, as last checked against the frame: what
@@ -1122,6 +1254,13 @@ const Frame = struct {
     pitch: usize,
     width: usize,
     height: usize,
+
+    /// The pixel at (x, y), if it's on the frame.
+    fn at(self: Frame, x: i32, y: i32) ?u32 {
+        if (x < 0 or y < 0 or x >= self.width or y >= self.height) return null;
+        const row: [*]align(1) const u32 = @ptrCast(self.pixels + @as(usize, @intCast(y)) * self.pitch);
+        return row[@intCast(x)];
+    }
 
     /// The average color within `r` pixels of (x, y) on the frame, its
     /// brightest channel at 1. Null if that's mostly off the frame, or black.
@@ -1191,18 +1330,104 @@ fn refreshSpots(frame: Frame, left: i32) void {
     const n = candidateSpots(&found);
     const cam_x: i32 = vars.BG2HOFS_copy2.*;
     const cam_y: i32 = vars.BG2VOFS_copy2.*;
+    var prev: [48]Spot = undefined;
+    const nprev = g_nspots;
+    @memcpy(prev[0..nprev], g_spots[0..nprev]);
     g_nspots = 0;
     for (found[0..n]) |spot| {
         const r: i32 = if (spot.kind == .candle) 4 else 6;
         var keep = spot;
-        if (spot.kind == .warp) {
+        if (spot.kind == .waterfall) {
+            // Its tiles are hard to mistake; nothing to check on the frame.
+        } else if (spot.kind == .warp) {
             // Outdoors the scan has already checked the ground's warp.
             if (vars.player_is_indoors.* != 0 and !isWarp(spot.x, spot.y)) continue;
             keep.color = frame.colorAt(spot.x - cam_x + left, spot.y - cam_y, 6) orelse continue;
-        } else if (!frame.burnsAt(spot.x - cam_x + left, spot.y - cam_y, r)) continue;
+        } else if (!frame.burnsAt(spot.x - cam_x + left, spot.y - cam_y, r)) {
+            // A fire seen burning a moment ago, its tiles still a lit
+            // torch's: kept through a few frames that don't look it, while
+            // the game flashes the room white for lightning, say, and every
+            // flame on the screen goes pale with it.
+            const was = findSpot(prev[0..nprev], spot) orelse continue;
+            if (was.misses >= kSpotMisses) continue;
+            keep.misses = was.misses + 1;
+        }
+        if (g_nspots == g_spots.len) break;
         g_spots[g_nspots] = keep;
         g_nspots += 1;
     }
+    if (vars.player_is_indoors.* != 0) findLava(frame, left, cam_x, cam_y) else findOutdoorWaterfalls(frame, left, cam_x, cam_y);
+}
+
+/// How many frames in a row a fire that was burning may fail to look it
+/// and still be kept.
+const kSpotMisses = 40;
+
+fn findSpot(spots: []const Spot, want: Spot) ?Spot {
+    for (spots) |s| {
+        if (s.x == want.x and s.y == want.y and s.kind == want.kind) return s;
+    }
+    return null;
+}
+
+/// The size of the squares lava's looked for in, pinned to the room so they
+/// don't slide about as the camera moves.
+const kLavaCell = 64;
+
+/// Lava on the frame just drawn: the floor that's a pit (Turtle Rock's lava
+/// is, to the game) and lava colored, bright reds and oranges with next to
+/// no blue. In each square of the room on the screen with enough of it, a
+/// light where its lava is, as much as there is of it.
+fn findLava(frame: Frame, left: i32, cam_x: i32, cam_y: i32) void {
+    const x_lo = @divFloor(cam_x - left, kLavaCell);
+    const x_hi = @divFloor(cam_x - left + @as(i32, @intCast(frame.width)) - 1, kLavaCell);
+    const y_lo = @divFloor(cam_y, kLavaCell);
+    const y_hi = @divFloor(cam_y + @as(i32, @intCast(frame.height)) - 1, kLavaCell);
+    var cy = y_lo;
+    while (cy <= y_hi) : (cy += 1) {
+        var cx = x_lo;
+        while (cx <= x_hi) : (cx += 1) {
+            var count: i32 = 0;
+            var sum_x: i32 = 0;
+            var sum_y: i32 = 0;
+            var sy: i32 = 4;
+            while (sy < kLavaCell) : (sy += 8) {
+                var sx: i32 = 4;
+                while (sx < kLavaCell) : (sx += 8) {
+                    const wx = cx * kLavaCell + sx;
+                    const wy = cy * kLavaCell + sy;
+                    const px = frame.at(wx - cam_x + left, wy - cam_y) orelse continue;
+                    if (!looksLikeLava(px)) continue;
+                    const t: usize = @intCast((@mod(wy, 512) >> 3) * 64 + (@mod(wx, 512) >> 3));
+                    if (vars.dung_bg2_attr_table[t] != kPitAttr and vars.dung_bg1_attr_table[t] != kPitAttr) continue;
+                    count += 1;
+                    sum_x += wx;
+                    sum_y += wy;
+                }
+            }
+            // A few pixels' worth is a sprite's red or a sliver at the
+            // edge, not a stretch of lava.
+            if (count < 6 or g_nspots == g_spots.len) continue;
+            g_spots[g_nspots] = .{
+                .x = @divTrunc(sum_x, count),
+                .y = @divTrunc(sum_y, count),
+                .kind = .lava,
+                .amount = @min(1.0, @as(f32, @floatFromInt(count)) / 40.0),
+            };
+            g_nspots += 1;
+        }
+    }
+}
+
+/// The attribute of floor Link falls through, which Turtle Rock's lava is.
+const kPitAttr = 0x20;
+
+/// A pixel lava might be: bright to dark red or orange, and next to no blue.
+pub fn looksLikeLava(px: u32) bool {
+    const r = (px >> 16) & 0xff;
+    const g = (px >> 8) & 0xff;
+    const b = px & 0xff;
+    return r >= 0x90 and g + 0x60 <= r and b <= 0x30;
 }
 
 /// The room's fixed fires, the lit torches, braziers and sconces' candles,
@@ -1246,6 +1471,20 @@ fn candidateSpots(out: []Spot) usize {
         out[n] = .{ .x = world(lx, cam_x), .y = world(ly, cam_y), .kind = .warp };
         n += 1;
     }
+    // Waterfalls pouring out of the walls' faces (Swamp Palace's), the mist
+    // at their feet.
+    for (kWaterfalls) |wf| {
+        const src = SrcPtr(wf.src)[0 .. 4 * wf.rows];
+        var nf = findBlock(vars.dung_bg2, src, 4, wf.rows, true, kIgnorePriority, &tiles);
+        if (bg1_is_room) nf += findBlock(vars.dung_bg1, src, 4, wf.rows, true, kIgnorePriority, tiles[nf..]);
+        for (tiles[0..nf]) |t| {
+            if (n == out.len) return n;
+            const lx: i32 = @intCast((t & 63) * 8 + 16);
+            const ly: i32 = @intCast(((t >> 6) + wf.rows) * 8 - 2);
+            out[n] = .{ .x = world(lx, cam_x), .y = world(ly, cam_y), .kind = .waterfall };
+            n += 1;
+        }
+    }
     for (kSconces) |sc| {
         const src = SrcPtr(sc.src)[0 .. sc.w * sc.h];
         var nf = findBlock(vars.dung_bg2, src, sc.w, sc.h, sc.by_rows, kIgnorePriority, &tiles);
@@ -1278,6 +1517,15 @@ fn isWarp(x: i32, y: i32) bool {
     const i: usize = @intCast((@mod(y - 4, 512) >> 3) * 64 + (@mod(x - 4, 512) >> 3));
     return vars.dung_bg2_attr_table[i] == kWarpAttr or vars.dung_bg1_attr_table[i] == kWarpAttr;
 }
+
+/// The faces in the wall that pour out a waterfall, as the room's object
+/// data draws them: four tiles across, a row at a time, the face and the
+/// water falling from it down to where it lands.
+const Waterfall = struct { src: u16, rows: usize };
+const kWaterfalls = [_]Waterfall{
+    .{ .src = 0x162c, .rows = 5 },
+    .{ .src = 0x1654, .rows = 7 },
+};
 
 /// The wall sconce objects, as the room's object data draws them: on a
 /// north or south wall four tiles across and two down, a row at a time; on a
@@ -1656,4 +1904,14 @@ test "too many lights keeps the ones that matter most" {
     var few = [_]Light{ .{ .x = 0, .y = 0, .radius = 5, .color = .{ 1, 1, 1 } }, .{ .x = 0, .y = 0, .radius = 50, .color = .{ 1, 1, 1 } } };
     try testing.expectEqual(@as(usize, 2), keepBrightest(&few, 3));
     try testing.expectEqual(@as(f32, 5), few[0].radius);
+}
+
+test "lava is bright to dark red or orange with no blue, and not a flame's yellow" {
+    try testing.expect(looksLikeLava(0xe72121));
+    try testing.expect(looksLikeLava(0xff7b21));
+    try testing.expect(looksLikeLava(0x941818));
+    try testing.expect(!looksLikeLava(0xffd060)); // a flame's yellow
+    try testing.expect(!looksLikeLava(0xc6c6a5)); // stone
+    try testing.expect(!looksLikeLava(0x701010)); // too dark
+    try testing.expect(!looksLikeLava(0xe02080)); // pink
 }

@@ -94,7 +94,36 @@ const kMaxRun = 12;
 
 fn currentArea() ?ForestArea {
     if (vars.player_is_indoors.* != 0) return null;
-    return areaFor(vars.overworld_screen_index.*, vars.dungeon_room_index.*);
+    if (areaFor(vars.overworld_screen_index.*, vars.dungeon_room_index.*)) |a| return a;
+    // Leaving one: the game swaps the exit Link came in by for the one he's
+    // leaving by as he starts out, with the area still on the screen until
+    // it's faded out. Two areas share a screen, so it's the one he was in.
+    if (g_left_area) |a| {
+        if (a.screen == vars.overworld_screen_index.* and leavingSpecialArea()) return a;
+    }
+    return null;
+}
+
+/// The forest area Link was last in, as of the last game frame.
+var g_left_area: ?ForestArea = null;
+
+fn leavingSpecialArea() bool {
+    return vars.main_module_index.* == 11 and vars.submodule_index.* != 0;
+}
+
+/// Each game frame: which forest area Link's in, for currentArea to keep
+/// on with while he leaves it.
+pub fn noteFrame() void {
+    if (vars.player_is_indoors.* == 0) {
+        if (areaFor(vars.overworld_screen_index.*, vars.dungeon_room_index.*)) |a| {
+            g_left_area = a;
+            return;
+        }
+        if (g_left_area) |a| {
+            if (a.screen == vars.overworld_screen_index.* and leavingSpecialArea()) return;
+        }
+    }
+    g_left_area = null;
 }
 
 /// The forest area at a special area's screen, entered as `exit`. While Link's
