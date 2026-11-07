@@ -477,6 +477,28 @@ pub var g_bg_tile_source_layers: u8 = 0;
 
 var g_bg_row: [4][64]u16 = undefined;
 
+/// Dynamic lighting's hold on the frame: a mask, a byte a pixel, saying what
+/// each one is, for a light pass to lay its own light over afterwards. Only
+/// the whole-line renderer knows about it.
+///
+/// In a dark room (`dark`), a line drawn with subtractive color math, which
+/// is how a dark room is darkened, skips the math and is drawn at full
+/// brightness instead; the pixels the math would have darkened are marked
+/// 1, the rest of the scene 2 (sprites the game leaves lit), and the HUD 0.
+/// Anywhere else the picture's drawn as it always is, and the whole scene is
+/// marked 1, the HUD 0.
+pub const LightMask = struct { mask: [*]u8, pitch: usize, dark: bool };
+pub var g_light_mask: ?LightMask = null;
+
+/// The mask's row for the line being drawn, while there is one.
+var g_light_row: ?[*]u8 = null;
+
+/// Something painted on after the line's compositing at x in the frame,
+/// the HUD: it isn't the room, so the light leaves it be.
+fn unlight(x: usize) void {
+    if (g_light_row) |row| row[x] = 0;
+}
+
 fn tilemapPointers(ppu: *Ppu, bglayer: *BgLayer, layer: u32, y: u32) [2][*]const u16 {
     const vram = tilemapPointersVram(ppu, bglayer, y);
     const src = g_bg_tile_source orelse return vram;
@@ -1168,6 +1190,7 @@ fn drawHudExtraBeside(ppu: *Ppu, line: u32, dst_org: [*]u8) void {
             if (x < 0 or x >= width or hudSplitHidden(ppu, x - @as(i32, ppu.extraLeftRight))) continue;
             const v = hudTilePixel(ppu, t, bg_line, @intCast(c), 0xf200, 0x1200) orelse continue;
             const color: u32 = ppu.cgram[v & 0xff];
+            unlight(@intCast(x));
             writePixel32(dst_org + @as(usize, @intCast(x)) * 4, @as(u32, ppu.brightnessMult[color & 0x1f]) << 16 |
                 @as(u32, ppu.brightnessMult[(color >> 5) & 0x1f]) << 8 |
                 ppu.brightnessMult[(color >> 10) & 0x1f]);
@@ -1206,6 +1229,7 @@ fn drawHudSplit(ppu: *Ppu, y: u32, dst_org: [*]u8) void {
         const move = if (x >= s.split) s.shift else if (x >= s.gap_at) s.gap - s.shift else -s.shift;
         const out = x + @as(i32, ppu.extraLeftRight) + move;
         if (out < 0 or out >= width or hudSplitHidden(ppu, x + move)) continue;
+        unlight(@intCast(out));
         writePixel32(dst_org + @as(usize, @intCast(out)) * 4, @as(u32, ppu.brightnessMult[color & 0x1f]) << 16 |
             @as(u32, ppu.brightnessMult[(color >> 5) & 0x1f]) << 8 |
             ppu.brightnessMult[(color >> 10) & 0x1f]);
@@ -1249,6 +1273,10 @@ const kCwBitsMod = [8]u8{
 
 fn PpuDrawWholeLine(ppu: *Ppu, y: u32) void {
     const row: usize = y - 1;
+    // The mask starts each frame clear (the light pass sees to that), so a
+    // line that marks nothing needs nothing doing to it.
+    g_light_row = if (g_light_mask) |m| m.mask + row * m.pitch else null;
+    defer g_light_row = null;
     if (ppu.forcedBlank) {
         const n = 4 * (256 + @as(usize, ppu.extraLeftRight) * 2);
         @memset(ppu.renderBuffer.?[row * ppu.renderPitch ..][0..n], 0);
@@ -1269,9 +1297,14 @@ fn PpuDrawWholeLine(ppu: *Ppu, y: u32) void {
     // The 6:th bit is automatically zero, math is never applied to the first half of the sprites.
     const math_enabled: u32 = ppu.mathEnabled;
 
+    // A dark room's darkness is subtractive math: with dynamic lighting on,
+    // the line skips it and marks where it would have gone (g_light_mask).
+    // Its subscreen, the lantern's light picture, isn't needed then.
+    const relight = g_light_row != null and g_light_mask.?.dark and ppu.subtractColor;
+
     // Render also the subscreen?
     var rendered_subscreen = false;
-    if (ppu.preventMathMode != 3 and ppu.addSubscreen and math_enabled != 0) {
+    if (ppu.preventMathMode != 3 and ppu.addSubscreen and math_enabled != 0 and !relight) {
         clearBackdrop(&ppu.bgBuffers[1]);
         if (ppu.screenEnabled[1] != 0) {
             PpuDrawBackgrounds(ppu, y, 1);
@@ -1287,6 +1320,16 @@ fn PpuDrawWholeLine(ppu: *Ppu, y: u32) void {
 
     const dst_org: [*]u8 = ppu.renderBuffer.? + row * ppu.renderPitch;
     var dst: [*]u8 = dst_org + @as(usize, ppu.extraLeftRight - ppu.extraLeftCur) * 4;
+
+    // Outside a dark room, the mask is just the scene, everything but the
+    // HUD on BG3; the line's drawn as it always is.
+    if (g_light_row) |lit_row| if (!g_light_mask.?.dark) {
+        const first = bufIndex(cwin.edges[0]);
+        const x0: usize = ppu.extraLeftRight - ppu.extraLeftCur;
+        for (first..bufIndex(cwin.edges[cwin.nr]), x0..) |i, x| {
+            lit_row[x] = @intFromBool((ppu.bgBuffers[0].data[i] >> 8) & 0xf != 2);
+        }
+    };
 
     var windex: u32 = 0;
     while (true) {
@@ -1304,6 +1347,23 @@ fn PpuDrawWholeLine(ppu: *Ppu, y: u32) void {
                     @as(u32, ppu.brightnessMult[(color >> 5) & clip_color_mask]) << 8 |
                     ppu.brightnessMult[(color >> 10) & clip_color_mask]);
                 dst += 4;
+            }
+        } else if (relight) {
+            // As above, but noting each pixel the math would have darkened.
+            const lit_row = g_light_row.?;
+            var x: usize = (@intFromPtr(dst) - @intFromPtr(dst_org)) / 4;
+            for (left..right) |i| {
+                const v = ppu.bgBuffers[0].data[i];
+                const color: u32 = ppu.cgram[v & 0xff];
+                const main_layer: u5 = @truncate((v >> 8) & 0xf);
+                // 1 for the darkness's, 2 for the rest of the scene, 0 for
+                // the HUD on BG3: see g_light_mask.
+                lit_row[x] = if (math_enabled_cur & (@as(u32, 1) << main_layer) != 0) 1 else if (main_layer != 2) 2 else 0;
+                writePixel32(dst, @as(u32, ppu.brightnessMult[color & clip_color_mask]) << 16 |
+                    @as(u32, ppu.brightnessMult[(color >> 5) & clip_color_mask]) << 8 |
+                    ppu.brightnessMult[(color >> 10) & clip_color_mask]);
+                dst += 4;
+                x += 1;
             }
         } else {
             const half_color_map: []const u8 = if (ppu.halfColor) &ppu.brightnessMultHalf else &ppu.brightnessMult;

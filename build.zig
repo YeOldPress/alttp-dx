@@ -151,7 +151,7 @@ pub fn build(b: *std.Build) void {
     // The CRT shaders, from GLSL to the SPIR-V and MSL the game embeds. Only
     // needed after changing src/shaders/*.frag; the results are committed.
     const shaders_step = b.step("shaders", "Rebuild the CRT shaders (needs glslangValidator and spirv-cross)");
-    for ([_][]const u8{ "crt", "ntsc", "xbr" }) |name| {
+    for ([_][]const u8{ "crt", "ntsc", "xbr", "light_map", "light_apply" }) |name| {
         const glsl = b.fmt("src/shaders/{s}.frag", .{name});
         const spv_path = b.fmt("src/shaders/{s}.frag.spv", .{name});
         const spv = b.addSystemCommand(&.{ "glslangValidator", "-V", "--target-env", "vulkan1.0", "-o", spv_path, glsl });

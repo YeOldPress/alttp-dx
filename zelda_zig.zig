@@ -35,6 +35,8 @@ comptime {
     _ = @import("src/achievements.zig");
     _ = @import("src/crt.zig");
     _ = @import("src/crt_gpu.zig");
+    _ = @import("src/lighting.zig");
+    _ = @import("src/particles.zig");
     _ = @import("src/achievement_list.zig");
     _ = @import("src/misc.zig");
     _ = @import("src/attract.zig");

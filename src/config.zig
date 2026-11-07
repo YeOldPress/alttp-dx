@@ -158,6 +158,16 @@ pub const Config = extern struct {
     /// Draw in linear light, for HDR displays: the CRT Filter's phosphors
     /// then shine past white as a tube's do.
     hdr: bool,
+    /// Relight dark dungeon rooms with soft light from the lantern, torches
+    /// and fire, in place of the SNES's flat darkness (lighting.zig).
+    dynamic_lighting: bool,
+    /// 0 full: walls cast shadows, flames glow; 1 simple: just the light.
+    lighting_quality: u8,
+    /// How much rooms that aren't dark are dimmed for their flames to
+    /// light, in percent.
+    room_dimming: u8,
+    /// Embers off flames, sparks off the sword (particles.zig).
+    particles: bool,
     features0: u32,
 
     link_graphics: ?[*:0]const u8,
@@ -988,6 +998,16 @@ fn handleGraphics(key: [*:0]const u8, value: [*:0]u8) bool {
         return ParseBool(value, &g_config.hdr);
     } else if (util.StringEqualsNoCase(key, "CrtBezel")) {
         return ParseBool(value, &g_config.crt_bezel);
+    } else if (util.StringEqualsNoCase(key, "DynamicLighting")) {
+        return ParseBool(value, &g_config.dynamic_lighting);
+    } else if (util.StringEqualsNoCase(key, "LightingQuality")) {
+        g_config.lighting_quality = if (std.ascii.eqlIgnoreCase(std.mem.span(value), "simple")) 1 else 0;
+        return true;
+    } else if (util.StringEqualsNoCase(key, "RoomDimming")) {
+        g_config.room_dimming = @intCast(std.math.clamp(atoi(value), 0, 40));
+        return true;
+    } else if (util.StringEqualsNoCase(key, "Particles")) {
+        return ParseBool(value, &g_config.particles);
     } else if (util.StringEqualsNoCase(key, "NoSpriteLimits")) {
         return ParseBool(value, &g_config.no_sprite_limits);
     } else if (util.StringEqualsNoCase(key, "LinkGraphics")) {
@@ -1182,6 +1202,11 @@ export fn ParseConfigFile(filename_in: ?[*:0]const u8) callconv(.c) void {
     g_config.crt_mask = 100;
     g_config.crt_glow = 100;
     g_config.crt_afterglow = 100;
+    // As the shipped zelda3.ini has it, which is what the menus show for an
+    // ini from before the setting existed.
+    g_config.dynamic_lighting = true;
+    g_config.room_dimming = 20;
+    g_config.particles = true;
 
     var filename = filename_in;
     if (filename != null or !parseOneConfigFile("zelda3.user.ini", 0)) {
@@ -1313,4 +1338,20 @@ test "a key rebinds while the game runs, and gives up its old job" {
     try testing.expectEqual(@as(c_int, 0), keyMapHashFind(keyFromName("z").?));
     try testing.expect(sameKey("x", "X"));
     try testing.expect(!bindKey(0, "NotAKeyAtAll"));
+}
+
+test "the lighting's settings read their values and stay in range" {
+    const saved = .{ g_config.lighting_quality, g_config.room_dimming };
+    defer {
+        g_config.lighting_quality = saved[0];
+        g_config.room_dimming = saved[1];
+    }
+    try testing.expect(applySetting("Graphics", "LightingQuality", "simple"));
+    try testing.expectEqual(@as(u8, 1), g_config.lighting_quality);
+    try testing.expect(applySetting("Graphics", "LightingQuality", "full"));
+    try testing.expectEqual(@as(u8, 0), g_config.lighting_quality);
+    try testing.expect(applySetting("Graphics", "RoomDimming", "25%"));
+    try testing.expectEqual(@as(u8, 25), g_config.room_dimming);
+    try testing.expect(applySetting("Graphics", "RoomDimming", "90"));
+    try testing.expectEqual(@as(u8, 40), g_config.room_dimming);
 }
