@@ -10,9 +10,10 @@
 //! light reaches the room looks just as it always did, then soft round light
 //! added back from the lantern, the room's lit torches and anything burning.
 //!
-//! Rooms that aren't dark get it too, gentler: the room's dimmed a little,
-//! by scaling its colors rather than taking a fixed amount off them, so the
-//! braziers, torches and anything burning have something to light.
+//! Rooms that aren't dark get it too, gentler: a room with a fire of its
+//! own (a lit torch, brazier or sconce) is dimmed a little, by scaling its
+//! colors rather than taking a fixed amount off them, so its flames have
+//! something to light. A room without one is left as it's drawn.
 //!
 //! None of it touches the game's RAM, so the game plays the same with it on
 //! or off; it only changes what's drawn. The HUD and the sprites the game
@@ -31,6 +32,7 @@ const snes_pkg = @import("snes");
 const Ppu = snes_pkg.ppu_types.Ppu;
 const ppu_mod = snes_pkg.ppu;
 const particles = @import("particles.zig");
+const sprite_tables = @import("sprite_main_tables.zig");
 
 const kMaxWidth = 256 + 2 * snes_pkg.ppu_types.kPpuExtraLeftRight;
 const kMaxHeight = 240;
@@ -214,6 +216,39 @@ pub fn moodAmbient() f32 {
     return 1 - dim / 100;
 }
 
+/// A room that isn't dark is only dimmed if it has a fire of its own, a lit
+/// torch, brazier or sconce: one seen burning since Link came in. A room
+/// with none is left as the original draws it, the fire rod's shots and the
+/// like still glowing in it. Lighting a room's first torch dims it then.
+var g_fire_room: ?u16 = null;
+var g_room_has_fire = false;
+
+/// The dimming as it is now, easing toward what the room wants rather than
+/// snapping: a torch scrolling into view, or lit by the fire rod, dims the
+/// room over a third of a second or so.
+/// Frames that weren't drawn one after another (a snapshot loaded, a
+/// screenshot of a script's last frame) jump straight there.
+var g_mood_ambient: f32 = 1;
+var g_dim_frame: u8 = 0;
+const kDimStep: f32 = 0.012;
+
+fn noteRoomFires() void {
+    const room = vars.dungeon_room_index.*;
+    if (g_fire_room == null or g_fire_room.? != room) {
+        g_fire_room = room;
+        g_room_has_fire = false;
+    }
+    for (g_spots[0..g_nspots]) |spot| {
+        if (spot.kind != .warp) g_room_has_fire = true;
+    }
+}
+
+/// The step from the dimming `now` toward `target`, `step` at most.
+pub fn easeToward(now: f32, target: f32, step: f32) f32 {
+    if (now < target) return @min(now + step, target);
+    return @max(now - step, target);
+}
+
 fn roomMode() Mode {
     // Particles want the HUD told apart from the scene, and indoors the
     // room's fires checked for their embers.
@@ -263,6 +298,16 @@ pub fn endFrame(ppu: *Ppu, pixels: [*]u8, pitch: usize, height: usize) void {
 
     g_tick +%= 1;
     refreshSpots(.{ .pixels = pixels, .pitch = pitch, .width = width, .height = height }, ppu.extraLeftRight);
+    if (g_mode == .mood) {
+        noteRoomFires();
+        const target: f32 = if (g_room_has_fire) moodAmbient() else 1;
+        const fc = vars.frame_counter.*;
+        const step: f32 = if (fc -% g_dim_frame == 1) kDimStep else 1;
+        g_dim_frame = fc;
+        g_mood_ambient = easeToward(g_mood_ambient, target, step);
+    } else {
+        g_mood_ambient = 1;
+    }
     var lights: [64]Light = undefined;
     const n = switch (g_mode) {
         .plain => 0,
@@ -271,7 +316,7 @@ pub fn endFrame(ppu: *Ppu, pixels: [*]u8, pitch: usize, height: usize) void {
     };
     const dark: [3]u8 = if (g_mode == .dark) darkness(ppu) else .{ 0, 0, 0 };
     const amb: f32 = switch (g_mode) {
-        .mood => moodAmbient(),
+        .mood => g_mood_ambient,
         .storm => kStormAmbient,
         else => 1,
     };
@@ -547,11 +592,31 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
 
     var add = Adder{ .out = out, .n = n, .tick = tick, .left = left, .cam_x = cam_x, .cam_y = cam_y };
 
+    // Game over: nothing of the room's is drawn any more but Link, and the
+    // slots for everything else hold whatever they last did. A fairy out of
+    // a bottle, though, flies round him and brings him back: the first
+    // ancilla's place, its height above it (RevivalFairy_Main), until it's
+    // flown off the screen.
+    if (vars.main_module_index.* == 18) {
+        const sub = vars.submodule_index.*;
+        if (sub >= 11 and sub <= 14 and vars.ancilla_step[0] < 3) {
+            const fx: i32 = @as(i32, vars.ancilla_x_lo[0]) | @as(i32, vars.ancilla_x_hi[0]) << 8;
+            const fy: i32 = @as(i32, vars.ancilla_y_lo[0]) | @as(i32, vars.ancilla_y_hi[0]) << 8;
+            add.world(kFairy, fx + 8, fy + 8 - @as(i32, vars.ancilla_z[0]), 0x10000, 1);
+        }
+        return add.n;
+    }
+
     // The room's fixed fires, the torches, braziers and sconces' candles, as
-    // refreshSpots found them and saw them burning on this frame.
+    // refreshSpots found them and saw them burning on this frame, and its
+    // warp tiles, glowing in their own color.
     for (g_spots[0..g_nspots]) |spot| {
         const seed: u32 = 0x50000 +% (@as(u32, @bitCast(spot.x)) *% 73856093 ^ @as(u32, @bitCast(spot.y)) *% 19349663);
-        add.world(if (spot.kind == .candle) kCandle else kTorch, spot.x, spot.y, seed, 1);
+        switch (spot.kind) {
+            .candle => add.world(kCandle, spot.x, spot.y, seed, 1),
+            .warp => add.worldColored(kWarp, spot.x, spot.y, seed, spot.color),
+            else => add.world(kTorch, spot.x, spot.y, seed, 1),
+        }
     }
 
     // Link's things: fire, sparks, magic, explosions, spells.
@@ -567,7 +632,12 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
             // it hits.
             0x30, 0x31, 0x01, 0x0c, 0x04 => add.world(kSpark, ax + 8, ay + 8, seed, 1),
             // Sparkles off the sword, spin attacks, hits on walls.
-            0x0d, 0x16, 0x1b, 0x06, 0x26, 0x2a, 0x3b, 0x3c => add.world(kTinySpark, ax + 4, ay + 4, seed, 1),
+            0x0d, 0x16, 0x1b, 0x06, 0x26, 0x2a, 0x3b => add.world(kTinySpark, ax + 4, ay + 4, seed, 1),
+            // The twinkles a charging sword, a silver arrow or a falling
+            // crystal sheds: each one stays put for its three frames while
+            // what shed it moves on, so faint, and fading as it goes, or
+            // their glow trails behind a falling crystal like a smear.
+            0x3c => add.world(kTinySpark, ax + 4, ay + 4, seed, 0.5 - 0.15 * @as(f32, @floatFromInt(@min(vars.ancilla_item_to_link[k], 2)))),
             // A spin attack's sparks, which circle where it was let go. The
             // game keeps their angles and the circle's size apart from the
             // ancilla's own position, which it doesn't use for them.
@@ -597,6 +667,14 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
             0x3a => add.world(kBigBlast, ax + 8, ay + 8, seed, 1),
             // A rising crystal.
             0x3e => add.world(kFairy, ax + 8, ay + 8, seed, 1),
+            // Treasure held up: out of a chest, from someone, from a pond.
+            0x22, 0x28 => add.world(kTreasure, ax + 8, ay + 8, seed, 1),
+            // A pendant or crystal coming down out of the air once the boss
+            // is beaten (drawn its height above where it'll land), and the
+            // Master Sword.
+            0x29 => if (milestoneShown(k))
+                add.world(kMilestone, ax + 8, ay + 8 - @as(i32, vars.ancilla_z[k]), seed, 1),
+            0x35 => add.world(kMilestone, ax + 8, ay + 8, seed, 1),
             // Ether and Bombos light up the whole room round Link.
             0x18 => add.link(kEther, seed),
             0x19 => add.link(kBombos, seed),
@@ -632,13 +710,80 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
             0x89 => add.world(kSpark, sx + 8, sy + 8, seed, 1),
             // Baris hum faintly.
             0x23, 0x24 => add.world(kBari, sx + 8, sy + 8, seed, 1),
-            // Agahnim's magic, the bunny beam.
-            0x7b, 0xd1 => add.world(kMagic, sx + 8, sy + 8, seed, 1.2),
+            // Agahnim's magic.
+            0x7b => add.world(kMagic, sx + 8, sy + 8, seed, 1.2),
+            // The bunny beam, once it's out: until then it waits unseen
+            // inside a statue for Link to come by. (Outdoors the same sprite
+            // is a chimney's smoke.)
+            0xd1 => if (vars.player_is_indoors.* != 0 and vars.sprite_ai_state[k] != 0)
+                add.world(kMagic, sx + 8, sy + 8, seed, 1.2),
             // Fairies, and the bubbles that pretend to be them.
-            0xe3, 0xc8 => add.world(kFairy, sx + 8, sy + 8, seed, 1),
+            0xe3 => if (absorbableShown(k)) add.world(kFairy, sx + 8, sy + 8, seed, 1),
+            0xc8 => add.world(kFairy, sx + 8, sy + 8, seed, 1),
             0x15, 0x77, 0x82 => add.world(kTinySpark, sx + 8, sy + 8, seed, 1),
             // A crystal switch, in whichever color it's showing.
             0x1e => add.worldColored(kCrystal, sx + 8, sy + 8, seed, spriteHue(ppu, vars.sprite_oam_flags[k])),
+            // A Beamos: its eye as it sweeps the room, brighter as it locks
+            // on and flashes; its laser, the head and down the beam; the
+            // spark where it hits.
+            0x61 => switch (vars.sprite_C[k]) {
+                0 => {
+                    const i: usize = vars.sprite_D[k] >> 1;
+                    const ex = sx + @as(i32, sprite_tables.kBeamosEyeball_Draw_X[i]) - 3 + 4;
+                    const ey = sy + @as(i32, sprite_tables.kBeamosEyeball_Draw_Y[i]) - 18 + 4;
+                    add.world(kEye, ex, ey, seed, if (vars.sprite_ai_state[k] == 3) 1.6 else 0.8);
+                },
+                1 => if (vars.sprite_delay_aux1[k] == 0) {
+                    add.world(kLaser, sx + 4, sy + 4, seed, 1);
+                    // Its trail: a ring of 32 places it's been, a few of them.
+                    const g: usize = @as(usize, vars.sprite_graphics[k] & 3) * 32;
+                    var j: usize = 4;
+                    while (j < 32) : (j += 9) {
+                        const tx: i32 = @as(i32, vars.beamos_x_lo[g + j]) | @as(i32, vars.beamos_x_hi[g + j]) << 8;
+                        const ty: i32 = @as(i32, vars.beamos_y_lo[g + j]) | @as(i32, vars.beamos_y_hi[g + j]) << 8;
+                        add.world(kLaser, tx + 4, ty + 4, seed + @as(u32, @intCast(j)) * 16, 0.6);
+                    }
+                },
+                else => add.world(kSpark, sx + 8, sy + 8, seed, 1),
+            },
+            // A laser eye on the wall: shut, nothing; open, a faint glow;
+            // about to fire, bright. Its beam lights as it goes.
+            0x95...0x98 => if (vars.sprite_A[k] != 0) {
+                add.world(kLaser, sx + 4, sy + 4, seed, 1);
+            } else {
+                const d = vars.sprite_D[k] & 3;
+                const ex: i32 = switch (d) {
+                    0 => sx + 12,
+                    1 => sx + 4,
+                    else => sx + 8,
+                };
+                const ey: i32 = switch (d) {
+                    2 => sy + 12,
+                    3 => sy + 4,
+                    else => sy + 8,
+                };
+                const amount: f32 = if (vars.sprite_ai_state[k] == 1) 1.4 else if (vars.sprite_graphics[k] == 1) 0.35 else 0;
+                add.world(kEye, ex, ey, seed, amount);
+            },
+            // A Wizzrobe's beam, and the Wizzrobe while it's casting.
+            0x9b => if (vars.sprite_C[k] != 0)
+                add.world(kMagic, sx + 4, sy + 4, seed, 1)
+            else if (vars.sprite_ai_state[k] == 2)
+                add.world(kMagic, sx + 8, sy + 8, seed, 0.45),
+            // Trinexx's heads' breath: the red one's fire, the blue one's ice.
+            0xcc => if (vars.sprite_E[k] != 0) add.world(kFire, sx + 8, sy + 8, seed, 1),
+            0xcd => if (vars.sprite_E[k] != 0) add.world(kCold, sx + 8, sy + 8, seed, 1.6),
+            // Things to pick up glint a little in their own color: hearts,
+            // rupees, keys. A heart container or piece, more.
+            0xd8...0xdb, 0xe4, 0xe5 => if (absorbableShown(k)) {
+                // A heart's an 8 pixel square, a rupee or small key 8 wide
+                // and 16 tall, a big key 16 square.
+                const t = vars.sprite_type[k];
+                const cx: i32 = if (t == 0xe5) 8 else 4;
+                const cy: i32 = if (t == 0xd8) 4 else 8;
+                add.worldColored(kPickup, sx + cx, sy + cy, seed, spriteHue(ppu, vars.sprite_oam_flags[k]));
+            },
+            0xea, 0xeb => add.worldColored(kHeartContainer, sx + 8, sy + 8, seed, spriteHue(ppu, vars.sprite_oam_flags[k])),
             else => {},
         }
     }
@@ -646,11 +791,15 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
     // What some of those leave behind: trails and sparkles.
     for (0..30) |k| {
         const gx: i32 = @as(i32, vars.garnish_x_lo[k]) | @as(i32, vars.garnish_x_hi[k]) << 8;
-        const gy: i32 = @as(i32, vars.garnish_y_lo[k]) | @as(i32, vars.garnish_y_hi[k]) << 8;
+        // The game draws a garnish 16 pixels above where it keeps it
+        // (Garnish_ReturnIfPrepFails).
+        const gy: i32 = (@as(i32, vars.garnish_y_lo[k]) | @as(i32, vars.garnish_y_hi[k]) << 8) - 16;
         const seed: u32 = @as(u32, @intCast(k)) + 0x30000;
         switch (vars.garnish_type[k]) {
             // A fire snake's tail, Trinexx's fire breath, Ganon's fire bats.
             0x01, 0x0e, 0x10, 0x11 => add.world(kSmallFire, gx + 4, gy + 4, seed, 0.8),
+            // Trinexx's ice breath.
+            0x0c => add.world(kCold, gx + 4, gy + 4, seed, 1),
             // Lasers: the eyes', the Beamos', Blind's.
             0x04, 0x0f => add.world(kLaser, gx + 4, gy + 4, seed, 1),
             // Mothula's beam, lightning, flashes, sparkles.
@@ -688,8 +837,30 @@ const kBari = Source{ .r = 26, .c = .{ 0.5, 0.9, 1.0 }, .strength = 0.8, .burn =
 const kCrystal = Source{ .r = 34, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 5, .glow = 0.45 };
 const kBlast = Source{ .r = 84, .c = .{ 1.0, 0.85, 0.6 }, .strength = 1.7, .burn = kFireBurn, .glow_r = 14, .glow = 0.8 };
 const kBigBlast = Source{ .r = 130, .c = .{ 1.0, 0.85, 0.6 }, .strength = 1.8, .burn = kFireBurn, .glow_r = 20, .glow = 0.9 };
+const kEye = Source{ .r = 22, .c = .{ 1.0, 0.3, 0.25 }, .strength = 1.1, .burn = kLanternBurn, .glow_r = 3, .glow = 0.6 };
+const kWarp = Source{ .r = 44, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 9, .glow = 0.35 };
+const kTreasure = Source{ .r = 44, .c = .{ 1.0, 0.9, 0.62 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 8, .glow = 0.3 };
+const kMilestone = Source{ .r = 76, .c = .{ 1.0, 0.96, 0.88 }, .strength = 1.4, .burn = kLanternBurn, .glow_r = 13, .glow = 0.6 };
+const kPickup = Source{ .r = 14, .c = .{ 1, 1, 1 }, .strength = 0.5, .burn = kLanternBurn, .glow_r = 3, .glow = 0.16 };
+const kHeartContainer = Source{ .r = 26, .c = .{ 1, 1, 1 }, .strength = 0.8, .burn = kLanternBurn, .glow_r = 5, .glow = 0.28 };
 const kEther = Source{ .r = 160, .c = .{ 0.75, 0.85, 1.0 }, .strength = 1.6, .burn = kSparkBurn };
 const kBombos = Source{ .r = 160, .c = kFlame, .strength = 1.6, .burn = kFireBurn };
+
+/// Whether a heart, rupee, key or fairy is drawn: not while it's hidden
+/// under a pot, rock or bush for Link to find, nor while the game's holding
+/// them all back (SpriteDraw_AbsorbableTransient).
+fn absorbableShown(k: usize) bool {
+    return vars.sprite_E[k] == 0 and vars.byte_7E0FC6.* < 3;
+}
+
+/// Whether a dungeon's pendant or crystal is drawn yet: it's there from the
+/// start, waiting for the boss to be beaten (Ancilla29_MilestoneItemReceipt).
+fn milestoneShown(k: usize) bool {
+    const item = vars.ancilla_item_to_link[k];
+    if (item == 0x10 or item == 0x0f) return vars.ancilla_G[k] == 0;
+    const bits = vars.dung_savegame_state_bits.*;
+    return bits & 0x4000 == 0 and bits & 0x8000 != 0 and vars.byte_7E04C2.* == 0;
+}
 
 /// How much of a light is left at `stage` of something that's over at
 /// `last`: all of it at 1, none at `last`.
@@ -784,8 +955,15 @@ pub fn findLitTorches(map: [*]align(1) const u16, out: []u16) usize {
     return findTiles2x2(map, SrcPtr(kLitTorchTiles)[0..4].*, 0, out);
 }
 
-/// A fire that stays put in a room: where in the world, and what kind.
-pub const Spot = struct { x: i32, y: i32, kind: enum { torch, brazier, candle } };
+/// A light that stays put in a room, a fire or a warp tile: where in the
+/// world, and what kind.
+pub const Spot = struct {
+    x: i32,
+    y: i32,
+    kind: enum { torch, brazier, candle, warp },
+    /// A warp tile's light, the color of the tile as drawn.
+    color: [3]f32 = .{ 1, 1, 1 },
+};
 
 /// The room's fixed fires, as last checked against the frame: what
 /// refreshSpots kept.
@@ -807,6 +985,32 @@ const Frame = struct {
     pitch: usize,
     width: usize,
     height: usize,
+
+    /// The average color within `r` pixels of (x, y) on the frame, its
+    /// brightest channel at 1. Null if that's mostly off the frame, or black.
+    fn colorAt(self: Frame, x: i32, y: i32, r: i32) ?[3]f32 {
+        var sum = [3]f32{ 0, 0, 0 };
+        var count: i32 = 0;
+        var dy = -r;
+        while (dy < r) : (dy += 1) {
+            var dx = -r;
+            while (dx < r) : (dx += 1) {
+                const px = x + dx;
+                const py = y + dy;
+                if (px < 0 or py < 0 or px >= self.width or py >= self.height) continue;
+                const row: [*]align(1) const u32 = @ptrCast(self.pixels + @as(usize, @intCast(py)) * self.pitch);
+                const c = row[@intCast(px)];
+                sum[0] += @floatFromInt((c >> 16) & 0xff);
+                sum[1] += @floatFromInt((c >> 8) & 0xff);
+                sum[2] += @floatFromInt(c & 0xff);
+                count += 1;
+            }
+        }
+        if (count * 2 < (2 * r) * (2 * r)) return null;
+        const top = @max(sum[0], @max(sum[1], sum[2]));
+        if (top <= 0) return null;
+        return .{ sum[0] / top, sum[1] / top, sum[2] / top };
+    }
 
     /// Whether there are flame colors, bright yellows and oranges, within
     /// `r` pixels of (x, y) on the frame.
@@ -842,7 +1046,9 @@ pub fn looksLikeFlame(px: u32) bool {
 /// number means a different picture in a different room's tile set (the
 /// castle's statues are made of a sconce's tiles), and between two rooms
 /// the next one's tiles arrive before the camera does. A fire off the frame
-/// can't be seen to burn, so it waits until it's on.
+/// can't be seen to burn, so it waits until it's on. A warp tile has to be
+/// one the game would warp Link on, and its light takes the tile's color
+/// (gold in one dungeon, something else in the next).
 fn refreshSpots(frame: Frame, left: i32) void {
     var found: [48]Spot = undefined;
     const n = candidateSpots(&found);
@@ -851,14 +1057,18 @@ fn refreshSpots(frame: Frame, left: i32) void {
     g_nspots = 0;
     for (found[0..n]) |spot| {
         const r: i32 = if (spot.kind == .candle) 4 else 6;
-        if (!frame.burnsAt(spot.x - cam_x + left, spot.y - cam_y, r)) continue;
-        g_spots[g_nspots] = spot;
+        var keep = spot;
+        if (spot.kind == .warp) {
+            if (!isWarp(spot.x, spot.y)) continue;
+            keep.color = frame.colorAt(spot.x - cam_x + left, spot.y - cam_y, 6) orelse continue;
+        } else if (!frame.burnsAt(spot.x - cam_x + left, spot.y - cam_y, r)) continue;
+        g_spots[g_nspots] = keep;
         g_nspots += 1;
     }
 }
 
 /// The room's fixed fires, the lit torches, braziers and sconces' candles,
-/// as their tiles say, in world coordinates, up to `out.len` of them.
+/// and its warp tiles, as their tiles say, in world coordinates, up to `out.len` of them.
 /// Indoors only.
 fn candidateSpots(out: []Spot) usize {
     if (vars.player_is_indoors.* == 0) return 0;
@@ -889,6 +1099,15 @@ fn candidateSpots(out: []Spot) usize {
             n += 1;
         }
     }
+    var nw = findTiles2x2(vars.dung_bg2, SrcPtr(kWarpTiles)[0..4].*, kIgnorePriority, &tiles);
+    if (bg1_is_room) nw += findTiles2x2(vars.dung_bg1, SrcPtr(kWarpTiles)[0..4].*, kIgnorePriority, tiles[nw..]);
+    for (tiles[0..nw]) |t| {
+        if (n == out.len) return n;
+        const lx: i32 = @intCast((t & 63) * 8 + 8);
+        const ly: i32 = @intCast((t >> 6) * 8 + 8);
+        out[n] = .{ .x = world(lx, cam_x), .y = world(ly, cam_y), .kind = .warp };
+        n += 1;
+    }
     for (kSconces) |sc| {
         const src = SrcPtr(sc.src)[0 .. sc.w * sc.h];
         var nf = findBlock(vars.dung_bg2, src, sc.w, sc.h, sc.by_rows, kIgnorePriority, &tiles);
@@ -907,6 +1126,19 @@ fn candidateSpots(out: []Spot) usize {
         }
     }
     return n;
+}
+
+/// Where the room's object data keeps a warp tile's four tiles.
+const kWarpTiles = 0x1f3a;
+
+/// The tile attribute the game warps Link on.
+const kWarpAttr = 0x4b;
+
+/// Whether the warp tile centered on world (x, y) is one the game would
+/// warp Link on: its tiles alone could be something else in another tile set.
+fn isWarp(x: i32, y: i32) bool {
+    const i: usize = @intCast((@mod(y - 4, 512) >> 3) * 64 + (@mod(x - 4, 512) >> 3));
+    return vars.dung_bg2_attr_table[i] == kWarpAttr or vars.dung_bg1_attr_table[i] == kWarpAttr;
 }
 
 /// The wall sconce objects, as the room's object data draws them: on a
@@ -1231,4 +1463,45 @@ test "flames are bright yellows and oranges, not white, gray or blue" {
     try testing.expect(!looksLikeFlame(0xa0a0a8));
     try testing.expect(!looksLikeFlame(0x4060f0));
     try testing.expect(!looksLikeFlame(0x806040)); // brown, too dim
+}
+
+test "a warp tile's light takes the tile's color, and not off the frame's edge" {
+    var px: [16 * 16]u32 = undefined;
+    @memset(&px, 0xad7b52);
+    const frame = Frame{ .pixels = @ptrCast(&px), .pitch = 16 * 4, .width = 16, .height = 16 };
+    const c = frame.colorAt(8, 8, 6).?;
+    try testing.expectApproxEqAbs(@as(f32, 1), c[0], 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 0x7b) / 0xad, c[1], 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 0x52) / 0xad, c[2], 0.001);
+    // Mostly off the frame: no telling.
+    try testing.expect(frame.colorAt(-3, -3, 6) == null);
+    @memset(&px, 0);
+    try testing.expect(frame.colorAt(8, 8, 6) == null);
+}
+
+test "a warp tile only counts where the game would warp Link" {
+    const saved2 = vars.dung_bg2_attr_table[0..4096].*;
+    const saved1 = vars.dung_bg1_attr_table[0..4096].*;
+    defer {
+        vars.dung_bg2_attr_table[0..4096].* = saved2;
+        vars.dung_bg1_attr_table[0..4096].* = saved1;
+    }
+    @memset(vars.dung_bg2_attr_table[0..4096], 0);
+    @memset(vars.dung_bg1_attr_table[0..4096], 0);
+    // A warp tile with its top left at tile (10, 20), in some room.
+    const x = 3 * 512 + 10 * 8 + 8;
+    const y = 2 * 512 + 20 * 8 + 8;
+    try testing.expect(!isWarp(x, y));
+    vars.dung_bg2_attr_table[20 * 64 + 10] = kWarpAttr;
+    try testing.expect(isWarp(x, y));
+    vars.dung_bg2_attr_table[20 * 64 + 10] = 0;
+    vars.dung_bg1_attr_table[20 * 64 + 10] = kWarpAttr;
+    try testing.expect(isWarp(x, y));
+}
+
+test "the dimming eases toward where it's going and stops there" {
+    try testing.expectApproxEqAbs(@as(f32, 0.99), easeToward(1, 0.8, 0.01), 0.0001);
+    try testing.expectApproxEqAbs(@as(f32, 0.8), easeToward(0.805, 0.8, 0.01), 0.0001);
+    try testing.expectApproxEqAbs(@as(f32, 0.81), easeToward(0.8, 1, 0.01), 0.0001);
+    try testing.expectApproxEqAbs(@as(f32, 1), easeToward(1, 1, 0.01), 0.0001);
 }

@@ -316,6 +316,7 @@ fn emit() void {
         const rate: f32 = switch (s.kind) {
             .torch, .brazier => 0.1,
             .candle => 0.04,
+            .warp => 0,
         };
         if (rand() < rate) ember(@floatFromInt(s.x), @floatFromInt(s.y - 4), 3);
     }
