@@ -10,6 +10,9 @@ with the extras a modern re-release would have.
   shaders to install
 - **Widescreen**, with a camera that keeps the whole wide picture in the area
   you're in and a HUD that moves out to the edges
+- **Dynamic lighting:** flickering torches that really light the room, soft
+  shadows, glowing lava, lightning and magic, plus embers, sparks, leaves,
+  splashes and mist
 - **Rumble** for hits, explosions, bosses, the hammer and more
 - **MSU-1** music packs, including deluxe packs and compressed `.opuz` packs
 - **Settings everywhere:** a start menu before the game, and the same settings
@@ -67,6 +70,33 @@ The Mac app and the AppImage keep `zelda3.ini`, the assets and your saves in
 `~/Library/Application Support/alttp-dx` or `~/.local/share/alttp-dx`. On
 Windows everything stays in the game's folder. If you played it back when it
 was called alttp-zig, your old folder moves over by itself on the first start.
+
+## Lighting and particles
+
+Dark rooms are lit for real: torches, braziers and sconces flicker and light
+the room around them, walls cast soft shadows, and anything that burns,
+sparks or glows lights up its surroundings, from fire rod shots to Turtle
+Rock's lava to Agahnim's lightning. Rooms that aren't dark dim a little when
+they have a fire for it to light, and rooms without one are left as the
+original draws them. Embers rise off fire, the sword sparks off walls, cut
+bushes shed leaves, waterfalls throw up mist, and the opening night gets a
+proper storm.
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/lighting-torches.png" alt="A dark castle passage lit by flickering wall torches, their light pooling on the purple stone" width="384"></td>
+    <td><img src="docs/screenshots/lighting-lava.png" alt="Turtle Rock's lava glowing orange under the pipes, with embers rising off it" width="384"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/lighting-lightning.png" alt="Agahnim bringing down lightning, its cold light spreading across the floor" width="384"></td>
+    <td><img src="docs/screenshots/lighting-lasers.png" alt="Laser eyes in Turtle Rock firing red beams that light the floor below them" width="384"></td>
+  </tr>
+</table>
+
+It's all drawing; the game plays the same with it on or off. **Dynamic
+Lighting**, **Lighting Quality** (Full, or Simple for slower graphics cards),
+**Room Dimming** and **Particles** are under Graphics in Settings. Shadows and
+glow need a GPU.
 
 ## Settings
 
