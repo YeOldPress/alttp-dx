@@ -456,6 +456,12 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
         }
     }
 
+    // Every frame's drawn, as in the window, though only the last is kept:
+    // the lighting and particles carry things over from one drawn frame to
+    // the next (which fires were seen burning, how far a room's dimmed).
+    const scratch_w: usize = @intCast(g_snes_width);
+    const scratch = std.heap.c_allocator.alloc(u32, scratch_w * @as(usize, @intCast(g_snes_height))) catch return 1;
+    defer std.heap.c_allocator.free(scratch);
     var it = std.mem.tokenizeScalar(u8, std.mem.span(script), ',');
     while (it.next()) |text| {
         const step = frame_capture.parseStep(text) catch |err| {
@@ -465,6 +471,7 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
         for (0..step.frames) |_| {
             _ = ZeldaRunFrame(step.buttons);
             rumble.reset();
+            ZeldaDrawPpuFrame(@ptrCast(scratch.ptr), scratch_w * 4, g_ppu_render_flags & ~kPpuRenderFlags_4x4Mode7);
         }
     }
 
