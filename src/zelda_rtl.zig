@@ -150,7 +150,7 @@ const kMapModeHdma1 = [_]u8{0xf0} ++ atWord(0xdee7) ++ [_]u8{0xf0} ++ atWord(0xd
 const kAttractIndirectHdmaTab = [_]u8{0xf0} ++ atWord(0x1b00) ++ [_]u8{0xf0} ++ atWord(0x1be0) ++ [_]u8{0};
 const kHdmaTableForPrayingScene = [_]u8{0xf8} ++ atWord(0x1b00) ++ [_]u8{0xf8} ++ atWord(0x1bf0) ++ [_]u8{0};
 
-fn zenvPpu() *Ppu {
+pub fn zenvPpu() *Ppu {
     return @ptrCast(@alignCast(g_zenv.ppu.?));
 }
 

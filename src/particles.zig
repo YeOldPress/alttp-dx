@@ -1,4 +1,5 @@
-//! Particles: embers off every flame, sparks when the sword hits a wall.
+//! Particles: embers off every flame, sparks when the sword hits a wall,
+//! leaves when a bush is cut, and splashes in the water.
 //!
 //! They're the port's own, kept apart from the game's RAM like the lighting
 //! (lighting.zig), so the game plays the same with them on or off: each game
@@ -6,10 +7,12 @@
 //! going on, the room's fires, a sword striking stone. They live in the
 //! world's coordinates, so they stay put as the camera moves.
 //!
-//! With SDL's GPU renderer they're drawn over the lit frame as soft glowing
-//! dots at the screen's size (`drawGpu`), moving smoothly between the SNES's
-//! pixels; anywhere else, a pixel each into the frame itself (`drawCpu`).
-//! Either way, never over the HUD.
+//! With SDL's GPU renderer they're drawn over the lit frame as soft dots at
+//! the screen's size (`drawGpu`), moving smoothly between the SNES's pixels;
+//! anywhere else, a pixel each into the frame itself (`drawCpu`). Either
+//! way, never over the HUD. Sparks and embers give off their own light and
+//! are added on; everything else (leaves, water) is lit by the
+//! room's light where it is, so it's dark in the dark and warm by a torch.
 
 const std = @import("std");
 const c = @import("sdl.zig").c;
@@ -37,6 +40,14 @@ const Particle = struct {
     hot: [3]f32,
     cool: [3]f32,
     seed: u16,
+    /// Gives off its own light, added on (sparks, embers), rather than lit
+    /// by the room's and laid over (everything else).
+    glows: bool = true,
+    /// How opaque, or for one that glows how bright, at its strongest.
+    alpha: f32 = 1,
+    /// A hard-edged fleck its own size (a leaf, a shard, a drop of water),
+    /// rather than a soft dot that fades out (a spark's glow, smoke).
+    crisp: bool = false,
 };
 
 var g_parts: [kMaxParticles]Particle = undefined;
@@ -45,6 +56,9 @@ var g_rng = std.Random.DefaultPrng.init(0x5eed_f1a3);
 
 /// What each ancilla slot held last frame, to tell a new one.
 var g_prev_ancilla: [10]u8 = @splat(0);
+/// What each garnish slot held last frame, to catch something breaking:
+/// a bush, a pot, a rock turns into a garnish of its bits as it goes.
+var g_prev_garnish: [30]u8 = @splat(0);
 /// Where the world was last frame, to clear everything when it changes
 /// under the particles: in or out of doors, Light World or Dark.
 const World = struct { indoors: u8, dark_world: u8 };
@@ -124,6 +138,75 @@ fn sparks(x: f32, y: f32, n: usize, speed: f32) void {
     }
 }
 
+/// A bush's leaves at (x, y), in its colors, fluttering down slowly.
+fn leaves(x: f32, y: f32, color: [3]f32) void {
+    for (0..14) |_| {
+        const a = range(0, std.math.tau);
+        const v = range(0.3, 1.1);
+        const shade = range(0.7, 1.15);
+        const col = [3]f32{ color[0] * shade, color[1] * shade, color[2] * shade };
+        add(.{
+            .x = x + range(-4, 4),
+            .y = y + range(-4, 2),
+            .vx = @cos(a) * v,
+            .vy = @sin(a) * v - range(0.6, 1.2),
+            .drag = 0.9,
+            .gravity = 0.035,
+            .wobble = range(0.15, 0.35),
+            .age = 0,
+            .life = @intFromFloat(range(28, 48)),
+            .size = range(1.1, 1.7),
+            .hot = col,
+            .cool = col,
+            .seed = @truncate(g_rng.random().int(u16)),
+            .glows = false,
+            .crisp = true,
+        });
+    }
+}
+
+/// Water thrown up at (x, y): `n` droplets that arc up and fall back.
+fn splash(x: f32, y: f32, n: usize, power: f32) void {
+    for (0..n) |_| {
+        const a = range(-std.math.pi, 0);
+        const v = range(0.4, 1.0) * power;
+        add(.{
+            .x = x + range(-5, 5),
+            .y = y + range(-2, 2),
+            .vx = @cos(a) * v * 0.8,
+            .vy = @sin(a) * v - power * 0.6,
+            .drag = 0.97,
+            .gravity = 0.12,
+            .wobble = 0,
+            .age = 0,
+            .life = @intFromFloat(range(14, 26)),
+            .size = range(0.8, 1.3),
+            .hot = kWater,
+            .cool = kWater,
+            .seed = 0,
+            .glows = false,
+            .alpha = 0.85,
+            .crisp = true,
+        });
+    }
+}
+
+const kWater = [3]f32{ 0.78, 0.9, 1.0 };
+const kLeaves = [3]f32{ 0.35, 0.65, 0.22 };
+
+/// The color of a bush's leaves, from the game's kind for something
+/// liftable, as it finds it in kLink_Lift_tab from the tile: 2 a bush, 4 an
+/// off-color one. Null for anything else (signs, rocks, and indoors, where
+/// its 2 is a pot), which breaks without any.
+pub fn leafColor(kind: u8, indoors: bool, dark_world: bool) ?[3]f32 {
+    if (indoors) return null;
+    return switch (kind) {
+        2 => if (dark_world) [3]f32{ 0.5, 0.58, 0.26 } else kLeaves,
+        4 => .{ 0.62, 0.7, 0.28 },
+        else => null,
+    };
+}
+
 /// One game frame: everything moves, the old die, new ones are made.
 pub fn step() void {
     if (!enabled()) {
@@ -181,8 +264,33 @@ fn emit() void {
             // one.
             0x1b => if (fresh) sparks(x + 4, y + 4, 12, 2.2),
             0x06 => if (fresh) sparks(x + 4, y + 4, 6, 1.6),
+            // Cutting a bush: a few leaves on top of what breaks.
+            0x3f => if (fresh) leaves(x + 8, y + 8, kLeaves),
+            // Link jumping into deep water, something dropped in it.
+            0x15 => if (fresh) splash(x + 8, y + 8, 14, 1.6),
+            0x3d => if (fresh) splash(x + 8, y + 8, 8, 1.1),
             else => {},
         }
+    }
+
+    // Swimming throws up a little spray now and then; wading, a drip.
+    if (vars.link_is_in_deep_water.* != 0 and rand() < 0.12) {
+        splash(@floatFromInt(@as(i32, vars.link_x_coord.*) + 8), @floatFromInt(@as(i32, vars.link_y_coord.*) + 14), 2, 0.8);
+    } else if (vars.tiledetect_shallow_water.* != 0 and (vars.link_x_vel.* | vars.link_y_vel.*) != 0 and rand() < 0.15) {
+        splash(@floatFromInt(@as(i32, vars.link_x_coord.*) + 8), @floatFromInt(@as(i32, vars.link_y_coord.*) + 20), 1, 0.6);
+    }
+
+    // A bush breaking: the game swaps it for a garnish of its bits, which
+    // says what it was, and leaves fly in its colors.
+    for (0..30) |k| {
+        const kind = vars.garnish_type[k];
+        const fresh = kind != g_prev_garnish[k];
+        g_prev_garnish[k] = kind;
+        if (kind != 0x16 or !fresh) continue;
+        const gx: i32 = @as(i32, vars.garnish_x_lo[k]) | @as(i32, vars.garnish_x_hi[k]) << 8;
+        const gy: i32 = @as(i32, vars.garnish_y_lo[k]) | @as(i32, vars.garnish_y_hi[k]) << 8;
+        const color = leafColor(vars.garnish_sprite[k], vars.player_is_indoors.* != 0, vars.savegame_is_darkworld.* != 0) orelse continue;
+        leaves(@floatFromInt(gx + 8), @floatFromInt(gy - 8), color);
     }
 
     // Fireballs and the like shed embers as they fly.
@@ -213,13 +321,45 @@ fn look(p: *const Particle) struct { color: [3]f32, alpha: f32 } {
             p.hot[1] + (p.cool[1] - p.hot[1]) * t,
             p.hot[2] + (p.cool[2] - p.hot[2]) * t,
         },
-        .alpha = in * out,
+        .alpha = in * out * p.alpha,
     };
 }
 
 /// Where the frame is in the world: its left edge's margin past the 4:3
-/// screen, and the camera.
-pub const View = struct { left: i32, cam_x: i32, cam_y: i32, width: usize, height: usize };
+/// screen, and the camera; and the room's light, for what doesn't glow:
+/// what the darkness takes off (0 to 1), what's left of the room's light
+/// after, and the lights.
+pub const View = struct {
+    left: i32,
+    cam_x: i32,
+    cam_y: i32,
+    width: usize,
+    height: usize,
+    dark: [3]f32 = .{ 0, 0, 0 },
+    ambient: f32 = 1,
+    lights: []const lighting.Light = &.{},
+};
+
+/// The light on something that doesn't glow, at (x, y) on the frame: the
+/// room's own, with the lights' added (their walls' shadows aside), each
+/// channel at most a little past 1.
+fn lightAt(v: View, x: f32, y: f32) [3]f32 {
+    var l = [3]f32{
+        (1 - v.dark[0]) * v.ambient,
+        (1 - v.dark[1]) * v.ambient,
+        (1 - v.dark[2]) * v.ambient,
+    };
+    for (v.lights) |li| {
+        const dx = x - li.x;
+        const dy = y - li.y;
+        const t = @sqrt(dx * dx + dy * dy) / li.radius;
+        if (t >= 1) continue;
+        const k = 1 - t * t * (3 - 2 * t);
+        for (&l, 0..) |*ch, i| ch.* += li.color[i] * k;
+    }
+    for (&l) |*ch| ch.* = @min(ch.*, 1.15);
+    return l;
+}
 
 /// Whether the mask (one u32 a pixel, its value in the red byte, `width` to
 /// a row, as lighting hands the GPU) says (x, y) is the scene, not the HUD.
@@ -234,6 +374,7 @@ fn inScene(mask: []const u32, v: View, x: f32, y: f32) bool {
 // ------------------------------------------------------------- on the GPU
 
 var g_dot: ?*c.SDL_Texture = null;
+var g_fleck: ?*c.SDL_Texture = null;
 var g_dot_renderer: ?*c.SDL_Renderer = null;
 
 /// A soft round dot, white, bright in the middle and fading to nothing at
@@ -256,12 +397,28 @@ fn dotTexture(r: *c.SDL_Renderer) ?*c.SDL_Texture {
     _ = c.SDL_SetTextureScaleMode(t, c.SDL_SCALEMODE_LINEAR);
     g_dot = t;
     g_dot_renderer = r;
+    // And the fleck: solid to its edge, with just the edge itself smoothed.
+    var fk: [n * n]u32 = undefined;
+    for (0..n) |y| for (0..n) |x| {
+        const dx = (@as(f32, @floatFromInt(x)) + 0.5) / (n / 2) - 1;
+        const dy = (@as(f32, @floatFromInt(y)) + 0.5) / (n / 2) - 1;
+        const d = @sqrt(dx * dx + dy * dy);
+        const a: u32 = @intFromFloat(std.math.clamp((1 - d) * (n / 2) / 1.5, 0, 1) * 255);
+        fk[y * n + x] = a << 24 | 0xffffff;
+    };
+    if (c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_ARGB8888, c.SDL_TEXTUREACCESS_STATIC, n, n)) |f| {
+        _ = c.SDL_UpdateTexture(f, null, &fk, n * 4);
+        _ = c.SDL_SetTextureScaleMode(f, c.SDL_SCALEMODE_LINEAR);
+        g_fleck = f;
+    }
     return t;
 }
 
 pub fn destroyGpu() void {
     if (g_dot) |t| c.SDL_DestroyTexture(t);
+    if (g_fleck) |t| c.SDL_DestroyTexture(t);
     g_dot = null;
+    g_fleck = null;
     g_dot_renderer = null;
 }
 
@@ -270,22 +427,36 @@ pub fn destroyGpu() void {
 pub fn drawGpu(r: *c.SDL_Renderer, v: View, mask: []const u32, scale: f32) void {
     if (g_n == 0) return;
     const dot = dotTexture(r) orelse return;
+    // What doesn't glow (leaves, water, all hard flecks) goes down first,
+    // laid over the frame; what does, added on top.
+    if (g_fleck) |f| drawGpuPass(r, f, v, mask, scale, false, true);
+    drawGpuPass(r, dot, v, mask, scale, true, false);
+}
+
+fn drawGpuPass(r: *c.SDL_Renderer, tex: *c.SDL_Texture, v: View, mask: []const u32, scale: f32, glows: bool, crisp: bool) void {
     var verts: [kMaxParticles * 4]c.SDL_Vertex = undefined;
     var idx: [kMaxParticles * 6]c_int = undefined;
     var nq: usize = 0;
     for (g_parts[0..g_n]) |*p| {
+        if (p.glows != glows or p.crisp != crisp) continue;
         const sx = p.x - @as(f32, @floatFromInt(v.cam_x - v.left));
         const sy = p.y - @as(f32, @floatFromInt(v.cam_y));
         if (!inScene(mask, v, sx, sy)) continue;
-        const l = look(p);
+        var l = look(p);
+        if (!p.glows) {
+            const lit = lightAt(v, sx, sy);
+            for (&l.color, 0..) |*ch, i| ch.* *= lit[i];
+        }
         // The dot fades out well inside its square, so it's drawn a good
         // deal bigger than the spark it stands for. Something moving fast
         // is stretched along the way it's going, a streak rather than a dot.
-        const half = p.size * 1.6 * scale;
+        // A fleck is drawn its own size, a pixel of the screen at least, and
+        // stretched less.
+        const half = if (crisp) @max(p.size * 0.5 * scale, 1) else p.size * 1.6 * scale;
         const speed = @sqrt(p.vx * p.vx + p.vy * p.vy);
         const along = [2]f32{ if (speed > 0.01) p.vx / speed else 1, if (speed > 0.01) p.vy / speed else 0 };
         const across = [2]f32{ -along[1], along[0] };
-        const long = half + @max(speed - 0.3, 0) * 2.5 * scale;
+        const long = half + @max(speed - 0.3, 0) * (if (crisp) @as(f32, 0.8) else 2.5) * scale;
         const cx = sx * scale;
         const cy = sy * scale;
         const col = c.SDL_FColor{ .r = l.color[0], .g = l.color[1], .b = l.color[2], .a = l.alpha };
@@ -303,7 +474,8 @@ pub fn drawGpu(r: *c.SDL_Renderer, v: View, mask: []const u32, scale: f32) void 
         nq += 1;
     }
     if (nq == 0) return;
-    _ = c.SDL_RenderGeometry(r, dot, &verts, @intCast(nq * 4), &idx, @intCast(nq * 6));
+    _ = c.SDL_SetTextureBlendMode(tex, if (glows) c.SDL_BLENDMODE_ADD else c.SDL_BLENDMODE_BLEND);
+    _ = c.SDL_RenderGeometry(r, tex, &verts, @intCast(nq * 4), &idx, @intCast(nq * 6));
 }
 
 // ------------------------------------------------------------- on the CPU
@@ -319,15 +491,20 @@ pub fn drawCpu(pixels: [*]u8, pitch: usize, v: View, mask: [*]const u8, pitch_ma
         const x: usize = @intFromFloat(sx);
         const y: usize = @intFromFloat(sy);
         if (x >= v.width or y >= v.height or mask[y * pitch_mask + x] == 0) continue;
-        const l = look(p);
+        var l = look(p);
+        if (!p.glows) {
+            const lit = lightAt(v, sx, sy);
+            for (&l.color, 0..) |*ch, i| ch.* *= lit[i];
+        }
         const px: *align(1) u32 = @ptrCast(pixels + y * pitch + x * 4);
         const old = px.*;
         var out: u32 = 0;
         for (0..3) |ch| {
             const shift: u5 = @intCast(16 - ch * 8);
-            const was = (old >> shift) & 0xff;
-            const plus: u32 = @intFromFloat(l.color[ch] * l.alpha * 255);
-            out |= @as(u32, @min(was + plus, 255)) << shift;
+            const was: f32 = @floatFromInt((old >> shift) & 0xff);
+            const col = @min(l.color[ch], 1) * 255;
+            const now = if (p.glows) was + col * l.alpha else was + (col - was) * l.alpha;
+            out |= @as(u32, @intFromFloat(std.math.clamp(now, 0, 255))) << shift;
         }
         px.* = out;
     }
@@ -366,4 +543,38 @@ test "nothing's made past the limit" {
     for (0..kMaxParticles + 10) |_| ember(0, 0, 0);
     try testing.expectEqual(@as(usize, kMaxParticles), count());
     clear();
+}
+
+test "what doesn't glow is lit by the room: dark in the dark, warm by a light" {
+    const dark = View{ .left = 0, .cam_x = 0, .cam_y = 0, .width = 100, .height = 100, .dark = .{ 1, 1, 1 } };
+    try testing.expectEqual([3]f32{ 0, 0, 0 }, lightAt(dark, 50, 50));
+    var lights = [_]lighting.Light{.{ .x = 50, .y = 50, .radius = 20, .color = .{ 1, 0.5, 0.25 } }};
+    var lit = dark;
+    lit.lights = &lights;
+    const l = lightAt(lit, 50, 50);
+    try testing.expect(l[0] > l[1] and l[1] > l[2] and l[0] > 0.9);
+    try testing.expectEqual([3]f32{ 0, 0, 0 }, lightAt(lit, 90, 90));
+}
+
+test "splashes arc up and fall back; leaves flutter down slower than drops" {
+    clear();
+    splash(0, 0, 6, 1.6);
+    for (g_parts[0..g_n]) |p| {
+        try testing.expect(p.vy < 0 and p.gravity > 0 and !p.glows);
+    }
+    const drop = g_parts[0];
+    clear();
+    leaves(0, 0, kLeaves);
+    const leaf = g_parts[0];
+    try testing.expect(leaf.gravity < drop.gravity and leaf.wobble > drop.wobble);
+    clear();
+}
+
+test "only bushes break into leaves" {
+    const lw = leafColor(2, false, false).?;
+    try testing.expect(lw[1] > lw[0] and lw[1] > lw[2]);
+    try testing.expect(leafColor(4, false, true) != null);
+    try testing.expectEqual(@as(?[3]f32, null), leafColor(2, true, false)); // a pot, indoors
+    try testing.expectEqual(@as(?[3]f32, null), leafColor(1, false, false)); // a rock
+    try testing.expectEqual(@as(?[3]f32, null), leafColor(0, false, false)); // a sign
 }

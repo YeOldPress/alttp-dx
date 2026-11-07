@@ -160,6 +160,9 @@ pub fn endFrame(ppu: *const Ppu, pixels: [*]u8, pitch: usize, height: usize) voi
             .cam_y = vars.BG2VOFS_copy2.*,
             .width = width,
             .height = height,
+            .dark = .{ @as(f32, @floatFromInt(dark[0])) / 255, @as(f32, @floatFromInt(dark[1])) / 255, @as(f32, @floatFromInt(dark[2])) / 255 },
+            .ambient = amb,
+            .lights = lights[0..n],
         }, &g_mask, kMaxWidth);
         return;
     }
@@ -608,6 +611,14 @@ const Adder = struct {
 };
 
 extern fn GuruguruBarSin(av: u16, b: u8) i8;
+
+/// The color of sprite palette `oam_flags` names, from what's in color
+/// memory now: its colors averaged, scaled so the brightest channel is at
+/// `top`.
+pub fn spritePaletteColor(ppu: *const Ppu, oam_flags: u8, top: f32) [3]f32 {
+    const h = spriteHue(ppu, oam_flags);
+    return .{ h[0] * top, h[1] * top, h[2] * top };
+}
 
 /// The color of sprite palette `oam_flags` names, from what's in color
 /// memory now: its colors averaged, brightest channel at 1.
