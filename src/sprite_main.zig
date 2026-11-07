@@ -16597,7 +16597,10 @@ pub export fn Sprite_Sidenexx(k: c_int) callconv(.c) void {
                 const gx: i16 = @as(i16, a.GetRandomNumber() & 0xf) - 3;
                 const gy: i16 = @as(i16, a.GetRandomNumber() & 0xf) + 12;
                 const g = a.Sprite_GarnishSpawn_Sparkle(k, @bitCast(gx), @bitCast(gy));
-                if (v.sprite_type[i] == 0xcc)
+                // No slot free (-1) with the garnishes full, which the ice
+                // head's breath can manage on its own; the C wrote to
+                // garnish_type[-1] then.
+                if (g >= 0 and v.sprite_type[i] == 0xcc)
                     v.garnish_type[ix(g)] = 0xe;
             }
         },
