@@ -1689,8 +1689,13 @@ pub export fn SpriteStunned_Main_Func1(k: c_int) callconv(.c) void {
             vars.sprite_oam_flags[ki] = (vars.sprite_oam_flags[ki] & 0xf1) | 4;
         const kk: u32 = @bitCast(k);
         const tt: u8 = @truncate((kk << 4) ^ @as(u32, vars.frame_counter.*));
-        if ((tt | vars.submodule_index.*) &
-            tables.kSpriteStunned_Main_Func1_Masks[vars.sprite_delay_main[ki] >> 4] != 0)
+        // The table only covers delays up to 0x6f; the original read past
+        // its end for longer ones. Its last entries are all 0 (a sparkle
+        // every frame), so anything longer sparkles the same.
+        const masks = tables.kSpriteStunned_Main_Func1_Masks;
+        const slot: usize = vars.sprite_delay_main[ki] >> 4;
+        const mask: u8 = if (slot < masks.len) masks[slot] else 0;
+        if ((tt | vars.submodule_index.*) & mask != 0)
             return;
         const x: u16 = @bitCast(@as(i16, tables.kSparkleGarnish_XY[misc.GetRandomNumber() & 3]));
         const y: u16 = @bitCast(@as(i16, tables.kSparkleGarnish_XY[misc.GetRandomNumber() & 3]));
