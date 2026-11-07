@@ -2013,7 +2013,13 @@ pub export fn Ancilla_LatchAltitudeAboveLink(k: c_int) callconv(.c) void {
 }
 
 pub export fn Ancilla_LatchLinkCoordinates(k: c_int, j_in: c_int) callconv(.c) void {
-    const j: usize = @as(usize, @intCast(j_in)) * 4 + (vars.link_direction_facing.* >> 1);
+    // The tables have three rows, for the three stages of a lift. The bomb
+    // and the Somaria block also ask for a fourth, once they're overhead,
+    // which the original read past the tables' end for; either way the
+    // carried position (Ancilla_LatchCarriedPosition) replaces it straight
+    // after, so the last row does.
+    const row: usize = @min(@as(usize, @intCast(j_in)), tables.kAncilla_Func3_X.len / 4 - 1);
+    const j: usize = row * 4 + (vars.link_direction_facing.* >> 1);
     Ancilla_SetXY(
         k,
         vars.link_x_coord.* +% @as(u16, @bitCast(@as(i16, tables.kAncilla_Func3_X[j]))),
