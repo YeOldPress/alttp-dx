@@ -1255,11 +1255,16 @@ const Frame = struct {
     width: usize,
     height: usize,
 
-    /// The pixel at (x, y), if it's on the frame.
+    /// The pixel at (x, y), if it's on the frame and part of the scene: not
+    /// the HUD, whose hearts are as red as lava and whose lamp is as yellow
+    /// as a flame (the mask the PPU just marked says which is which).
     fn at(self: Frame, x: i32, y: i32) ?u32 {
         if (x < 0 or y < 0 or x >= self.width or y >= self.height) return null;
-        const row: [*]align(1) const u32 = @ptrCast(self.pixels + @as(usize, @intCast(y)) * self.pitch);
-        return row[@intCast(x)];
+        const ux: usize = @intCast(x);
+        const uy: usize = @intCast(y);
+        if (g_mask[uy * kMaxWidth + ux] == 0) return null;
+        const row: [*]align(1) const u32 = @ptrCast(self.pixels + uy * self.pitch);
+        return row[ux];
     }
 
     /// The average color within `r` pixels of (x, y) on the frame, its
@@ -1271,11 +1276,7 @@ const Frame = struct {
         while (dy < r) : (dy += 1) {
             var dx = -r;
             while (dx < r) : (dx += 1) {
-                const px = x + dx;
-                const py = y + dy;
-                if (px < 0 or py < 0 or px >= self.width or py >= self.height) continue;
-                const row: [*]align(1) const u32 = @ptrCast(self.pixels + @as(usize, @intCast(py)) * self.pitch);
-                const c = row[@intCast(px)];
+                const c = self.at(x + dx, y + dy) orelse continue;
                 sum[0] += @floatFromInt((c >> 16) & 0xff);
                 sum[1] += @floatFromInt((c >> 8) & 0xff);
                 sum[2] += @floatFromInt(c & 0xff);
@@ -1296,11 +1297,8 @@ const Frame = struct {
         while (dy <= r) : (dy += 1) {
             var dx = -r;
             while (dx <= r) : (dx += 1) {
-                const px = x + dx;
-                const py = y + dy;
-                if (px < 0 or py < 0 or px >= self.width or py >= self.height) continue;
-                const row: [*]align(1) const u32 = @ptrCast(self.pixels + @as(usize, @intCast(py)) * self.pitch);
-                if (looksLikeFlame(row[@intCast(px)])) hits += 1;
+                const c = self.at(x + dx, y + dy) orelse continue;
+                if (looksLikeFlame(c)) hits += 1;
                 if (hits >= 2) return true;
             }
         }
@@ -1852,6 +1850,8 @@ test "flames are bright yellows and oranges, not white, gray or blue" {
 }
 
 test "a warp tile's light takes the tile's color, and not off the frame's edge" {
+    // All scene, no HUD.
+    for (0..16) |y| @memset(g_mask[y * kMaxWidth ..][0..16], kMaskDark);
     var px: [16 * 16]u32 = undefined;
     @memset(&px, 0xad7b52);
     const frame = Frame{ .pixels = @ptrCast(&px), .pitch = 16 * 4, .width = 16, .height = 16 };
@@ -1914,4 +1914,14 @@ test "lava is bright to dark red or orange with no blue, and not a flame's yello
     try testing.expect(!looksLikeLava(0xc6c6a5)); // stone
     try testing.expect(!looksLikeLava(0x701010)); // too dark
     try testing.expect(!looksLikeLava(0xe02080)); // pink
+}
+
+test "the HUD's pixels don't count as the scene's" {
+    var px: [4 * 4]u32 = undefined;
+    @memset(&px, 0xe72121); // as red as lava, and a heart
+    const frame = Frame{ .pixels = @ptrCast(&px), .pitch = 4 * 4, .width = 4, .height = 4 };
+    for (0..4) |y| @memset(g_mask[y * kMaxWidth ..][0..4], 0);
+    try testing.expect(frame.at(1, 1) == null);
+    g_mask[1 * kMaxWidth + 1] = kMaskDark;
+    try testing.expectEqual(@as(?u32, 0xe72121), frame.at(1, 1));
 }
