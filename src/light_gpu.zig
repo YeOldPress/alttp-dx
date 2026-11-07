@@ -13,6 +13,7 @@
 const std = @import("std");
 const c = @import("sdl.zig").c;
 const lighting = @import("lighting.zig");
+const config = @import("config.zig");
 const particles = @import("particles.zig");
 
 const kMaxLights = lighting.kMaxGpuLights;
@@ -40,6 +41,12 @@ pub var g_shadows: f32 = 0.85;
 pub var g_overbright: f32 = 0.35;
 /// How strong the flames' glow is.
 pub var g_glow: f32 = 1.0;
+
+/// Lighting Quality set to Simple: the light, without walls' shadows or the
+/// flames' glow.
+fn simple() bool {
+    return config.g_config.lighting_quality == 1;
+}
 
 var g_device: ?*c.SDL_GPUDevice = null;
 var g_formats: c.SDL_GPUShaderFormat = 0;
@@ -240,7 +247,7 @@ pub fn apply(r: *c.SDL_Renderer, frame: *c.SDL_Texture, tex_w: c_int, tex_h: c_i
     _ = c.SDL_SetRenderTarget(r, map);
     const mp = MapParams{
         .tex = .{ fw, fh, 1 / fw, 1 / fh },
-        .look = .{ g_shadows, @floatFromInt(f.n), 0, 0 },
+        .look = .{ if (simple()) 0 else g_shadows, @floatFromInt(f.n), 0, 0 },
         .lights = lights,
     };
     _ = c.SDL_SetGPURenderStateFragmentUniforms(g_map_state, 0, &mp, @sizeOf(MapParams));
@@ -262,7 +269,7 @@ pub fn apply(r: *c.SDL_Renderer, frame: *c.SDL_Texture, tex_w: c_int, tex_h: c_i
             @as(f32, @floatFromInt(f.dark[2])) / 255,
             @floatFromInt(f.n),
         },
-        .look = .{ g_overbright, g_glow, @floatFromInt(g_frame_count % 4096), f.ambient },
+        .look = .{ g_overbright, if (simple()) 0 else g_glow, @floatFromInt(g_frame_count % 4096), f.ambient },
         .weather = .{ f.flash * lighting.kFlashStrength, 0, 0, 0 },
         .lights = lights,
     };

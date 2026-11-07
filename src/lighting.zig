@@ -152,8 +152,11 @@ pub fn stepWeather() void {
 }
 
 /// How much of its light a room that isn't dark keeps, for the flames to
-/// make up.
-pub const kMoodAmbient: f32 = 0.82;
+/// make up: what Room Dimming leaves.
+pub fn moodAmbient() f32 {
+    const dim: f32 = @floatFromInt(@min(config.g_config.room_dimming, 40));
+    return 1 - dim / 100;
+}
 
 fn roomMode() Mode {
     const plain: Mode = if (particles.enabled() and particles.count() != 0) .plain else .off;
@@ -197,7 +200,7 @@ pub fn endFrame(ppu: *const Ppu, pixels: [*]u8, pitch: usize, height: usize) voi
     };
     const dark: [3]u8 = if (g_mode == .dark) darkness(ppu) else .{ 0, 0, 0 };
     const amb: f32 = switch (g_mode) {
-        .mood => kMoodAmbient,
+        .mood => moodAmbient(),
         else => 1,
     };
     if (!g_gpu) {
