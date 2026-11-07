@@ -51,6 +51,11 @@ const Particle = struct {
     crisp: bool = false,
     /// A raindrop's spot on the ground, in the world: it splashes there.
     land: f32 = std.math.inf(f32),
+    /// How much it spreads each frame, across (smoke billowing out).
+    grow: f32 = 0,
+    /// The least light it's lit by, for one that doesn't glow: smoke off a
+    /// torch just gone out, still lit by its embers in a dark room.
+    min_light: f32 = 0,
 };
 
 var g_parts: [kMaxParticles]Particle = undefined;
@@ -166,6 +171,41 @@ fn leaves(x: f32, y: f32, color: [3]f32) void {
             .crisp = true,
         });
     }
+}
+
+/// A torch going out (Dungeon_ExtinguishTorch): a few thin wisps of smoke
+/// curl up off it and spread as they go, and a last ember or two. `tile` is
+/// its top left tile in the room's 64x64 map, as the game keeps it.
+pub fn torchOut(tile: u16) void {
+    if (!enabled()) return;
+    const t: i32 = tile & 0xfff;
+    const cam_x: i32 = vars.BG2HOFS_copy2.*;
+    const cam_y: i32 = vars.BG2VOFS_copy2.*;
+    const x: f32 = @floatFromInt(lighting.wrapToScreen(@rem(t, 64) * 8 + 8, cam_x) + cam_x);
+    const y: f32 = @floatFromInt(lighting.wrapToScreen(@divTrunc(t, 64) * 8 + 4, cam_y) + cam_y);
+    for (0..5) |_| {
+        const shade = range(0.55, 0.68);
+        add(.{
+            .x = x + range(-2, 2),
+            .y = y + range(-1, 2),
+            .vx = range(-0.06, 0.06),
+            .vy = range(-0.4, -0.2),
+            .drag = 0.99,
+            .gravity = -0.002,
+            .wobble = range(0.12, 0.25),
+            .age = 0,
+            .life = @intFromFloat(range(60, 100)),
+            .size = range(1.2, 1.8),
+            .grow = range(0.02, 0.035),
+            .hot = .{ shade, shade, shade + 0.04 },
+            .cool = .{ shade * 0.8, shade * 0.8, shade * 0.85 },
+            .seed = @truncate(g_rng.random().int(u16)),
+            .glows = false,
+            .alpha = range(0.22, 0.32),
+            .min_light = 0.45,
+        });
+    }
+    for (0..2) |_| ember(x, y, 2);
 }
 
 const kRain = [3]f32{ 0.76, 0.84, 0.96 };
@@ -295,6 +335,7 @@ pub fn step() void {
         p.vy = p.vy * p.drag + p.gravity;
         p.x += p.vx + p.wobble * @sin(@as(f32, @floatFromInt(p.age)) * 0.15 + @as(f32, @floatFromInt(p.seed)));
         p.y += p.vy;
+        p.size += p.grow;
         if (p.y >= p.land) {
             const x = p.x;
             const y = p.land;
@@ -507,6 +548,7 @@ pub fn drawGpu(r: *c.SDL_Renderer, v: View, mask: []const u32, scale: f32) void 
     // What doesn't glow (leaves, water, all hard flecks) goes down first,
     // laid over the frame; what does, added on top.
     if (g_fleck) |f| drawGpuPass(r, f, v, mask, scale, false, true);
+    drawGpuPass(r, dot, v, mask, scale, false, false);
     drawGpuPass(r, dot, v, mask, scale, true, false);
 }
 
@@ -522,7 +564,7 @@ fn drawGpuPass(r: *c.SDL_Renderer, tex: *c.SDL_Texture, v: View, mask: []const u
         var l = look(p);
         if (!p.glows) {
             const lit = lightAt(v, sx, sy);
-            for (&l.color, 0..) |*ch, i| ch.* *= lit[i];
+            for (&l.color, 0..) |*ch, i| ch.* *= @max(lit[i], p.min_light);
         }
         // The dot fades out well inside its square, so it's drawn a good
         // deal bigger than the spark it stands for. Something moving fast
@@ -571,7 +613,7 @@ pub fn drawCpu(pixels: [*]u8, pitch: usize, v: View, mask: [*]const u8, pitch_ma
         var l = look(p);
         if (!p.glows) {
             const lit = lightAt(v, sx, sy);
-            for (&l.color, 0..) |*ch, i| ch.* *= lit[i];
+            for (&l.color, 0..) |*ch, i| ch.* *= @max(lit[i], p.min_light);
         }
         const px: *align(1) u32 = @ptrCast(pixels + y * pitch + x * 4);
         const old = px.*;
@@ -654,4 +696,17 @@ test "only bushes break into leaves" {
     try testing.expectEqual(@as(?[3]f32, null), leafColor(2, true, false)); // a pot, indoors
     try testing.expectEqual(@as(?[3]f32, null), leafColor(1, false, false)); // a rock
     try testing.expectEqual(@as(?[3]f32, null), leafColor(0, false, false)); // a sign
+}
+
+test "a torch going out sends up smoke that spreads as it rises" {
+    const was = config.g_config.particles;
+    defer config.g_config.particles = was;
+    config.g_config.particles = true;
+    clear();
+    torchOut(10 * 64 + 20);
+    try testing.expect(count() >= 5);
+    const p = g_parts[0];
+    try testing.expect(!p.glows and !p.crisp);
+    try testing.expect(p.vy < 0 and p.grow > 0);
+    clear();
 }
