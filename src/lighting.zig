@@ -839,10 +839,10 @@ const kBlast = Source{ .r = 84, .c = .{ 1.0, 0.85, 0.6 }, .strength = 1.7, .burn
 const kBigBlast = Source{ .r = 130, .c = .{ 1.0, 0.85, 0.6 }, .strength = 1.8, .burn = kFireBurn, .glow_r = 20, .glow = 0.9 };
 const kEye = Source{ .r = 22, .c = .{ 1.0, 0.3, 0.25 }, .strength = 1.1, .burn = kLanternBurn, .glow_r = 3, .glow = 0.6 };
 const kWarp = Source{ .r = 44, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 9, .glow = 0.35 };
-const kTreasure = Source{ .r = 56, .c = .{ 1.0, 0.9, 0.62 }, .strength = 1.3, .burn = kLanternBurn, .glow_r = 10, .glow = 0.5 };
+const kTreasure = Source{ .r = 44, .c = .{ 1.0, 0.9, 0.62 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 8, .glow = 0.3 };
 const kMilestone = Source{ .r = 76, .c = .{ 1.0, 0.96, 0.88 }, .strength = 1.4, .burn = kLanternBurn, .glow_r = 13, .glow = 0.6 };
-const kPickup = Source{ .r = 18, .c = .{ 1, 1, 1 }, .strength = 0.7, .burn = kLanternBurn, .glow_r = 3, .glow = 0.3 };
-const kHeartContainer = Source{ .r = 32, .c = .{ 1, 1, 1 }, .strength = 1.0, .burn = kLanternBurn, .glow_r = 6, .glow = 0.45 };
+const kPickup = Source{ .r = 14, .c = .{ 1, 1, 1 }, .strength = 0.5, .burn = kLanternBurn, .glow_r = 3, .glow = 0.16 };
+const kHeartContainer = Source{ .r = 26, .c = .{ 1, 1, 1 }, .strength = 0.8, .burn = kLanternBurn, .glow_r = 5, .glow = 0.28 };
 const kEther = Source{ .r = 160, .c = .{ 0.75, 0.85, 1.0 }, .strength = 1.6, .burn = kSparkBurn };
 const kBombos = Source{ .r = 160, .c = kFlame, .strength = 1.6, .burn = kFireBurn };
 
