@@ -208,6 +208,99 @@ pub fn torchOut(tile: u16) void {
     for (0..2) |_| ember(x, y, 2);
 }
 
+/// Ice Palace, by the game's count of its dungeons.
+const kIcePalace = 18;
+
+/// In Ice Palace, a few times a second a tiny point of light twinkles on
+/// the ice, wherever the frame just drawn is bright and icy (white to pale
+/// blue), and fades again. `pixels` is that frame (XRGB, `pitch` bytes a
+/// row), the scene marked nonzero in `mask` so the HUD's left alone.
+pub fn iceGlints(pixels: [*]const u8, pitch: usize, width: usize, height: usize, mask: [*]const u8, mask_pitch: usize, left: i32) void {
+    if (!enabled() or vars.player_is_indoors.* == 0 or vars.cur_palace_index_x2.* != kIcePalace) return;
+    if (vars.main_module_index.* != 7) return;
+    if (rand() > 0.5) return;
+    // Tries for an edge of the ice to twinkle on; most of a room isn't one.
+    for (0..40) |_| {
+        const x: usize = @intFromFloat(range(0, @floatFromInt(width - 1)));
+        const y: usize = @intFromFloat(range(0, @floatFromInt(height - 1)));
+        if (mask[y * mask_pitch + x] == 0) continue;
+        const row: [*]align(1) const u32 = @ptrCast(pixels + y * pitch);
+        if (!looksIcy(row[x])) continue;
+        // On an edge of the ice, against something darker (an icicle's tip
+        // against the floor), where a point of light shows; not out in the
+        // middle of a field of snow, where it'd be white on white.
+        if (!darkNearby(pixels, pitch, width, height, x, y)) continue;
+        glint(@as(f32, @floatFromInt(x)) + @as(f32, @floatFromInt(@as(i32, vars.BG2HOFS_copy2.*) - left)), @as(f32, @floatFromInt(y)) + @as(f32, @floatFromInt(vars.BG2VOFS_copy2.*)));
+        return;
+    }
+}
+
+fn darkNearby(pixels: [*]const u8, pitch: usize, width: usize, height: usize, x: usize, y: usize) bool {
+    const offs = [_][2]i32{ .{ 3, 0 }, .{ -3, 0 }, .{ 0, 3 }, .{ 0, -3 } };
+    for (offs) |o| {
+        const nx = @as(i32, @intCast(x)) + o[0];
+        const ny = @as(i32, @intCast(y)) + o[1];
+        if (nx < 0 or ny < 0 or nx >= width or ny >= height) continue;
+        const row: [*]align(1) const u32 = @ptrCast(pixels + @as(usize, @intCast(ny)) * pitch);
+        const px = row[@intCast(nx)];
+        if (((px >> 16) & 0xff) + ((px >> 8) & 0xff) + (px & 0xff) < 0x1c0) return true;
+    }
+    return false;
+}
+
+/// White to pale blue, and bright: ice and snow, not the blue of the floor.
+pub fn looksIcy(px: u32) bool {
+    const r = (px >> 16) & 0xff;
+    const g = (px >> 8) & 0xff;
+    const b = px & 0xff;
+    return r >= 0xa0 and g >= 0xc8 and b >= 0xe0 and b + 0x10 >= r and b + 0x10 >= g;
+}
+
+fn glint(x: f32, y: f32) void {
+    add(.{
+        .x = x,
+        .y = y,
+        .vx = 0,
+        .vy = 0,
+        .drag = 1,
+        .gravity = 0,
+        .wobble = 0,
+        .age = 0,
+        .life = @intFromFloat(range(16, 30)),
+        .size = range(1.1, 1.6),
+        .hot = .{ 0.95, 0.98, 1.0 },
+        .cool = .{ 0.7, 0.85, 1.0 },
+        .seed = @truncate(g_rng.random().int(u16)),
+        .alpha = range(0.8, 1.0),
+    });
+}
+
+/// Spray off a waterfall where it lands: a soft, pale puff that drifts up
+/// and out and spreads as it fades, lit by the room like anything that
+/// doesn't glow.
+fn mist(x: f32, y: f32) void {
+    const shade = range(0.82, 0.95);
+    add(.{
+        .x = x + range(-13, 13),
+        .y = y + range(-2, 3),
+        .vx = range(-0.18, 0.18),
+        .vy = range(-0.35, -0.12),
+        .drag = 0.985,
+        .gravity = -0.001,
+        .wobble = range(0.05, 0.15),
+        .age = 0,
+        .life = @intFromFloat(range(40, 75)),
+        .size = range(1.4, 2.0),
+        .grow = range(0.025, 0.04),
+        .hot = .{ shade, shade + 0.03, shade + 0.06 },
+        .cool = .{ shade * 0.9, shade * 0.95, shade },
+        .seed = @truncate(g_rng.random().int(u16)),
+        .glows = false,
+        .alpha = range(0.14, 0.24),
+        .min_light = 0.5,
+    });
+}
+
 const kRain = [3]f32{ 0.76, 0.84, 0.96 };
 
 /// The rain: drops coming in above the view, all the way across it and its
@@ -359,8 +452,10 @@ fn emit() void {
             .candle => 0.04,
             .warp => 0,
             .lava => 0,
+            .waterfall => 0,
         };
         if (rand() < rate) ember(@floatFromInt(s.x), @floatFromInt(s.y - 4), 3);
+        if (s.kind == .waterfall and rand() < 0.45) mist(@floatFromInt(s.x), @floatFromInt(s.y));
         // Lava spits an ember now and then from anywhere across its stretch.
         if (s.kind == .lava and rand() < 0.05 * s.amount)
             ember(@as(f32, @floatFromInt(s.x)) + range(-24, 24), @as(f32, @floatFromInt(s.y)) + range(-20, 20), 2);
@@ -709,4 +804,11 @@ test "a torch going out sends up smoke that spreads as it rises" {
     try testing.expect(!p.glows and !p.crisp);
     try testing.expect(p.vy < 0 and p.grow > 0);
     clear();
+}
+
+test "ice is bright white to pale blue, not the floor's blue or a flame" {
+    try testing.expect(looksIcy(0xffffff));
+    try testing.expect(looksIcy(0xc6e7ff));
+    try testing.expect(!looksIcy(0x6b6bc6)); // the floor
+    try testing.expect(!looksIcy(0xffd060)); // a flame
 }

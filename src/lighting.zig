@@ -297,7 +297,7 @@ fn noteRoomFires() void {
     }
     for (g_spots[0..g_nspots]) |spot| {
         // Lava counts: it's what lights the room.
-        if (spot.kind != .warp) g_room_has_fire = true;
+        if (spot.kind != .warp and spot.kind != .waterfall) g_room_has_fire = true;
     }
 }
 
@@ -315,6 +315,8 @@ fn roomMode() Mode {
     if (vars.player_is_indoors.* == 0) {
         if (raining()) return .storm;
         if (outdoorGlows()) return .glow;
+        // A waterfall's mist wants the frame looked at.
+        if (particles.enabled() and outdoorWaterfallNear()) return .plain;
         return plain;
     }
     // The game's own darkness rules, as the widescreen margins read them in
@@ -360,6 +362,7 @@ pub fn endFrame(ppu: *Ppu, pixels: [*]u8, pitch: usize, height: usize) void {
 
     g_tick +%= 1;
     refreshSpots(.{ .pixels = pixels, .pitch = pitch, .width = width, .height = height }, ppu.extraLeftRight);
+    particles.iceGlints(pixels, pitch, width, height, &g_mask, kMaxWidth, ppu.extraLeftRight);
     if (g_mode == .mood) {
         noteRoomFires();
         const target: f32 = if (g_room_has_fire) moodAmbient() else 1;
@@ -525,6 +528,85 @@ fn findOutdoorWarps(out: []Spot) usize {
         }
     }
     return n;
+}
+
+/// Out in the world, the attribute of the face of falling water (the same
+/// as a cliff's), and of the deep water it falls into.
+const kFallAttr = 0x02;
+const kDeepWaterAttr = 0x08;
+
+fn overworldAttr(x: i32, y: i32) u8 {
+    // x in 8 pixel steps, y in pixels, as the game's callers pass them.
+    return Overworld_GetTileAttributeAtLocation(@truncate(@as(u32, @bitCast(x)) >> 3), @truncate(@as(u32, @bitCast(y))));
+}
+
+fn inOverworldPlay() bool {
+    var module = vars.main_module_index.*;
+    if (module == 14) module = vars.saved_module_for_menu.*;
+    return module == 9 or module == 11;
+}
+
+/// Whether there's any falling water's foot on the screen, by the tiles
+/// alone: a face of it right over deep water. A cliff that drops into water
+/// looks the same here, which only costs a look at the frame.
+fn outdoorWaterfallNear() bool {
+    if (!inOverworldPlay()) return false;
+    const cam_x: i32 = vars.BG2HOFS_copy2.*;
+    const cam_y: i32 = vars.BG2VOFS_copy2.*;
+    const reach: i32 = snes_pkg.ppu_types.kPpuExtraLeftRight;
+    var y = cam_y & ~@as(i32, 7);
+    while (y < cam_y + 224) : (y += 8) {
+        var x = (cam_x - reach) & ~@as(i32, 7);
+        while (x < cam_x + 256 + reach) : (x += 8) {
+            if (overworldAttr(x, y) == kFallAttr and overworldAttr(x, y + 8) == kDeepWaterAttr) return true;
+        }
+    }
+    return false;
+}
+
+/// The feet of the waterfalls on the frame just drawn, where the falling
+/// water meets the deep water under it: a face of it right over deep water,
+/// drawn in water's colors (not a cliff's browns). Along each, a spot every
+/// 24 pixels or so for its mist.
+fn findOutdoorWaterfalls(frame: Frame, left: i32, cam_x: i32, cam_y: i32) void {
+    if (!inOverworldPlay()) return;
+    var y = cam_y & ~@as(i32, 7);
+    while (y < cam_y + @as(i32, @intCast(frame.height))) : (y += 8) {
+        var run: i32 = 0;
+        var x = (cam_x - left) & ~@as(i32, 7);
+        const x_end = cam_x - left + @as(i32, @intCast(frame.width)) + 8;
+        while (x <= x_end) : (x += 8) {
+            const foot = x < x_end and overworldAttr(x, y) == kFallAttr and overworldAttr(x, y + 8) == kDeepWaterAttr and
+                fallingWaterAt(frame, x + 4 - cam_x + left, y + 4 - cam_y);
+            if (foot) {
+                run += 1;
+                continue;
+            }
+            if (run > 0) {
+                // The run ended at x: spots spread along it.
+                const start = x - run * 8;
+                const n: i32 = @max(1, @divTrunc(run + 1, 3));
+                var i: i32 = 0;
+                while (i < n) : (i += 1) {
+                    if (g_nspots == g_spots.len) return;
+                    g_spots[g_nspots] = .{ .x = start + @divTrunc((2 * i + 1) * run * 8, 2 * n), .y = y + 8, .kind = .waterfall };
+                    g_nspots += 1;
+                }
+                run = 0;
+            }
+        }
+    }
+}
+
+/// Whether the frame's falling water at (x, y): bright blues and the white
+/// of its foam, not a cliff's browns.
+fn fallingWaterAt(frame: Frame, x: i32, y: i32) bool {
+    const px = frame.at(x, y) orelse return false;
+    const r = (px >> 16) & 0xff;
+    const g = (px >> 8) & 0xff;
+    const b = px & 0xff;
+    const white = r >= 0xc8 and g >= 0xc8 and b >= 0xc8;
+    return white or (b >= 0x90 and b >= r + 0x30);
 }
 
 /// How much of the night's light the storm leaves, for the lantern's pool to
@@ -781,6 +863,8 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
             .candle => add.world(kCandle, spot.x, spot.y, seed, 1),
             .warp => add.worldColored(kWarp, spot.x, spot.y, seed, spot.color),
             .lava => add.world(kLava, spot.x, spot.y, seed, spot.amount),
+            // A waterfall gives off mist (particles.zig), not light.
+            .waterfall => {},
             else => add.world(kTorch, spot.x, spot.y, seed, 1),
         }
     }
@@ -1140,7 +1224,7 @@ pub fn findLitTorches(map: [*]align(1) const u16, out: []u16) usize {
 pub const Spot = struct {
     x: i32,
     y: i32,
-    kind: enum { torch, brazier, candle, warp, lava },
+    kind: enum { torch, brazier, candle, warp, lava, waterfall },
     /// A warp tile's light, the color of the tile as drawn.
     color: [3]f32 = .{ 1, 1, 1 },
     /// How much of a stretch of lava there is, 0 to 1.
@@ -1253,7 +1337,9 @@ fn refreshSpots(frame: Frame, left: i32) void {
     for (found[0..n]) |spot| {
         const r: i32 = if (spot.kind == .candle) 4 else 6;
         var keep = spot;
-        if (spot.kind == .warp) {
+        if (spot.kind == .waterfall) {
+            // Its tiles are hard to mistake; nothing to check on the frame.
+        } else if (spot.kind == .warp) {
             // Outdoors the scan has already checked the ground's warp.
             if (vars.player_is_indoors.* != 0 and !isWarp(spot.x, spot.y)) continue;
             keep.color = frame.colorAt(spot.x - cam_x + left, spot.y - cam_y, 6) orelse continue;
@@ -1270,7 +1356,7 @@ fn refreshSpots(frame: Frame, left: i32) void {
         g_spots[g_nspots] = keep;
         g_nspots += 1;
     }
-    if (vars.player_is_indoors.* != 0) findLava(frame, left, cam_x, cam_y);
+    if (vars.player_is_indoors.* != 0) findLava(frame, left, cam_x, cam_y) else findOutdoorWaterfalls(frame, left, cam_x, cam_y);
 }
 
 /// How many frames in a row a fire that was burning may fail to look it
@@ -1385,6 +1471,20 @@ fn candidateSpots(out: []Spot) usize {
         out[n] = .{ .x = world(lx, cam_x), .y = world(ly, cam_y), .kind = .warp };
         n += 1;
     }
+    // Waterfalls pouring out of the walls' faces (Swamp Palace's), the mist
+    // at their feet.
+    for (kWaterfalls) |wf| {
+        const src = SrcPtr(wf.src)[0 .. 4 * wf.rows];
+        var nf = findBlock(vars.dung_bg2, src, 4, wf.rows, true, kIgnorePriority, &tiles);
+        if (bg1_is_room) nf += findBlock(vars.dung_bg1, src, 4, wf.rows, true, kIgnorePriority, tiles[nf..]);
+        for (tiles[0..nf]) |t| {
+            if (n == out.len) return n;
+            const lx: i32 = @intCast((t & 63) * 8 + 16);
+            const ly: i32 = @intCast(((t >> 6) + wf.rows) * 8 - 2);
+            out[n] = .{ .x = world(lx, cam_x), .y = world(ly, cam_y), .kind = .waterfall };
+            n += 1;
+        }
+    }
     for (kSconces) |sc| {
         const src = SrcPtr(sc.src)[0 .. sc.w * sc.h];
         var nf = findBlock(vars.dung_bg2, src, sc.w, sc.h, sc.by_rows, kIgnorePriority, &tiles);
@@ -1417,6 +1517,15 @@ fn isWarp(x: i32, y: i32) bool {
     const i: usize = @intCast((@mod(y - 4, 512) >> 3) * 64 + (@mod(x - 4, 512) >> 3));
     return vars.dung_bg2_attr_table[i] == kWarpAttr or vars.dung_bg1_attr_table[i] == kWarpAttr;
 }
+
+/// The faces in the wall that pour out a waterfall, as the room's object
+/// data draws them: four tiles across, a row at a time, the face and the
+/// water falling from it down to where it lands.
+const Waterfall = struct { src: u16, rows: usize };
+const kWaterfalls = [_]Waterfall{
+    .{ .src = 0x162c, .rows = 5 },
+    .{ .src = 0x1654, .rows = 7 },
+};
 
 /// The wall sconce objects, as the room's object data draws them: on a
 /// north or south wall four tiles across and two down, a row at a time; on a
