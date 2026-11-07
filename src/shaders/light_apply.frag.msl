@@ -11,6 +11,7 @@ struct Params
     float4 map;
     float4 dark;
     float4 look;
+    float4 weather;
     float4 lights[96];
 };
 
@@ -86,6 +87,20 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params& _24 [[buffer
         }
         glow *= _24.look.y;
         c += (glow * (float3(1.0) - c));
+    }
+    bool _233 = m > 0.5;
+    bool _240;
+    if (_233)
+    {
+        _240 = _24.weather.x > 0.0;
+    }
+    else
+    {
+        _240 = _233;
+    }
+    if (_240)
+    {
+        c = mix(c, fast::max(c, float3(0.85000002384185791015625, 0.89999997615814208984375, 1.0)), float3(_24.weather.x));
     }
     float2 param = floor(gl_FragCoord.xy);
     c += float3((_noise(param, _24) - 0.5) / 255.0);

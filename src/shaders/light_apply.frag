@@ -39,6 +39,8 @@ layout(set = 3, binding = 0) uniform Params {
     // room's light is left once the darkness is taken off (1 in a dark room,
     // less in one that's only dimmed).
     vec4 look;
+    // The weather: how far a lightning flash washes the scene toward white.
+    vec4 weather;
     // As in light_map.frag.
     vec4 lights[kMaxLights * 2];
 };
@@ -77,6 +79,10 @@ void main() {
         glow *= look.y;
         c = c + glow * (1.0 - c);
     }
+
+    // A lightning flash: the scene, not the HUD, washed toward a cold white.
+    if (m > 0.5 && weather.x > 0.0)
+        c = mix(c, max(c, vec3(0.85, 0.9, 1.0)), weather.x);
 
     c += (noise(floor(gl_FragCoord.xy)) - 0.5) / 255.0;
     o_color = vec4(clamp(c, 0.0, 1.0), 1.0);

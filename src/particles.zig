@@ -1,5 +1,5 @@
 //! Particles: embers off every flame, sparks when the sword hits a wall,
-//! leaves when a bush is cut, and splashes in the water.
+//! leaves when a bush is cut, splashes in the water, and the rain.
 //!
 //! They're the port's own, kept apart from the game's RAM like the lighting
 //! (lighting.zig), so the game plays the same with them on or off: each game
@@ -19,6 +19,7 @@ const c = @import("sdl.zig").c;
 const vars = @import("variables.zig");
 const config = @import("config.zig");
 const lighting = @import("lighting.zig");
+const snes_types = @import("snes").ppu_types;
 
 pub const kMaxParticles = 512;
 
@@ -48,6 +49,8 @@ const Particle = struct {
     /// A hard-edged fleck its own size (a leaf, a shard, a drop of water),
     /// rather than a soft dot that fades out (a spark's glow, smoke).
     crisp: bool = false,
+    /// A raindrop's spot on the ground, in the world: it splashes there.
+    land: f32 = std.math.inf(f32),
 };
 
 var g_parts: [kMaxParticles]Particle = undefined;
@@ -165,6 +168,64 @@ fn leaves(x: f32, y: f32, color: [3]f32) void {
     }
 }
 
+const kRain = [3]f32{ 0.72, 0.8, 0.92 };
+
+/// The rain: drops coming in above the view, all the way across it and its
+/// widescreen margins, falling at the slant the game's own rain falls at,
+/// each to a spot of its own on the ground.
+fn rain() void {
+    const margin: f32 = @floatFromInt(snes_types.kPpuExtraLeftRight);
+    const cam_x: f32 = @floatFromInt(vars.BG2HOFS_copy2.*);
+    const cam_y: f32 = @floatFromInt(vars.BG2VOFS_copy2.*);
+    for (0..kRainPerFrame) |_| {
+        const vy = range(4.2, 5.4);
+        add(.{
+            .x = cam_x + range(-margin, 256 + margin + 60),
+            .y = cam_y - range(8, 40),
+            .vx = -vy * 0.3,
+            .vy = vy,
+            .drag = 1,
+            .gravity = 0,
+            .wobble = 0,
+            .age = 0,
+            .life = 120,
+            .size = range(0.5, 0.7),
+            .hot = kRain,
+            .cool = kRain,
+            .seed = 0,
+            .glows = false,
+            .alpha = range(0.35, 0.55),
+            .crisp = true,
+            .land = cam_y + range(8, 232),
+        });
+    }
+}
+const kRainPerFrame = 5;
+
+/// A raindrop hitting the ground: a couple of tiny flecks hop up and drop.
+fn splashlet(x: f32, y: f32) void {
+    for (0..2) |_| {
+        add(.{
+            .x = x,
+            .y = y,
+            .vx = range(-0.5, 0.5),
+            .vy = range(-0.9, -0.5),
+            .drag = 0.95,
+            .gravity = 0.16,
+            .wobble = 0,
+            .age = 0,
+            .life = @intFromFloat(range(6, 10)),
+            .size = 0.5,
+            .hot = kRain,
+            .cool = kRain,
+            .seed = 0,
+            .glows = false,
+            .alpha = 0.55,
+            .crisp = true,
+        });
+    }
+}
+
 /// Water thrown up at (x, y): `n` droplets that arc up and fall back.
 fn splash(x: f32, y: f32, n: usize, power: f32) void {
     for (0..n) |_| {
@@ -234,9 +295,18 @@ pub fn step() void {
         p.vy = p.vy * p.drag + p.gravity;
         p.x += p.vx + p.wobble * @sin(@as(f32, @floatFromInt(p.age)) * 0.15 + @as(f32, @floatFromInt(p.seed)));
         p.y += p.vy;
+        if (p.y >= p.land) {
+            const x = p.x;
+            const y = p.land;
+            g_n -= 1;
+            g_parts[i] = g_parts[g_n];
+            splashlet(x, y);
+            continue;
+        }
         i += 1;
     }
     emit();
+    if (lighting.raining()) rain();
 }
 
 fn emit() void {
@@ -338,6 +408,8 @@ pub const View = struct {
     dark: [3]f32 = .{ 0, 0, 0 },
     ambient: f32 = 1,
     lights: []const lighting.Light = &.{},
+    /// A lightning flash, 0 to 1, which lights everything up with it.
+    flash: f32 = 0,
 };
 
 /// The light on something that doesn't glow, at (x, y) on the frame: the
@@ -357,7 +429,7 @@ fn lightAt(v: View, x: f32, y: f32) [3]f32 {
         const k = 1 - t * t * (3 - 2 * t);
         for (&l, 0..) |*ch, i| ch.* += li.color[i] * k;
     }
-    for (&l) |*ch| ch.* = @min(ch.*, 1.15);
+    for (&l, [3]f32{ 0.85, 0.9, 1.0 }) |*ch, white| ch.* = @min(ch.* + white * v.flash, 1.15);
     return l;
 }
 

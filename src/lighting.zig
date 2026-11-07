@@ -87,6 +87,11 @@ pub const GpuFrame = struct {
     cam_x: i32,
     cam_y: i32,
     left: i32,
+    /// Indoors, where the room's tiles say what's solid; outdoors nothing
+    /// casts a shadow.
+    indoors: bool,
+    /// The lightning's flash, 0 to 1.
+    flash: f32,
     /// A pixel a u32, `width` to a row: the mask's value in red, solid
     /// ground in green, as light_map.frag reads them.
     mask: []const u32,
@@ -104,8 +109,47 @@ const kSparkColor = [3]f32{ 0.75, 0.85, 1.0 };
 /// How a room's lit: a dark room, with the game's own darkness relit; any
 /// other room indoors, dimmed a little for its flames to light; or not at
 /// all (outdoors, or dynamic lighting off). `plain` is not at all, but with
-/// particles to draw, which want the HUD told apart from the scene.
-pub const Mode = enum { off, dark, mood, plain };
+/// particles to draw, which want the HUD told apart from the scene. `storm`
+/// is outdoors in the rain: lightning, and Link's lantern in the dark.
+pub const Mode = enum { off, dark, mood, plain, storm };
+
+/// It's raining outside, by the game's own rule (OverworldOverlay_HandleRain):
+/// all over Hyrule until Zelda's rescued, and over the swamp in the Dark
+/// World until it's drained.
+pub fn raining() bool {
+    if (vars.player_is_indoors.* != 0) return false;
+    // Only out in the world: not the title screen, the file select or the
+    // attract mode, where no save's loaded and the rule would say rain.
+    var module = vars.main_module_index.*;
+    if (module == 14) module = vars.saved_module_for_menu.*;
+    if (module != 9 and module != 11) return false;
+    const screen: u8 = @truncate(vars.overworld_screen_index.*);
+    if (screen != 0x70 and vars.sram_progress_indicator.* >= 2) return false;
+    return vars.save_ow_event_info[0x70] & 0x20 == 0;
+}
+
+/// The lightning's flash, 1 at a strike, fading to 0 over a few frames. The
+/// game lights the sky up itself at two points in its 256 frame cycle (the
+/// thunder comes between); this flashes with it.
+var g_flash: f32 = 0;
+var g_flash_frame: u8 = 0;
+
+pub fn flash() f32 {
+    return g_flash;
+}
+
+/// Each game frame: a strike, or the last one fading.
+pub fn stepWeather() void {
+    const fc = vars.frame_counter.*;
+    if (fc == g_flash_frame) return;
+    g_flash_frame = fc;
+    if (raining() and (fc == 3 or fc == 88)) {
+        g_flash = 1;
+    } else {
+        g_flash *= 0.72;
+        if (g_flash < 0.02) g_flash = 0;
+    }
+}
 
 /// How much of its light a room that isn't dark keeps, for the flames to
 /// make up.
@@ -114,7 +158,7 @@ pub const kMoodAmbient: f32 = 0.82;
 fn roomMode() Mode {
     const plain: Mode = if (particles.enabled() and particles.count() != 0) .plain else .off;
     if (!config.g_config.dynamic_lighting) return plain;
-    if (vars.player_is_indoors.* == 0) return plain;
+    if (vars.player_is_indoors.* == 0) return if (raining()) .storm else plain;
     // The game's own darkness rules, as the widescreen margins read them in
     // zelda_rtl.zig.
     if (vars.hdr_dungeon_dark_with_lantern.* != 0 or vars.dung_want_lights_out.* != 0) return .dark;
@@ -146,7 +190,11 @@ pub fn endFrame(ppu: *const Ppu, pixels: [*]u8, pitch: usize, height: usize) voi
 
     g_tick +%= 1;
     var lights: [64]Light = undefined;
-    const n = if (g_mode == .plain) 0 else gatherLights(ppu, &lights);
+    const n = switch (g_mode) {
+        .plain => 0,
+        .storm => stormLights(ppu, &lights),
+        else => gatherLights(ppu, &lights),
+    };
     const dark: [3]u8 = if (g_mode == .dark) darkness(ppu) else .{ 0, 0, 0 };
     const amb: f32 = switch (g_mode) {
         .mood => kMoodAmbient,
@@ -154,6 +202,7 @@ pub fn endFrame(ppu: *const Ppu, pixels: [*]u8, pitch: usize, height: usize) voi
     };
     if (!g_gpu) {
         if (g_mode != .plain) relight(pixels, pitch, width, height, dark, amb, lights[0..n]);
+        if (g_flash > 0) flashCpu(pixels, pitch, width, height, g_flash);
         particles.drawCpu(pixels, pitch, .{
             .left = ppu.extraLeftRight,
             .cam_x = vars.BG2HOFS_copy2.*,
@@ -163,6 +212,7 @@ pub fn endFrame(ppu: *const Ppu, pixels: [*]u8, pitch: usize, height: usize) voi
             .dark = .{ @as(f32, @floatFromInt(dark[0])) / 255, @as(f32, @floatFromInt(dark[1])) / 255, @as(f32, @floatFromInt(dark[2])) / 255 },
             .ambient = amb,
             .lights = lights[0..n],
+            .flash = g_flash,
         }, &g_mask, kMaxWidth);
         return;
     }
@@ -185,11 +235,55 @@ pub fn endFrame(ppu: *const Ppu, pixels: [*]u8, pitch: usize, height: usize) voi
         .cam_x = vars.BG2HOFS_copy2.*,
         .cam_y = vars.BG2VOFS_copy2.*,
         .left = ppu.extraLeftRight,
+        .indoors = vars.player_is_indoors.* != 0,
+        .flash = g_flash,
         .mask = &.{},
     };
     @memcpy(g_gpu_frame.lights[0..k], lights[0..k]);
     g_gpu_pending = true;
 }
+
+/// Outdoors in the storm: just Link's lantern, if he's got it, a warm pool
+/// that lifts the night around him.
+fn stormLights(ppu: *const Ppu, out: []Light) usize {
+    if (vars.link_item_torch.* == 0 or out.len == 0) return 0;
+    const f = flame(g_tick, 0, kLanternBurn);
+    out[0] = .{
+        .x = @as(f32, @floatFromInt(ppu.extraLeftRight)) + @as(f32, @floatFromInt(@as(i32, vars.link_x_coord.*) - @as(i32, vars.BG2HOFS_copy2.*) + 8)) + f.dx,
+        .y = @as(f32, @floatFromInt(@as(i32, vars.link_y_coord.*) - @as(i32, vars.BG2VOFS_copy2.*) + 12)) + f.dy,
+        .radius = 72 * f.reach,
+        .color = flameColor(kLantern, 2.3, f.level),
+        .glow_radius = 8 * f.reach,
+        .glow = 0.3 * f.level,
+    };
+    return 1;
+}
+
+/// The lightning's flash on the CPU: the scene (not the HUD) washed toward
+/// a cold white, `amount` of the way.
+fn flashCpu(pixels: [*]u8, pitch: usize, width: usize, height: usize, amount: f32) void {
+    const k: u32 = @intFromFloat(std.math.clamp(amount * kFlashStrength, 0, 1) * 256);
+    const to = [3]u32{ 0xd8, 0xe6, 0xff };
+    for (0..height) |y| {
+        const mask = g_mask[y * kMaxWidth ..][0..width];
+        const row: [*]align(1) u32 = @ptrCast(pixels + y * pitch);
+        for (mask, 0..) |m, x| {
+            if (m == 0) continue;
+            const c = row[x];
+            var out: u32 = 0;
+            for (0..3) |ch| {
+                const shift: u5 = @intCast(16 - ch * 8);
+                const was = (c >> shift) & 0xff;
+                const now = was + (((to[ch] -| was) * k) >> 8);
+                out |= @as(u32, @min(now, 255)) << shift;
+            }
+            row[x] = out;
+        }
+    }
+}
+
+/// How far the flash washes the scene toward white at its brightest.
+pub const kFlashStrength: f32 = 0.55;
 
 /// How much a room tile with this attribute stops light, 0 to 255: walls
 /// and anything else Link can't walk through, as the game's tile detection
@@ -224,7 +318,8 @@ pub fn takeGpuFrame(pixels: [*]u8, pitch: usize) ?*const GpuFrame {
             const m = row[x] >> 24;
             row[x] &= 0xffffff;
             const tx: usize = @intCast(@mod(@as(i32, @intCast(x)) - f.left + f.cam_x, 512) >> 3);
-            o.* = 0xff000000 | m << 16 | @as(u32, solidness(attrs[tx])) << 8;
+            const solid: u32 = if (f.indoors) solidness(attrs[tx]) else 0;
+            o.* = 0xff000000 | m << 16 | solid << 8;
         }
     }
     f.mask = g_gpu_mask[0 .. f.width * f.height];
@@ -963,4 +1058,34 @@ test "blocks are found laid out by rows or by columns" {
     try testing.expectEqual(@as(u16, 5 * 64 + 10), found[0]);
     // The same tiles read a column at a time are a different picture.
     try testing.expectEqual(@as(usize, 0), findBlock(&map, &rows, 2, 4, false, 0, &found));
+}
+
+test "it rains until Zelda's rescued, and over the swamp until it's drained" {
+    const saved = .{ vars.player_is_indoors.*, vars.overworld_screen_index.*, vars.sram_progress_indicator.*, vars.save_ow_event_info[0x70] };
+    defer {
+        vars.player_is_indoors.* = saved[0];
+        vars.overworld_screen_index.* = saved[1];
+        vars.sram_progress_indicator.* = saved[2];
+        vars.save_ow_event_info[0x70] = saved[3];
+    }
+    const saved_module = vars.main_module_index.*;
+    defer vars.main_module_index.* = saved_module;
+    vars.main_module_index.* = 2; // the file select
+    vars.player_is_indoors.* = 0;
+    vars.overworld_screen_index.* = 0x2c;
+    vars.sram_progress_indicator.* = 0;
+    try testing.expect(!raining());
+    vars.main_module_index.* = 9; // out in the world
+    vars.save_ow_event_info[0x70] = 0;
+    vars.sram_progress_indicator.* = 1;
+    try testing.expect(raining());
+    vars.sram_progress_indicator.* = 2;
+    try testing.expect(!raining());
+    vars.overworld_screen_index.* = 0x70;
+    try testing.expect(raining());
+    vars.save_ow_event_info[0x70] = 0x20;
+    try testing.expect(!raining());
+    vars.save_ow_event_info[0x70] = 0;
+    vars.player_is_indoors.* = 1;
+    try testing.expect(!raining());
 }

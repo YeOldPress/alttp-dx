@@ -30,6 +30,7 @@ const ApplyParams = extern struct {
     map: [4]f32,
     dark: [4]f32,
     look: [4]f32,
+    weather: [4]f32,
     lights: [kMaxLights * 2][4]f32,
 };
 
@@ -262,6 +263,7 @@ pub fn apply(r: *c.SDL_Renderer, frame: *c.SDL_Texture, tex_w: c_int, tex_h: c_i
             @floatFromInt(f.n),
         },
         .look = .{ g_overbright, g_glow, @floatFromInt(g_frame_count % 4096), f.ambient },
+        .weather = .{ f.flash * lighting.kFlashStrength, 0, 0, 0 },
         .lights = lights,
     };
     _ = c.SDL_SetTextureBlendMode(frame, c.SDL_BLENDMODE_NONE);
@@ -281,6 +283,7 @@ pub fn apply(r: *c.SDL_Renderer, frame: *c.SDL_Texture, tex_w: c_int, tex_h: c_i
         .dark = .{ ap.dark[0], ap.dark[1], ap.dark[2] },
         .ambient = f.ambient,
         .lights = f.lights[0..f.n],
+        .flash = f.flash,
     }, f.mask, @floatFromInt(s));
     return out;
 }
