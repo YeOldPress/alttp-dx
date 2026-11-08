@@ -32,6 +32,7 @@ const snes_pkg = @import("snes");
 const Ppu = snes_pkg.ppu_types.Ppu;
 const ppu_mod = snes_pkg.ppu;
 const particles = @import("particles.zig");
+const features = @import("features.zig");
 const sprite_tables = @import("sprite_main_tables.zig");
 const dungeon_wide = @import("dungeon_wide.zig");
 
@@ -171,8 +172,32 @@ pub fn raining() bool {
 var g_flash: f32 = 0;
 var g_flash_frame: u8 = 0;
 
+/// The flash as it's shown: much softer with Dim Flashes on, as the game
+/// softens its own (a fifth as strong there).
 pub fn flash() f32 {
-    return g_flash;
+    return if (dimFlashes()) g_flash * kDimFlash else g_flash;
+}
+
+/// Dim Flashes, the setting for anyone who'd rather the screen didn't
+/// flash: as the game reads it.
+pub fn dimFlashes() bool {
+    return features.enhanced_features0.* & features.kFeatures0_DimFlashes != 0;
+}
+
+/// How much of a lightning flash shows with Dim Flashes on.
+const kDimFlash: f32 = 0.25;
+
+/// A flame's flicker with Dim Flashes on: slower and shallower, so a light
+/// that fills the room (Ether's, a bolt's) swells and fades rather than
+/// strobing.
+pub fn steadyBurn(b: Burn) Burn {
+    return .{
+        .waver = b.waver * 0.35,
+        .speed = b.speed * 0.5,
+        .gutter = b.gutter * 0.25,
+        .gutter_odds = b.gutter_odds,
+        .sway = b.sway,
+    };
 }
 
 /// The frame of the game's 256 that its thunder plays on.
@@ -239,7 +264,8 @@ fn noteBolts() void {
 fn boltAmount() f32 {
     const n: f32 = @floatFromInt(@max(@popCount(g_bolts), 1));
     const strobe: f32 = if (vars.intro_times_pal_flash.* != 0) 0.8 else 1.0;
-    return strobe / @sqrt(n);
+    const dim: f32 = if (dimFlashes()) 0.6 else 1.0;
+    return strobe * dim / @sqrt(n);
 }
 
 /// Each game frame: a strike, a flicker, or the last one fading.
@@ -389,7 +415,7 @@ pub fn endFrame(ppu: *Ppu, pixels: [*]u8, pitch: usize, height: usize) void {
     };
     if (!g_gpu) {
         if (g_mode != .plain) relight(pixels, pitch, width, height, dark, amb, lights[0..n]);
-        if (g_flash > 0) flashCpu(pixels, pitch, width, height, g_flash);
+        if (flash() > 0) flashCpu(pixels, pitch, width, height, flash());
         particles.drawCpu(pixels, pitch, .{
             .left = ppu.extraLeftRight,
             .cam_x = vars.BG2HOFS_copy2.*,
@@ -399,7 +425,7 @@ pub fn endFrame(ppu: *Ppu, pixels: [*]u8, pitch: usize, height: usize) void {
             .dark = .{ @as(f32, @floatFromInt(dark[0])) / 255, @as(f32, @floatFromInt(dark[1])) / 255, @as(f32, @floatFromInt(dark[2])) / 255 },
             .ambient = amb,
             .lights = lights[0..n],
-            .flash = g_flash,
+            .flash = flash(),
         }, &g_mask, kMaxWidth);
         return;
     }
@@ -423,7 +449,7 @@ pub fn endFrame(ppu: *Ppu, pixels: [*]u8, pitch: usize, height: usize) void {
         .cam_y = vars.BG2VOFS_copy2.*,
         .left = ppu.extraLeftRight,
         .indoors = vars.player_is_indoors.* != 0,
-        .flash = g_flash,
+        .flash = flash(),
         .mask = &.{},
     };
     @memcpy(g_gpu_frame.lights[0..k], lights[0..k]);
@@ -1158,7 +1184,7 @@ const Adder = struct {
         const sy: f32 = @floatFromInt(y - self.cam_y);
         // Nothing reaches the frame from that far off it.
         if (sx < -r or sy < -r or sx > self.left * 2 + 256 + r or sy > 240 + r) return;
-        const f = flame(self.tick, seed, s.burn);
+        const f = flame(self.tick, seed, if (dimFlashes()) steadyBurn(s.burn) else s.burn);
         self.out[self.n] = .{
             .x = sx + f.dx,
             .y = sy + f.dy,
@@ -1924,4 +1950,18 @@ test "the HUD's pixels don't count as the scene's" {
     try testing.expect(frame.at(1, 1) == null);
     g_mask[1 * kMaxWidth + 1] = kMaskDark;
     try testing.expectEqual(@as(?u32, 0xe72121), frame.at(1, 1));
+}
+
+test "Dim Flashes softens the lightning and steadies the flicker" {
+    const was = features.enhanced_features0.*;
+    defer features.enhanced_features0.* = was;
+    const saved = g_flash;
+    defer g_flash = saved;
+    g_flash = 0.8;
+    features.enhanced_features0.* = 0;
+    try testing.expectApproxEqAbs(@as(f32, 0.8), flash(), 0.0001);
+    features.enhanced_features0.* = features.kFeatures0_DimFlashes;
+    try testing.expectApproxEqAbs(@as(f32, 0.8) * kDimFlash, flash(), 0.0001);
+    const b = steadyBurn(kSparkBurn);
+    try testing.expect(b.waver < kSparkBurn.waver and b.speed < kSparkBurn.speed and b.gutter < kSparkBurn.gutter);
 }
