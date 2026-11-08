@@ -630,13 +630,60 @@ pub fn dungeonAttr(lo: u8, hi: u8, bg1_shown: bool) struct { attr: u8, steps: bo
     return .{ .attr = lo };
 }
 
-fn dungeonLowerAt(x: i32, y: i32) u8 {
-    return vars.dung_bg2_attr_table[@intCast((@mod(y, 512) >> 3) * 64 + (@mod(x, 512) >> 3))];
+/// A room's tile as far as its water goes: the water attribute dungeonAttr
+/// gives it, whether it's steps going into water, whether its water's on
+/// the upper layer, and the depth the lower layer's tiles say.
+const RoomTile = struct { attr: u8, steps: bool, upper: bool, lower: u8 };
+
+/// The room being played's tiles, a byte each (packRoomTile), as of the
+/// last frame, and the room before it's as they were when it was left:
+/// on the way from one room to the next, the one being left has no tiles
+/// loaded any more.
+var g_room_water: [64 * 64]u8 = @splat(0);
+var g_room_water_id: i32 = -1;
+var g_left_water: [64 * 64]u8 = @splat(0);
+var g_left_water_id: i32 = -1;
+/// Whether the room being left had see-through water blended in on BG1.
+var g_left_overlay = false;
+/// Tiles on the screen that are the room being left's.
+var g_water_left: [kWaterRows][kWaterCols]bool = undefined;
+
+fn packRoomTile(t: RoomTile) u8 {
+    return waterDepth(t.attr) | @as(u8, @intFromBool(t.steps)) << 2 | @as(u8, @intFromBool(t.upper)) << 3 | t.lower << 4;
 }
 
-fn dungeonAttrAt(x: i32, y: i32, bg1_shown: bool) @TypeOf(dungeonAttr(0, 0, false)) {
-    const t: usize = @intCast((@mod(y, 512) >> 3) * 64 + (@mod(x, 512) >> 3));
-    return dungeonAttr(vars.dung_bg2_attr_table[t], vars.dung_bg1_attr_table[t], bg1_shown);
+fn unpackRoomTile(b: u8) RoomTile {
+    const depth = b & 3;
+    return .{ .attr = if (depth == 2) 0x08 else if (depth == 1) 0x09 else 0, .steps = b & 4 != 0, .upper = b & 8 != 0, .lower = b >> 4 };
+}
+
+fn roomTileIndex(x: i32, y: i32) usize {
+    return @intCast((@mod(y, 512) >> 3) * 64 + (@mod(x, 512) >> 3));
+}
+
+/// Whether (x, y) in the world is in a room's 512 pixel square.
+fn inRoom(room: i32, x: i32, y: i32) bool {
+    const rx = (room & 15) * 512;
+    const ry = (room >> 4) * 512;
+    return x >= rx and x < rx + 512 and y >= ry and y < ry + 512;
+}
+
+/// Takes in the room's tiles for this frame, keeping the last room's when
+/// it's just been left.
+fn noteRoomWater(room: i32, bg1_shown: bool) void {
+    if (room != g_room_water_id) {
+        if (g_room_water_id >= 0) {
+            g_left_water = g_room_water;
+            g_left_water_id = g_room_water_id;
+            g_left_overlay = g_overlay_water;
+        }
+        g_room_water_id = room;
+    }
+    for (&g_room_water, 0..) |*out, t| {
+        const lo = vars.dung_bg2_attr_table[t];
+        const a = dungeonAttr(lo, vars.dung_bg1_attr_table[t], bg1_shown);
+        out.* = packRoomTile(.{ .attr = a.attr, .steps = a.steps, .upper = a.upper, .lower = waterDepth(lo) });
+    }
 }
 
 /// Playing in a dungeon or cave, menus over it included, and while the
@@ -1205,33 +1252,34 @@ fn scanWater(left: i32) bool {
     // game's on, which on the way from one room to the next is already the
     // next one, Link not yet in it.
     const room_index: i32 = vars.dungeon_room_index.*;
-    const room_x: i32 = (room_index & 15) * 512;
-    const room_y: i32 = (room_index >> 4) * 512;
     // BG1 on either screen: Swamp Palace's water, once it's let in.
     const bg1_shown = (vars.TM_copy.* | vars.TS_copy.*) & 1 != 0;
     var attrs: [kWaterRows][kWaterCols]u8 = undefined;
     var any = false;
     var upper = false;
     var any_outside = false;
+    if (indoors) noteRoomWater(room_index, bg1_shown);
     for (0..kWaterRows) |r| for (0..kWaterCols) |col| {
         const wx = (g_water_x0 + @as(i32, @intCast(col))) * 8;
         const wy = (g_water_y0 + @as(i32, @intCast(r))) * 8;
-        const outside = if (indoors)
-            wx < room_x or wx >= room_x + 512 or wy < room_y or wy >= room_y + 512
-        else
-            wx < b.xstart or wx >= @as(i32, b.xend) + 256 or wy < b.ystart or wy >= @as(i32, b.yend) + 224;
+        const in_room = if (indoors) inRoom(room_index, wx, wy) else !(wx < b.xstart or wx >= @as(i32, b.xend) + 256 or wy < b.ystart or wy >= @as(i32, b.yend) + 224);
+        // On the way to the next room, the one being left as its tiles
+        // last were, so its water doesn't change as the room does.
+        const in_left = indoors and !in_room and g_left_water_id >= 0 and inRoom(g_left_water_id, wx, wy);
+        const outside = !in_room and !in_left;
         g_water_outside[r][col] = outside;
+        g_water_left[r][col] = in_left;
         any_outside = any_outside or outside;
-        const room = if (indoors and !outside) dungeonAttrAt(wx, wy, bg1_shown) else null;
+        const room: ?RoomTile = if (!indoors or outside) null else unpackRoomTile((if (in_room) &g_room_water else &g_left_water)[roomTileIndex(wx, wy)]);
         const attr: u8 = if (outside) 0 else if (room) |a| a.attr else overworldAttr(wx, wy);
         attrs[r][col] = attr;
         g_water[r][col] = waterDepth(attr);
         // Indoors 0x02 is something else altogether; there, it's steps
         // going down into the water instead.
         g_water_face[r][col] = if (room) |a| a.steps else !indoors and attr == kFallFace;
-        if (room) |a| upper = upper or a.upper;
+        if (room) |a| upper = upper or (a.upper and in_room);
         g_water_upper[r][col] = if (room) |a| a.upper and !a.steps else false;
-        g_water_lower[r][col] = if (room != null) waterDepth(dungeonLowerAt(wx, wy)) else 0;
+        g_water_lower[r][col] = if (room) |a| a.lower else 0;
     };
     // Down the middle of a waterfall the game marks a strip as shallow
     // water, between the face's own tiles on either side: it's the falls,
@@ -1291,7 +1339,7 @@ pub fn fallsBeside(row: []const u8, col: usize) bool {
 
 /// The water tile under pixel (x, y) of the frame, and the deepest around
 /// it.
-fn waterTile(f: *const GpuFrame, x: usize, y: usize) struct { depth: u8, near: u8, outside: bool = false, face: bool = false, upper: bool = false } {
+fn waterTile(f: *const GpuFrame, x: usize, y: usize) struct { depth: u8, near: u8, outside: bool = false, face: bool = false, upper: bool = false, left: bool = false } {
     const tx = ((@as(i32, @intCast(x)) - f.left + f.cam_x) >> 3) - g_water_x0;
     const ty = ((@as(i32, @intCast(y)) + f.cam_y) >> 3) - g_water_y0;
     if (tx < 0 or ty < 0 or tx >= kWaterCols or ty >= kWaterRows) return .{ .depth = 0, .near = 0 };
@@ -1313,7 +1361,7 @@ fn waterTile(f: *const GpuFrame, x: usize, y: usize) struct { depth: u8, near: u
         const lower = g_water_lower[r][c];
         return .{ .depth = lower, .near = @max(lower, g_water_near[r][c]) };
     }
-    return .{ .depth = g_water[r][c], .near = g_water_near[r][c], .face = g_water_face[r][c], .upper = upper };
+    return .{ .depth = g_water[r][c], .near = g_water_near[r][c], .face = g_water_face[r][c], .upper = upper, .left = g_water_left[r][c] };
 }
 
 /// Whether the pixel at (x, y) is a background's: a sprite over the water
@@ -1490,7 +1538,8 @@ fn waterAt(f: *const GpuFrame, x: usize, y: usize, px: u32, scene: bool) u32 {
     // Indoors, BG1 blended in underneath is water lying over the floor,
     // wherever the tiles say (Swamp Palace's canals) or not (the water the
     // dam lets through, below its gate): all but steps going into it.
-    if (g_overlay_water and !t.outside and !t.face and bg1Underneath(y * kMaxWidth + x) and isWaterColor(px)) t.depth = @max(t.depth, 2);
+    const overlay = if (t.left) g_left_overlay else g_overlay_water;
+    if (overlay and !t.outside and !t.face and bg1Underneath(y * kMaxWidth + x) and isWaterColor(px)) t.depth = @max(t.depth, 2);
     if (!scene) return if (t.depth != 0) 2 else 0;
     // A sprite drawn with the water's own color behind it (a lily pad) is
     // water there; the rest of it, and every other sprite, is left be.
@@ -1506,8 +1555,10 @@ fn waterAt(f: *const GpuFrame, x: usize, y: usize, px: u32, scene: bool) u32 {
     // the same colors (steps going down into it) isn't water: the tiles
     // alone say, but past the room's edges, where there are none.
     const by_tile = f.indoors and !t.outside;
-    // And in its tiles, the dark rim round a pool isn't water either.
-    const in_water = t.depth != 0 and (!by_tile or clean or looksLikeWater(px));
+    // And in its tiles, the dark rim round a pool isn't water either; nor
+    // in the tiles of the room being left, found by their colors, so the
+    // water's edge doesn't jump as the room changes.
+    const in_water = t.depth != 0 and (!f.indoors or clean or looksLikeWater(px));
     const depth = if (in_water) t.depth else if (t.near != 0 and watery and !by_tile) t.near else 0;
     // See-through water, BG1 blended in over the floor (Swamp Palace's),
     // is 200: what's under it shows through it. Water drawn in its own
