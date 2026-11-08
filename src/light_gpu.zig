@@ -37,6 +37,8 @@ const ApplyParams = extern struct {
     fx: [4]f32,
     shocks: [lighting.kMaxShocks][4]f32,
     mirrors: [lighting.kMaxMirrors][4]f32,
+    air: [4]f32,
+    blooms: [lighting.kMaxBlooms][4]f32,
     lights: [kMaxLights * 2][4]f32,
 };
 
@@ -290,6 +292,12 @@ pub fn apply(r: *c.SDL_Renderer, frame: *c.SDL_Texture, tex_w: c_int, tex_h: c_i
             var list = std.mem.zeroes([lighting.kMaxMirrors][4]f32);
             @memcpy(list[0..f.nmirrors], f.mirrors[0..f.nmirrors]);
             break :mirrors list;
+        },
+        .air = .{ 0, if (f.beams) 1 else 0, if (simple()) 0 else 1, @floatFromInt(f.nblooms) },
+        .blooms = blooms: {
+            var list = std.mem.zeroes([lighting.kMaxBlooms][4]f32);
+            @memcpy(list[0..f.nblooms], f.blooms[0..f.nblooms]);
+            break :blooms list;
         },
         .lights = lights,
     };

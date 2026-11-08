@@ -66,6 +66,11 @@ const Particle = struct {
     flutter: bool = false,
     /// Throbs brighter and dimmer as it goes (a wisp).
     pulse: bool = false,
+    /// Blinks: dim, then a flash now and then (a firefly).
+    blink: bool = false,
+    /// How far it can turn each frame, in radians, wandering where it
+    /// likes rather than going one way (a firefly).
+    wander: f32 = 0,
 };
 
 var g_parts: [kMaxParticles]Particle = undefined;
@@ -434,6 +439,12 @@ pub fn step() void {
             g_parts[i] = g_parts[g_n];
             continue;
         }
+        if (p.wander > 0) {
+            const a = (rand() - 0.5) * p.wander;
+            const vx = p.vx * @cos(a) - p.vy * @sin(a);
+            p.vy = p.vx * @sin(a) + p.vy * @cos(a);
+            p.vx = vx;
+        }
         p.vx *= p.drag;
         p.vy = p.vy * p.drag + p.gravity;
         p.x += p.vx + p.wobble * @sin(@as(f32, @floatFromInt(p.age)) * 0.15 + @as(f32, @floatFromInt(p.seed)));
@@ -452,6 +463,8 @@ pub fn step() void {
     emit();
     if (lighting.raining()) rain();
     ambience(ambienceHere());
+    // Dust drifting in the light from a window.
+    if (vars.player_is_indoors.* != 0 and rand() < 0.3) if (lighting.beamSpot(rand())) |at| dustMote(at[0], at[1]);
 }
 
 fn emit() void {
@@ -533,8 +546,9 @@ fn emit() void {
 // ------------------------------------------------------------- the air
 
 /// What hangs in the air of some places out in the world, all the time:
-/// leaves coming down in the Lost Woods, glowing purple wisps of dark magic
-/// in the Skull Woods, ash falling on the Dark World's Death Mountain; and
+/// leaves coming down in the Lost Woods and fireflies blinking under its
+/// trees, glowing purple wisps of dark magic in the Skull Woods, ash
+/// falling on the Dark World's Death Mountain; and
 /// the desert's heat, which isn't particles but a shimmer over the picture
 /// (lighting.zig's heatHaze, light_apply.frag).
 pub const Ambience = enum { none, leaves, wisps, heat, ash };
@@ -567,10 +581,16 @@ fn inView() [2]f32 {
 fn ambience(kind: Ambience) void {
     switch (kind) {
         .none => {},
-        .leaves => if (rand() < 0.14) {
-            const at = inView();
-            const col: [3]f32 = if (rand() < 0.75) kLeaves else if (rand() < 0.7) .{ 0.68, 0.7, 0.28 } else .{ 0.78, 0.5, 0.2 };
-            fallingLeaf(at[0], at[1], col);
+        .leaves => {
+            if (rand() < 0.14) {
+                const at = inView();
+                const col: [3]f32 = if (rand() < 0.75) kLeaves else if (rand() < 0.7) .{ 0.68, 0.7, 0.28 } else .{ 0.78, 0.5, 0.2 };
+                fallingLeaf(at[0], at[1], col);
+            }
+            if (rand() < 0.03) {
+                const at = inView();
+                firefly(at[0], at[1]);
+            }
         },
         .wisps => if (rand() < 0.18) {
             const at = inView();
@@ -640,6 +660,54 @@ fn wisp(x: f32, y: f32) void {
     });
 }
 
+/// A firefly under the Lost Woods' trees: a dim green-gold mote wandering
+/// slowly, flashing bright now and then.
+fn firefly(x: f32, y: f32) void {
+    const a = range(0, std.math.tau);
+    const speed = range(0.06, 0.14);
+    add(.{
+        .x = x,
+        .y = y,
+        .vx = @cos(a) * speed,
+        .vy = @sin(a) * speed,
+        .drag = 1,
+        .gravity = 0,
+        .wobble = range(0.05, 0.12),
+        .age = 0,
+        .life = @intFromFloat(range(400, 700)),
+        .size = range(1.1, 1.5),
+        .hot = .{ 0.85, 1.0, 0.4 },
+        .cool = .{ 0.65, 0.9, 0.25 },
+        .seed = @truncate(g_rng.random().int(u16)),
+        .alpha = 0.95,
+        .fade_in = 40,
+        .blink = true,
+        .wander = 0.3,
+    });
+}
+
+/// A mote of dust in the light from a window, glinting as it drifts down.
+fn dustMote(x: f32, y: f32) void {
+    add(.{
+        .x = x,
+        .y = y,
+        .vx = range(-0.05, 0.05),
+        .vy = range(0.02, 0.07),
+        .drag = 1,
+        .gravity = 0,
+        .wobble = range(0.03, 0.08),
+        .age = 0,
+        .life = @intFromFloat(range(180, 320)),
+        .size = range(0.7, 1.0),
+        .hot = .{ 1.0, 0.96, 0.82 },
+        .cool = .{ 1.0, 0.92, 0.75 },
+        .seed = @truncate(g_rng.random().int(u16)),
+        .alpha = range(0.35, 0.6),
+        .fade_in = 40,
+        .pulse = true,
+    });
+}
+
 /// A fleck of ash, drifting down.
 fn ash(x: f32, y: f32) void {
     const shade = range(0.55, 0.78);
@@ -686,6 +754,12 @@ fn cinder(x: f32, y: f32) void {
     });
 }
 
+/// A firefly's glow at its age: dim, with a flash every few seconds.
+fn blinkAt(p: *const Particle) f32 {
+    const s = @max(0, @sin(@as(f32, @floatFromInt(p.age)) * 0.035 + @as(f32, @floatFromInt(p.seed))));
+    return 0.08 + 0.92 * s * s * s * s;
+}
+
 /// How a particle looks at its age: its color, and how bright (0 to 1),
 /// coming in over its first frames and fading over the last part of its
 /// life.
@@ -699,7 +773,7 @@ fn look(p: *const Particle) struct { color: [3]f32, alpha: f32 } {
             p.hot[1] + (p.cool[1] - p.hot[1]) * t,
             p.hot[2] + (p.cool[2] - p.hot[2]) * t,
         },
-        .alpha = in * out * p.alpha * if (p.pulse) 0.55 + 0.45 * @sin(@as(f32, @floatFromInt(p.age)) * 0.12 + @as(f32, @floatFromInt(p.seed))) else 1,
+        .alpha = in * out * p.alpha * if (p.pulse) 0.55 + 0.45 * @sin(@as(f32, @floatFromInt(p.age)) * 0.12 + @as(f32, @floatFromInt(p.seed))) else if (p.blink) blinkAt(p) else 1,
     };
 }
 
@@ -846,11 +920,11 @@ fn drawGpuPass(r: *c.SDL_Renderer, tex: *c.SDL_Texture, v: View, mask: []const u
             long = half * 1.4;
             half = @max(half * (0.3 + 0.7 * @abs(@cos(phase))), 1);
         }
+        const col = c.SDL_FColor{ .r = l.color[0], .g = l.color[1], .b = l.color[2], .a = l.alpha };
+        const corners = [4][4]f32{ .{ -1, -1, 0, 0 }, .{ 1, -1, 1, 0 }, .{ 1, 1, 1, 1 }, .{ -1, 1, 0, 1 } };
         const across = [2]f32{ -along[1], along[0] };
         const cx = sx * scale;
         const cy = sy * scale;
-        const col = c.SDL_FColor{ .r = l.color[0], .g = l.color[1], .b = l.color[2], .a = l.alpha };
-        const corners = [4][4]f32{ .{ -1, -1, 0, 0 }, .{ 1, -1, 1, 0 }, .{ 1, 1, 1, 1 }, .{ -1, 1, 0, 1 } };
         for (corners, 0..) |k, j| verts[nq * 4 + j] = .{
             .position = .{
                 .x = cx + k[0] * long * along[0] + k[1] * half * across[0],
@@ -989,7 +1063,7 @@ test "ice is bright white to pale blue, not the floor's blue or a flame" {
     try testing.expect(!looksIcy(0xffd060)); // a flame
 }
 
-test "the Lost Woods drop leaves, the desert blows sand, Death Mountain's ash falls" {
+test "the Lost Woods drop leaves, the desert shimmers, Death Mountain's ash falls" {
     try testing.expectEqual(Ambience.leaves, ambienceFor(0x00));
     try testing.expectEqual(Ambience.wisps, ambienceFor(0x40));
     try testing.expectEqual(Ambience.heat, ambienceFor(0x30));

@@ -80,8 +80,9 @@ Rock's lava to Agahnim's lightning. Rooms that aren't dark dim a little when
 they have a fire for it to light, and rooms without one are left as the
 original draws them. Embers rise off fire, the sword sparks off walls, cut
 bushes shed leaves, waterfalls throw up mist, the air shimmers over lava and
-the desert sand, bombs send shockwaves rippling out, and the opening night
-gets a proper storm. Water, out in the world and down in the dungeons, is
+the desert sand, bombs send shockwaves rippling out, fireflies blink in the
+Lost Woods, dust drifts in the light from windows, magic and crystals bloom,
+and the opening night gets a proper storm. Water, out in the world and down in the dungeons, is
 redrawn at the screen's own resolution, with drifting light, fine wisps, foam
 along the shore, and Link reflected in it.
 

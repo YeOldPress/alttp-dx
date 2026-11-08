@@ -64,6 +64,12 @@ layout(set = 3, binding = 0) uniform Params {
     // What the water reflects: each one's left and right edges on the
     // frame, the line under its feet, and its top.
     vec4 mirrors[8];
+    // Unused, 1 when there's light from a window (the mask's alpha says
+    // where), how strong the bloom is, and how many bright things bloom.
+    vec4 air;
+    // Each one that blooms: where it is on the frame, how far round it,
+    // and how strongly.
+    vec4 blooms[8];
     // As in light_map.frag.
     vec4 lights[kMaxLights * 2];
 };
@@ -210,7 +216,7 @@ vec3 hdWater(vec2 p, vec3 art, bool clear) {
 }
 
 // The mask's alpha as a byte: 255 less the heat over lava, its lowest bit
-// clear for a sprite's pixel.
+// clear for a sprite's pixel and the next for light from a window.
 int maskAlpha(vec2 uv) {
     return int(texture(u_mask, uv).a * 255.0 + 0.5);
 }
@@ -237,6 +243,47 @@ vec3 reflections(vec2 p, vec3 col) {
     return col;
 }
 
+// Whether the mask says there's light from a window at uv.
+float beamAt(vec2 uv) {
+    return (maskAlpha(uv) & 2) == 0 ? 1.0 : 0.0;
+}
+
+// Light from a window, as the game draws it: hard-edged bands of it. Its
+// edges softened into the room, and a slow shimmer through it.
+vec3 windowLight(vec2 p, vec2 wp, vec3 c) {
+    float cover = beamAt(onFrame(p) * tex.zw);
+    vec3 around = c;
+    for (int i = 0; i < 8; i++) {
+        float a = float(i) * 0.7853982 + 0.3927;
+        vec2 uv = onFrame(p + vec2(cos(a), sin(a)) * 2.5) * tex.zw;
+        cover += beamAt(uv);
+        around += texture(u_frame, uv).rgb;
+    }
+    cover /= 9.0;
+    if (cover <= 0.0) return c;
+    around /= 9.0;
+    float edge = 1.0 - abs(cover * 2.0 - 1.0);
+    c = mix(c, around, edge * 0.6);
+    float t = waterTime();
+    return c + vec3(1.0, 0.95, 0.8) * cover * (0.05 + 0.03 * sin(t * 0.025 + wp.y * 0.04 - wp.x * 0.02));
+}
+
+// Bloom: bright sprites (magic, a crystal, the Master Sword held up)
+// bleeding their own colors softly out round them.
+vec3 bloom(vec2 p, vec3 c, float near) {
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < 12; i++) {
+        float a = float(i) * 2.39996;
+        float r = 1.0 + 4.5 * sqrt((float(i) + 0.5) / 12.0);
+        vec2 uv = onFrame(p + vec2(cos(a), sin(a)) * r) * tex.zw;
+        if ((maskAlpha(uv) & 1) != 0) continue;
+        vec3 s = texture(u_frame, uv).rgb;
+        sum += s * smoothstep(0.55, 1.0, max(s.r, max(s.g, s.b)));
+    }
+    sum /= 12.0;
+    return c + sum * (1.0 - c) * min(near, 1.0) * 2.0 * air.z;
+}
+
 void main() {
     vec2 p = v_uv * tex.xy;
     vec4 here = texture(u_mask, v_uv);
@@ -260,7 +307,7 @@ void main() {
         }
         // Over lava, the same but quicker and tighter, as hot as the air
         // is there.
-        float hot = fx.x > 0.0 ? float(255 - (maskAlpha(v_uv) | 1)) / 255.0 : 0.0;
+        float hot = fx.x > 0.0 ? float(255 - (maskAlpha(v_uv) | 3)) / 255.0 : 0.0;
         if (hot > 0.004) {
             float flick = 0.6 + 0.4 * fbm(wp / 20.0 + vec2(0.0, t * 0.02));
             float a = sin(wp.y * 0.8 + t * 0.15 + sin(wp.x * 0.07 + t * 0.02) * 1.5);
@@ -296,6 +343,7 @@ void main() {
     vec3 c = texture(u_frame, uv).rgb;
     float m = here.r * 255.0;
     if (w > 0.0) c = reflections(from, hdWater(from, c, seeThrough(uv)));
+    if (air.y > 0.0 && here.r * 255.0 > 0.5) c = windowLight(from, wp, c);
 
     if (m > 0.5 && m < 1.5) {
         // The light map's texels sit on SNES pixel centers.
@@ -304,6 +352,16 @@ void main() {
         vec3 lit = base + c * min(light, vec3(1.0));
         vec3 over = c * max(light - vec3(1.0), vec3(0.0)) * look.x;
         c = min(lit, c) + over;
+    }
+
+    if (m > 0.5 && air.z > 0.0 && air.w > 0.0) {
+        float near = 0.0;
+        for (int i = 0; i < 8; i++) {
+            if (float(i) >= air.w) break;
+            vec2 d = p - blooms[i].xy;
+            near += blooms[i].w * exp(-dot(d, d) / (2.0 * blooms[i].z * blooms[i].z));
+        }
+        if (near > 0.03) c = bloom(p, c, near);
     }
 
     if (m > 0.5 && look.y > 0.0) {
