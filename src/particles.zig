@@ -1,8 +1,7 @@
 //! Particles: embers off every flame, sparks when the sword hits a wall,
 //! leaves when a bush is cut, splashes in the water, and the rain; and what
 //! hangs in the air of some places, leaves in the Lost Woods, purple wisps in
-//! the Skull Woods, blowing sand in the desert, ash on the Dark World's
-//! mountain.
+//! the Skull Woods, ash on the Dark World's mountain.
 //!
 //! They're the port's own, kept apart from the game's RAM like the lighting
 //! (lighting.zig), so the game plays the same with them on or off: each game
@@ -72,8 +71,6 @@ const Particle = struct {
 var g_parts: [kMaxParticles]Particle = undefined;
 var g_n: usize = 0;
 var g_rng = std.Random.DefaultPrng.init(0x5eed_f1a3);
-/// Game frames gone by, for the desert's wind to rise and fall on.
-var g_tick: u32 = 0;
 
 /// What each ancilla slot held last frame, to tell a new one.
 var g_prev_ancilla: [10]u8 = @splat(0);
@@ -452,7 +449,6 @@ pub fn step() void {
         }
         i += 1;
     }
-    g_tick +%= 1;
     emit();
     if (lighting.raining()) rain();
     ambience(ambienceHere());
@@ -538,9 +534,10 @@ fn emit() void {
 
 /// What hangs in the air of some places out in the world, all the time:
 /// leaves coming down in the Lost Woods, glowing purple wisps of dark magic
-/// in the Skull Woods, sand blowing across the desert, ash falling on the Dark World's
-/// Death Mountain.
-pub const Ambience = enum { none, leaves, wisps, dust, ash };
+/// in the Skull Woods, ash falling on the Dark World's Death Mountain; and
+/// the desert's heat, which isn't particles but a shimmer over the picture
+/// (lighting.zig's heatHaze, light_apply.frag).
+pub const Ambience = enum { none, leaves, wisps, heat, ash };
 
 /// The ambience of an overworld area, by the game's number for it (the top
 /// left screen of a big one, as it keeps it).
@@ -548,62 +545,45 @@ pub fn ambienceFor(area: u8) Ambience {
     return switch (area) {
         0x00 => .leaves,
         0x40 => .wisps,
-        0x30 => .dust,
+        0x30 => .heat,
         0x43, 0x45, 0x47 => .ash,
         else => .none,
     };
 }
 
-fn ambienceHere() Ambience {
+pub fn ambienceHere() Ambience {
     if (vars.player_is_indoors.* != 0 or vars.main_module_index.* != 9) return .none;
     return ambienceFor(@truncate(vars.overworld_screen_index.*));
 }
 
-/// The desert's wind, how hard it's blowing to the right, in pixels a
-/// frame: always some, rising and falling in long slow gusts.
-pub fn wind(tick: u32) f32 {
-    const t: f32 = @floatFromInt(tick);
-    return @max(0.6 + 0.45 * @sin(t * 0.004) + 0.2 * @sin(t * 0.017), 0.2);
-}
-
 /// Somewhere in the view (and its widescreen margins), in the world.
-fn inView(upwind: f32) [2]f32 {
+fn inView() [2]f32 {
     const margin: f32 = @floatFromInt(snes_types.kPpuExtraLeftRight);
     const cam_x: f32 = @floatFromInt(vars.BG2HOFS_copy2.*);
     const cam_y: f32 = @floatFromInt(vars.BG2VOFS_copy2.*);
-    return .{ cam_x + range(-margin - upwind, 256 + margin), cam_y + range(-8, 224) };
+    return .{ cam_x + range(-margin, 256 + margin), cam_y + range(-8, 224) };
 }
 
 fn ambience(kind: Ambience) void {
     switch (kind) {
         .none => {},
         .leaves => if (rand() < 0.14) {
-            const at = inView(0);
+            const at = inView();
             const col: [3]f32 = if (rand() < 0.75) kLeaves else if (rand() < 0.7) .{ 0.68, 0.7, 0.28 } else .{ 0.78, 0.5, 0.2 };
             fallingLeaf(at[0], at[1], col);
         },
         .wisps => if (rand() < 0.18) {
-            const at = inView(0);
+            const at = inView();
             wisp(at[0], at[1]);
         },
-        .dust => {
-            const w = wind(g_tick);
-            if (rand() < 0.2 + 0.25 * w) {
-                const at = inView(w * 140);
-                dust(at[0], at[1], w);
-            }
-            if (rand() < 0.15 + 0.3 * w) {
-                const at = inView(w * 160);
-                sand(at[0], at[1], w);
-            }
-        },
+        .heat => {},
         .ash => {
             if (rand() < 0.3) {
-                const at = inView(0);
+                const at = inView();
                 ash(at[0], at[1]);
             }
             if (rand() < 0.012) {
-                const at = inView(0);
+                const at = inView();
                 cinder(at[0], at[1]);
             }
         },
@@ -637,7 +617,6 @@ fn fallingLeaf(x: f32, y: f32, color: [3]f32) void {
     });
 }
 
-/// Paler than the desert's own sand, so it shows against it.
 /// A wisp of the Skull Woods' dark magic: a glowing purple mote that
 /// throbs brighter and dimmer as it wanders slowly up and away.
 fn wisp(x: f32, y: f32) void {
@@ -658,55 +637,6 @@ fn wisp(x: f32, y: f32) void {
         .alpha = range(0.7, 1.0),
         .fade_in = 40,
         .pulse = true,
-    });
-}
-
-const kSand = [3]f32{ 1.0, 0.93, 0.76 };
-
-/// A soft haze of dust carried on the wind, spreading as it goes.
-fn dust(x: f32, y: f32, w: f32) void {
-    add(.{
-        .x = x,
-        .y = y,
-        .vx = w * range(0.8, 1.3),
-        .vy = range(-0.08, 0.06),
-        .drag = 1,
-        .gravity = 0,
-        .wobble = range(0.02, 0.06),
-        .age = 0,
-        .life = @intFromFloat(range(100, 180)),
-        .size = range(2.6, 4.2),
-        .grow = 0.015,
-        .hot = kSand,
-        .cool = kSand,
-        .seed = @truncate(g_rng.random().int(u16)),
-        .glows = false,
-        .alpha = range(0.22, 0.34),
-        .fade_in = 25,
-    });
-}
-
-/// A grain of sand skittering along faster than the haze.
-fn sand(x: f32, y: f32, w: f32) void {
-    const shade = range(0.85, 1.05);
-    add(.{
-        .x = x,
-        .y = y,
-        .vx = w * range(1.6, 2.4),
-        .vy = range(-0.05, 0.1),
-        .drag = 1,
-        .gravity = 0,
-        .wobble = 0.05,
-        .age = 0,
-        .life = @intFromFloat(range(60, 110)),
-        .size = range(0.8, 1.1),
-        .hot = .{ kSand[0] * shade, kSand[1] * shade, kSand[2] * shade },
-        .cool = kSand,
-        .seed = @truncate(g_rng.random().int(u16)),
-        .glows = false,
-        .crisp = true,
-        .alpha = range(0.45, 0.7),
-        .fade_in = 10,
     });
 }
 
@@ -1062,7 +992,7 @@ test "ice is bright white to pale blue, not the floor's blue or a flame" {
 test "the Lost Woods drop leaves, the desert blows sand, Death Mountain's ash falls" {
     try testing.expectEqual(Ambience.leaves, ambienceFor(0x00));
     try testing.expectEqual(Ambience.wisps, ambienceFor(0x40));
-    try testing.expectEqual(Ambience.dust, ambienceFor(0x30));
+    try testing.expectEqual(Ambience.heat, ambienceFor(0x30));
     try testing.expectEqual(Ambience.ash, ambienceFor(0x45));
     try testing.expectEqual(Ambience.none, ambienceFor(0x05)); // the Light World's mountain
     try testing.expectEqual(Ambience.none, ambienceFor(0x2c)); // Link's house
@@ -1080,18 +1010,5 @@ test "the Lost Woods drop leaves, the desert blows sand, Death Mountain's ash fa
     p.age = 40;
     try testing.expect(look(&p).alpha > 0.85);
 
-    // The wind always blows the sand along, harder some times than others.
-    var lo: f32 = 10;
-    var hi: f32 = 0;
-    var t: u32 = 0;
-    while (t < 4000) : (t += 7) {
-        lo = @min(lo, wind(t));
-        hi = @max(hi, wind(t));
-    }
-    try testing.expect(lo >= 0.2 and hi > lo + 0.6);
-    clear();
-    dust(0, 0, 1);
-    sand(0, 0, 1);
-    try testing.expect(g_parts[1].vx > g_parts[0].vx);
     clear();
 }

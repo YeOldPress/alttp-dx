@@ -32,6 +32,8 @@ const ApplyParams = extern struct {
     dark: [4]f32,
     look: [4]f32,
     weather: [4]f32,
+    water: [4]f32,
+    heat: [4]f32,
     lights: [kMaxLights * 2][4]f32,
 };
 
@@ -271,6 +273,8 @@ pub fn apply(r: *c.SDL_Renderer, frame: *c.SDL_Texture, tex_w: c_int, tex_h: c_i
         },
         .look = .{ g_overbright, if (simple()) 0 else g_glow, @floatFromInt(g_frame_count % 4096), f.ambient },
         .weather = .{ f.flash * lighting.kFlashStrength, 0, 0, 0 },
+        .water = .{ if (f.water) 1 else 0, @floatFromInt(f.tick % (1 << 20)), @floatFromInt(f.cam_x - f.left), @floatFromInt(f.cam_y) },
+        .heat = .{ if (f.heat) 1 else 0, @floatFromInt(f.tick % (1 << 20)), @floatFromInt(f.cam_x - f.left), @floatFromInt(f.cam_y) },
         .lights = lights,
     };
     _ = c.SDL_SetTextureBlendMode(frame, c.SDL_BLENDMODE_NONE);

@@ -40,6 +40,10 @@ const kMaxWidth = 256 + 2 * snes_pkg.ppu_types.kPpuExtraLeftRight;
 const kMaxHeight = 240;
 
 var g_mask: [kMaxHeight * kMaxWidth]u8 = undefined;
+/// Which layer each pixel came from, as the PPU's compositing saw it (see
+/// ppu.LightMask): the water's ripple is for the backgrounds, not what's
+/// drawn over them.
+var g_layers: [kMaxHeight * kMaxWidth]u8 = undefined;
 
 /// The light added to each pixel, per channel, 256 being all of the pixel
 /// as drawn.
@@ -96,8 +100,16 @@ pub const GpuFrame = struct {
     indoors: bool,
     /// The lightning's flash, 0 to 1.
     flash: f32,
+    /// There's water in the frame for HD Water to work on.
+    water: bool = false,
+    /// Game frames gone by, for the water to move in time with the game
+    /// rather than the screen's refresh.
+    tick: u32 = 0,
+    /// Out in the desert, where the heat shimmers over the picture.
+    heat: bool = false,
     /// A pixel a u32, `width` to a row: the mask's value in red, solid
-    /// ground in green, as light_map.frag reads them.
+    /// ground in green, as light_map.frag reads them, and the water in blue
+    /// (255 deep, less shallow) for light_apply.frag.
     mask: []const u32,
 };
 pub const kMaxGpuLights = 48;
@@ -335,8 +347,8 @@ pub fn easeToward(now: f32, target: f32, step: f32) f32 {
 
 fn roomMode() Mode {
     // Particles want the HUD told apart from the scene, and indoors the
-    // room's fires checked for their embers.
-    const plain: Mode = if (particles.enabled() and (particles.count() != 0 or vars.player_is_indoors.* != 0)) .plain else .off;
+    // room's fires checked for their embers; HD Water, the water found.
+    const plain: Mode = if (g_water_on or g_heat_on or (particles.enabled() and (particles.count() != 0 or vars.player_is_indoors.* != 0))) .plain else .off;
     if (!config.g_config.dynamic_lighting) return plain;
     if (vars.player_is_indoors.* == 0) {
         if (raining()) return .storm;
@@ -360,7 +372,10 @@ var g_saved_half_color: ?bool = null;
 /// Before the PPU draws a frame: in a dark room, hands it the mask to mark.
 /// Needs the whole-line renderer, the only one that knows about the mask.
 pub fn beginFrame(ppu: *Ppu, render_flags: u32, height: usize) void {
-    g_mode = if (render_flags & snes_pkg.ppu_types.kPpuRenderFlags_NewRenderer != 0) roomMode() else .off;
+    const new_renderer = render_flags & snes_pkg.ppu_types.kPpuRenderFlags_NewRenderer != 0;
+    g_water_on = new_renderer and scanWater(ppu.extraLeftRight);
+    g_heat_on = new_renderer and heatHaze();
+    g_mode = if (new_renderer) roomMode() else .off;
     g_active = g_mode != .off;
     // The game's flash adds the rain layer on at full strength instead of
     // half: drawn at half, the storm's own lightning does the flashing.
@@ -373,7 +388,8 @@ pub fn beginFrame(ppu: *Ppu, render_flags: u32, height: usize) void {
         return;
     }
     @memset(g_mask[0 .. height * kMaxWidth], 0);
-    ppu_mod.g_light_mask = .{ .mask = &g_mask, .pitch = kMaxWidth, .dark = g_mode == .dark };
+    @memset(g_layers[0 .. height * kMaxWidth], 0xff);
+    ppu_mod.g_light_mask = .{ .mask = &g_mask, .pitch = kMaxWidth, .dark = g_mode == .dark, .layers = &g_layers };
 }
 
 /// After the PPU's drawn the frame into `pixels` (XRGB, `pitch` bytes a
@@ -450,6 +466,9 @@ pub fn endFrame(ppu: *Ppu, pixels: [*]u8, pitch: usize, height: usize) void {
         .left = ppu.extraLeftRight,
         .indoors = vars.player_is_indoors.* != 0,
         .flash = flash(),
+        .water = g_water_on,
+        .heat = g_heat_on,
+        .tick = g_tick,
         .mask = &.{},
     };
     @memcpy(g_gpu_frame.lights[0..k], lights[0..k]);
@@ -707,6 +726,7 @@ pub fn takeGpuFrame(pixels: [*]u8, pitch: usize) ?*const GpuFrame {
     if (!g_gpu_pending) return null;
     g_gpu_pending = false;
     const f = &g_gpu_frame;
+    if (f.water) noteWaterColors(pixels, pitch, f);
     for (0..f.height) |y| {
         const row: [*]align(1) u32 = @ptrCast(pixels + y * pitch);
         const out = g_gpu_mask[y * f.width ..][0..f.width];
@@ -717,11 +737,288 @@ pub fn takeGpuFrame(pixels: [*]u8, pitch: usize) ?*const GpuFrame {
             row[x] &= 0xffffff;
             const tx: usize = @intCast(@mod(@as(i32, @intCast(x)) - f.left + f.cam_x, 512) >> 3);
             const solid: u32 = if (f.indoors) solidness(attrs[tx]) else 0;
-            o.* = 0xff000000 | m << 16 | solid << 8;
+            const water: u32 = if (f.water) waterAt(f, x, y, row[x], m != 0) else 0;
+            o.* = 0xff000000 | m << 16 | solid << 8 | water;
         }
     }
     f.mask = g_gpu_mask[0 .. f.width * f.height];
     return f;
+}
+
+// ------------------------------------------------------------- HD water
+
+/// The water on and around the screen, a tile at a time, as waterDepth
+/// gives it, from the tile at (g_water_x0, g_water_y0) in the world, 8
+/// pixel steps; and next to it, the deepest water in the tiles around.
+const kWaterCols = kMaxWidth / 8 + 2;
+const kWaterRows = kMaxHeight / 8 + 2;
+var g_water: [kWaterRows][kWaterCols]u8 = undefined;
+var g_water_near: [kWaterRows][kWaterCols]u8 = undefined;
+/// Tiles past the area's edges, where its tile attributes don't reach: the
+/// widescreen margins can show the area next door there, and the water in
+/// it is found by its colors alone.
+var g_water_outside: [kWaterRows][kWaterCols]bool = undefined;
+/// Tiles of a waterfall's face (or a rock in the water, which shares its
+/// attribute), where the dark blues are falling water, not the water's
+/// shading along a shore.
+var g_water_face: [kWaterRows][kWaterCols]bool = undefined;
+var g_water_x0: i32 = 0;
+var g_water_y0: i32 = 0;
+/// There's water on the screen this frame for HD Water to work on.
+var g_water_on = false;
+
+/// The desert's heat shimmering over the picture this frame
+/// (light_apply.frag), in place of anything drifting in its air.
+var g_heat_on = false;
+
+/// Whether the heat shimmers here: out in the desert, with particles on
+/// and the GPU to draw it.
+fn heatHaze() bool {
+    return g_gpu and particles.enabled() and particles.ambienceHere() == .heat;
+}
+
+/// The colors the water's drawn in this frame, found in its full tiles,
+/// so its edge can be followed pixel by pixel through the tiles along the
+/// shore, which are part water and part land.
+var g_water_colors: [16]u32 = undefined;
+var g_nwater_colors: usize = 0;
+/// Frames since each was last seen filling the water. A color stays a
+/// while after, so the water's edge doesn't flicker as the game cycles its
+/// colors from frame to frame.
+var g_water_color_age: [16]u16 = undefined;
+const kWaterColorKeep = 120;
+
+pub fn hdWater() bool {
+    return config.g_config.hd_water and g_gpu;
+}
+
+/// 2 for deep water, 1 for shallow, 0 for anything else, by a tile's
+/// attribute, as the game's tile detection reads them.
+pub fn waterDepth(attr: u8) u8 {
+    return switch (attr) {
+        0x08 => 2,
+        0x09 => 1,
+        else => 0,
+    };
+}
+
+/// Looks over the tiles on the screen for water (outdoors, for now),
+/// filling in g_water. Whether there's any.
+fn scanWater(left: i32) bool {
+    if (!hdWater() or vars.player_is_indoors.* != 0 or !inOverworldPlay()) return false;
+    const cam_x: i32 = vars.BG2HOFS_copy2.*;
+    const cam_y: i32 = vars.BG2VOFS_copy2.*;
+    g_water_x0 = ((cam_x - left) >> 3) - 1;
+    g_water_y0 = (cam_y >> 3) - 1;
+    const b = vars.ow_scroll_vars0.*;
+    var attrs: [kWaterRows][kWaterCols]u8 = undefined;
+    var any = false;
+    for (0..kWaterRows) |r| for (0..kWaterCols) |col| {
+        const wx = (g_water_x0 + @as(i32, @intCast(col))) * 8;
+        const wy = (g_water_y0 + @as(i32, @intCast(r))) * 8;
+        const outside = wx < b.xstart or wx >= @as(i32, b.xend) + 256 or wy < b.ystart or wy >= @as(i32, b.yend) + 224;
+        g_water_outside[r][col] = outside;
+        const attr: u8 = if (outside) 0 else overworldAttr(wx, wy);
+        attrs[r][col] = attr;
+        g_water[r][col] = waterDepth(attr);
+        g_water_face[r][col] = attr == kFallFace;
+    };
+    // Down the middle of a waterfall the game marks a strip as shallow
+    // water, between the face's own tiles on either side: it's the falls,
+    // drawn as falling water, not a lake to redraw.
+    for (0..kWaterRows) |r| for (0..kWaterCols) |col| {
+        if (attrs[r][col] == 0x09 and fallsBeside(&attrs[r], col)) g_water[r][col] = 0;
+        any = any or g_water[r][col] != 0;
+    };
+    if (!any) return false;
+    for (0..kWaterRows) |r| for (0..kWaterCols) |col| {
+        var near: u8 = 0;
+        for (@max(r, 1) - 1..@min(r + 2, kWaterRows)) |rr| for (@max(col, 1) - 1..@min(col + 2, kWaterCols)) |cc| {
+            near = @max(near, g_water[rr][cc]);
+        };
+        g_water_near[r][col] = near;
+    };
+    return true;
+}
+
+/// The attribute of a waterfall's face.
+const kFallFace = 0x02;
+
+/// Whether the tile at `col` in a row of attributes has a waterfall's face
+/// within a couple of tiles on both sides of it.
+pub fn fallsBeside(row: []const u8, col: usize) bool {
+    var left = false;
+    var right = false;
+    for (1..3) |d| {
+        if (col >= d and row[col - d] == kFallFace) left = true;
+        if (col + d < row.len and row[col + d] == kFallFace) right = true;
+    }
+    return left and right;
+}
+
+/// The water tile under pixel (x, y) of the frame, and the deepest around
+/// it.
+fn waterTile(f: *const GpuFrame, x: usize, y: usize) struct { depth: u8, near: u8, outside: bool = false, face: bool = false } {
+    const tx = ((@as(i32, @intCast(x)) - f.left + f.cam_x) >> 3) - g_water_x0;
+    const ty = ((@as(i32, @intCast(y)) + f.cam_y) >> 3) - g_water_y0;
+    if (tx < 0 or ty < 0 or tx >= kWaterCols or ty >= kWaterRows) return .{ .depth = 0, .near = 0 };
+    const c: usize = @intCast(tx);
+    const r: usize = @intCast(ty);
+    // Past the area's edges, any water's as good as deep and near.
+    if (g_water_outside[r][c]) return .{ .depth = 0, .near = 2, .outside = true };
+    return .{ .depth = g_water[r][c], .near = g_water_near[r][c], .face = g_water_face[r][c] };
+}
+
+/// Whether the pixel at (x, y) is a background's: a sprite over the water
+/// (Link swimming, a Zora) is left alone.
+fn backgroundAt(f: *const GpuFrame, x: usize, y: usize) bool {
+    _ = f;
+    return g_layers[y * kMaxWidth + x] <= 1;
+}
+
+/// Gathers the colors the full water tiles are drawn in: the ones that fill
+/// stretches of them, however small a share of the screen, and not the
+/// thin crests of the waves drawn over them a pixel tall, which mostly
+/// have other colors around them.
+fn noteWaterColors(pixels: [*]u8, pitch: usize, f: *const GpuFrame) void {
+    var colors: [32]u32 = undefined;
+    var counts: [32]u32 = undefined;
+    var filled: [32]u32 = undefined;
+    var n: usize = 0;
+    var total: u32 = 0;
+    var y: usize = 0;
+    // Every other row and column is plenty to see what they're made of.
+    while (y < f.height) : (y += 2) {
+        const row: [*]align(1) const u32 = @ptrCast(pixels + y * pitch);
+        var x: usize = 0;
+        while (x < f.width) : (x += 2) {
+            if (row[x] >> 24 == 0 or waterTile(f, x, y).depth == 0 or !backgroundAt(f, x, y)) continue;
+            const px = row[x] & 0xffffff;
+            total += 1;
+            const k = for (colors[0..n], 0..) |col, i| {
+                if (col == px) break i;
+            } else blk: {
+                if (n == colors.len) break :blk null;
+                colors[n] = px;
+                counts[n] = 0;
+                filled[n] = 0;
+                n += 1;
+                break :blk n - 1;
+            };
+            if (k) |i| {
+                counts[i] += 1;
+                // The same color a pixel below and beside it: a stretch of
+                // it, not a line.
+                if (y + 1 < f.height and x + 1 < f.width) {
+                    const below: [*]align(1) const u32 = @ptrCast(pixels + (y + 1) * pitch);
+                    if (below[x] & 0xffffff == px and row[x + 1] & 0xffffff == px) filled[i] += 1;
+                }
+            }
+        }
+    }
+    for (g_water_color_age[0..g_nwater_colors]) |*age| age.* +|= 1;
+    for (colors[0..n], counts[0..n], filled[0..n]) |col, cnt, fill| {
+        // Even the water's rarer colors; but only what fills.
+        if (cnt * 500 < total or fill * 2 < cnt) continue;
+        const k = for (g_water_colors[0..g_nwater_colors], 0..) |w, i| {
+            if (w == col) break i;
+        } else blk: {
+            if (g_nwater_colors < g_water_colors.len) {
+                g_nwater_colors += 1;
+                break :blk g_nwater_colors - 1;
+            }
+            // Full: the one gone longest makes way.
+            break :blk std.mem.indexOfMax(u16, &g_water_color_age);
+        };
+        g_water_colors[k] = col;
+        g_water_color_age[k] = 0;
+    }
+    // Those not seen in a while go.
+    var i: usize = 0;
+    while (i < g_nwater_colors) {
+        if (g_water_color_age[i] > kWaterColorKeep) {
+            g_nwater_colors -= 1;
+            g_water_colors[i] = g_water_colors[g_nwater_colors];
+            g_water_color_age[i] = g_water_color_age[g_nwater_colors];
+        } else i += 1;
+    }
+}
+
+/// Whether `px` is one of the water's colors, or near enough: a tile with
+/// something on it may draw the water around it in a palette of its own.
+fn isWaterColor(px: u32) bool {
+    for (g_water_colors[0..g_nwater_colors]) |w| {
+        if (colorNear(px, w, 20)) return true;
+    }
+    return false;
+}
+
+/// Plainly blue, the way water is drawn: blue well over red, and over green.
+pub fn looksLikeWater(px: u32) bool {
+    const r = (px >> 16) & 0xff;
+    const g = (px >> 8) & 0xff;
+    const b = px & 0xff;
+    return b >= 0x60 and b >= r + 0x30 and b >= g + 0x10;
+}
+
+/// A pale, bright blue, lighter than water: a shore's light outline, the
+/// crest of a wave.
+fn isPaleBlue(px: u32) bool {
+    return (px >> 8) & 0xff >= 0xa0 and px & 0xff >= 0xe0;
+}
+
+/// Pale, near white: spray, foam, the light on falling water.
+fn isLight(px: u32) bool {
+    return (px >> 16) & 0xff >= 0xa0 and (px >> 8) & 0xff >= 0xa0 and px & 0xff >= 0xa0;
+}
+
+fn isWaterColorExactly(px: u32) bool {
+    for (g_water_colors[0..g_nwater_colors]) |w| {
+        if (w == px & 0xffffff) return true;
+    }
+    return false;
+}
+
+fn colorNear(a: u32, b: u32, tolerance: u32) bool {
+    inline for (.{ 0, 8, 16 }) |shift| {
+        const x = (a >> shift) & 0xff;
+        const y = (b >> shift) & 0xff;
+        if (@max(x, y) - @min(x, y) > tolerance) return false;
+    }
+    return true;
+}
+
+/// The mask's blue for pixel (x, y), drawn `px`: how deep the water is
+/// there, 0 for none, odd where it's in the water's own colors and even
+/// where it's some speck on it, which light_apply.frag leaves out of the
+/// water's blended color. In a water tile it's all water; in a tile next
+/// to one, the pixels in the water's colors are. Something over the water,
+/// a sprite or the HUD, is 2: not water itself, but not the shore either.
+fn waterAt(f: *const GpuFrame, x: usize, y: usize, px: u32, scene: bool) u32 {
+    const t = waterTile(f, x, y);
+    if (!scene) return if (t.depth != 0) 2 else 0;
+    // A sprite drawn with the water's own color behind it (a lily pad) is
+    // water there; the rest of it, and every other sprite, is left be.
+    if (!backgroundAt(f, x, y)) return if (t.depth == 0) 0 else if (isWaterColorExactly(px)) t.depth * 100 + 1 else 2;
+    // Past the area's edges there's nothing to go on but the picture: what's
+    // plainly blue is water. Beside it, so is a darker blue, the water's
+    // shading along a shore, except on a waterfall's face.
+    const clean = isWaterColor(px);
+    const watery = clean or (looksLikeWater(px) and (t.outside or (!t.face and !isPaleBlue(px))));
+    const depth = if (t.depth != 0) t.depth else if (t.near != 0 and watery) t.near else 0;
+    const v: u32 = switch (depth) {
+        2 => 254,
+        1 => 140,
+        // Something pale or blue that isn't the water's own colors (a
+        // waterfall, the lip it pours over, the shore's light outline) is
+        // left as drawn, and is no shore for the foam, which would trace
+        // its tiles' straight edges.
+        else => return if (looksLikeWater(px) or isLight(px)) 2 else 0,
+    };
+    // Only the water's own colors, exactly, count toward its blended color;
+    // specks on it (the waves' crests, rocks) and the shading along a shore
+    // are drawn over by it but don't.
+    return v | @intFromBool(isWaterColorExactly(px));
 }
 
 /// How much the game takes off each channel of the room to darken it, on
@@ -1964,4 +2261,22 @@ test "Dim Flashes softens the lightning and steadies the flicker" {
     try testing.expectApproxEqAbs(@as(f32, 0.8) * kDimFlash, flash(), 0.0001);
     const b = steadyBurn(kSparkBurn);
     try testing.expect(b.waver < kSparkBurn.waver and b.speed < kSparkBurn.speed and b.gutter < kSparkBurn.gutter);
+}
+
+test "HD Water knows deep from shallow, and follows the shore by the water's colors" {
+    try testing.expectEqual(@as(u8, 2), waterDepth(0x08));
+    try testing.expectEqual(@as(u8, 1), waterDepth(0x09));
+    try testing.expectEqual(@as(u8, 0), waterDepth(0x00));
+    g_water_colors[0] = 0x3060c0;
+    g_water_colors[1] = 0x4878d8;
+    g_nwater_colors = 2;
+    defer g_nwater_colors = 0;
+    try testing.expect(isWaterColor(0x003060c0));
+    try testing.expect(isWaterColor(0x014878d8)); // the mask's byte on top doesn't count
+    try testing.expect(!isWaterColor(0x806020)); // the bank
+    // The shallow strip down the middle of a waterfall isn't water to redraw.
+    try testing.expect(fallsBeside(&.{ 0x02, 0x02, 0x09, 0x09, 0x02, 0x02 }, 2));
+    try testing.expect(!fallsBeside(&.{ 0x08, 0x09, 0x09, 0x09, 0x02, 0x02 }, 2));
+    try testing.expect(looksLikeWater(0x5a84c6) and looksLikeWater(0x3963ad));
+    try testing.expect(!looksLikeWater(0x806020) and !looksLikeWater(0x4a9c4a) and !looksLikeWater(0xf8f8f8));
 }

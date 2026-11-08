@@ -160,6 +160,7 @@ pub const kSettings = [_]Setting{
     } } },
     .{ .section = "Graphics", .key = "RoomDimming", .label = "Room Dimming", .kind = .{ .number = .{ .min = 0, .max = 40, .step = 5, .suffix = "%" } } },
     .{ .section = "Graphics", .key = "Particles", .label = "Particles", .kind = .toggle },
+    .{ .section = "Graphics", .key = "HdWater", .label = "HD Water", .kind = .toggle },
     .{ .section = "Graphics", .key = "DimFlashes", .label = "Dim Flashes", .kind = .toggle },
     .{ .section = "Graphics", .key = "WindowSize", .label = "Window Size", .kind = .text },
 
@@ -679,7 +680,8 @@ pub fn describe(s: Setting) []const u8 {
         .{ "DynamicLighting", "Light dark dungeon rooms with flickering light from the lantern, torches and fire, instead of the original's flat darkness. On a GPU, walls cast soft shadows and flames glow. Outdoors, warp pads glow, and in the storm lightning flashes and the lantern lights the night. Needs New Renderer." },
         .{ "LightingQuality", "Full casts soft shadows from walls and gives flames a glow. Simple keeps the light and its flicker without them, for slower graphics cards. Without a GPU it's always simple." },
         .{ "RoomDimming", "How much rooms that aren't dark are dimmed so their torches, braziers and candles have something to light. Rooms without any are left as the original draws them. 0 leaves every room that way, with just the flames' glow." },
-        .{ "Particles", "Embers drifting up off torches and fire, sparks when the sword strikes a wall, leaves off cut bushes, splashes in the water, and heavier rain in a storm. Needs New Renderer." },
+        .{ "Particles", "Embers drifting up off torches and fire, sparks when the sword strikes a wall, leaves off cut bushes, splashes in the water, heavier rain in a storm, and the desert's heat shimmering on a GPU. Needs New Renderer." },
+        .{ "HdWater", "Redraws lakes and rivers at your screen's resolution instead of in big pixels, with soft drifting light, fine wisps, sparkles and foam along the shore. Link and anything else in the water stays sharp. Needs a GPU and New Renderer." },
         .{ "DimFlashes", "Tone down flashing effects, as the Virtual Console releases did." },
         .{ "Volume", "How loud the whole game plays, music and sound effects together, MSU music included. Changes as you move it. Shift and plus or minus on the keyboard change it too." },
         .{ "EnableAudio", "Play sound and music at all." },
