@@ -14,6 +14,9 @@ struct Params
     float4 weather;
     float4 water;
     float4 heat;
+    float4 fx;
+    float4 shocks[6];
+    float4 mirrors[8];
     float4 lights[96];
 };
 
@@ -26,6 +29,18 @@ struct main0_in
 {
     float2 v_uv [[user(locn1)]];
 };
+
+static inline __attribute__((always_inline))
+float2 worldAt(thread const float2& p, constant Params& _80)
+{
+    return p + _80.water.zw;
+}
+
+static inline __attribute__((always_inline))
+float waterTime(constant Params& _80)
+{
+    return _80.water.y;
+}
 
 static inline __attribute__((always_inline))
 float vhash(thread const float2& i)
@@ -62,38 +77,39 @@ float fbm(thread float2& x)
 }
 
 static inline __attribute__((always_inline))
-float2 onFrame(thread const float2& p, constant Params& _61)
+int maskAlpha(thread const float2& uv, texture2d<float> u_mask, sampler u_maskSmplr)
 {
-    return fast::clamp(p, float2(0.5), _61.map.xy - float2(0.5));
+    return int((u_mask.sample(u_maskSmplr, uv).w * 255.0) + 0.5);
+}
+
+static inline __attribute__((always_inline))
+float2 onFrame(thread const float2& p, constant Params& _80)
+{
+    return fast::clamp(p, float2(0.5), _80.map.xy - float2(0.5));
+}
+
+static inline __attribute__((always_inline))
+bool seeThrough(thread const float2& uv, texture2d<float> u_mask, sampler u_maskSmplr)
+{
+    float b = u_mask.sample(u_maskSmplr, uv).z * 255.0;
+    return (b > 198.5) && (b < 201.5);
 }
 
 static inline __attribute__((always_inline))
 bool cleanWater(thread const float2& uv, texture2d<float> u_mask, sampler u_maskSmplr)
 {
     int b = int((u_mask.sample(u_maskSmplr, uv).z * 255.0) + 0.5);
-    bool _304 = b > 2;
-    bool _310;
-    if (_304)
+    bool _322 = b > 2;
+    bool _328;
+    if (_322)
     {
-        _310 = (b & 1) == 1;
+        _328 = (b & 1) == 1;
     }
     else
     {
-        _310 = _304;
+        _328 = _322;
     }
-    return _310;
-}
-
-static inline __attribute__((always_inline))
-float waterTime(constant Params& _61)
-{
-    return _61.water.y;
-}
-
-static inline __attribute__((always_inline))
-float2 worldAt(thread const float2& p, constant Params& _61)
-{
-    return p + _61.water.zw;
+    return _328;
 }
 
 static inline __attribute__((always_inline))
@@ -103,20 +119,20 @@ float hash(thread const float2& p)
 }
 
 static inline __attribute__((always_inline))
-float waterNear(thread const float2& p, constant Params& _61, texture2d<float> u_mask, sampler u_maskSmplr)
+float waterNear(thread const float2& p, constant Params& _80, texture2d<float> u_mask, sampler u_maskSmplr)
 {
-    float2 q = fast::clamp(p, float2(1.0), _61.map.xy - float2(1.0)) - float2(0.5);
+    float2 q = fast::clamp(p, float2(1.0), _80.map.xy - float2(1.0)) - float2(0.5);
     float2 i = floor(q);
     float2 f = q - i;
-    float a = step(0.0040000001899898052215576171875, u_mask.sample(u_maskSmplr, ((i + float2(0.5)) * _61.tex.zw)).z);
-    float b = step(0.0040000001899898052215576171875, u_mask.sample(u_maskSmplr, ((i + float2(1.5, 0.5)) * _61.tex.zw)).z);
-    float c = step(0.0040000001899898052215576171875, u_mask.sample(u_maskSmplr, ((i + float2(0.5, 1.5)) * _61.tex.zw)).z);
-    float d = step(0.0040000001899898052215576171875, u_mask.sample(u_maskSmplr, ((i + float2(1.5)) * _61.tex.zw)).z);
+    float a = step(0.0040000001899898052215576171875, u_mask.sample(u_maskSmplr, ((i + float2(0.5)) * _80.tex.zw)).z);
+    float b = step(0.0040000001899898052215576171875, u_mask.sample(u_maskSmplr, ((i + float2(1.5, 0.5)) * _80.tex.zw)).z);
+    float c = step(0.0040000001899898052215576171875, u_mask.sample(u_maskSmplr, ((i + float2(0.5, 1.5)) * _80.tex.zw)).z);
+    float d = step(0.0040000001899898052215576171875, u_mask.sample(u_maskSmplr, ((i + float2(1.5)) * _80.tex.zw)).z);
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
 static inline __attribute__((always_inline))
-float3 hdWater(thread const float2& p, thread const float3& art, constant Params& _61, texture2d<float> u_mask, sampler u_maskSmplr, texture2d<float> u_frame, sampler u_frameSmplr)
+float3 hdWater(thread const float2& p, thread const float3& art, thread const bool& clear, constant Params& _80, texture2d<float> u_mask, sampler u_maskSmplr, texture2d<float> u_frame, sampler u_frameSmplr)
 {
     float3 sum = float3(0.0);
     float n = 0.0;
@@ -125,7 +141,7 @@ float3 hdWater(thread const float2& p, thread const float3& art, constant Params
         float a = float(i) * 2.399960041046142578125;
         float r = 1.5 + (4.5 * sqrt((float(i) + 0.5) / 12.0));
         float2 param = p + (float2(cos(a), sin(a)) * r);
-        float2 uv = onFrame(param, _61) * _61.tex.zw;
+        float2 uv = onFrame(param, _80) * _80.tex.zw;
         float2 param_1 = uv;
         if (cleanWater(param_1, u_mask, u_maskSmplr))
         {
@@ -133,37 +149,50 @@ float3 hdWater(thread const float2& p, thread const float3& art, constant Params
             n += 1.0;
         }
     }
-    float3 _375;
+    float3 _408;
     if (n > 0.0)
     {
-        _375 = sum / float3(n);
+        _408 = sum / float3(n);
     }
     else
     {
-        _375 = art;
+        _408 = art;
     }
-    float3 base = _375;
-    float t = waterTime(_61);
+    float3 base = _408;
+    if (clear)
+    {
+        base = mix(base, art, float3(0.699999988079071044921875));
+    }
+    float t = waterTime(_80);
     float2 param_2 = p;
-    float2 wp = worldAt(param_2, _61);
+    float2 wp = worldAt(param_2, _80);
     float3 sky = float3(0.86000001430511474609375, 0.930000007152557373046875, 1.0);
     float2 q = (wp / float2(56.0)) + float2(t * 0.000600000028498470783233642578125, t * 0.00039999998989515006542205810546875);
     float2 param_3 = (q * 0.699999988079071044921875) - float2(t * 0.0003000000142492353916168212890625, 0.0);
-    float _419 = fbm(param_3);
-    float2 param_4 = q + float2(_419 * 1.60000002384185791015625);
-    float _425 = fbm(param_4);
-    float cloud = _425;
-    float3 col = base * (0.7200000286102294921875 + (0.60000002384185791015625 * cloud));
-    col = mix(col, sky, float3(smoothstep(0.550000011920928955078125, 0.85000002384185791015625, cloud) * 0.300000011920928955078125));
+    float _459 = fbm(param_3);
+    float2 param_4 = q + float2(_459 * 1.60000002384185791015625);
+    float _465 = fbm(param_4);
+    float cloud = _465;
+    float _469;
+    if (clear)
+    {
+        _469 = 0.87999999523162841796875 + (0.25 * cloud);
+    }
+    else
+    {
+        _469 = 0.7200000286102294921875 + (0.60000002384185791015625 * cloud);
+    }
+    float3 col = base * _469;
+    col = mix(col, sky, float3(smoothstep(0.550000011920928955078125, 0.85000002384185791015625, cloud) * (clear ? 0.119999997317790985107421875 : 0.300000011920928955078125)));
     float2 v = wp / float2(24.0);
     float2 param_5 = (v * 0.800000011920928955078125) + float2(t * 0.0010999999940395355224609375, (-t) * 0.0007999999797903001308441162109375);
-    float _463 = fbm(param_5);
-    float warp = _463;
+    float _517 = fbm(param_5);
+    float warp = _517;
     float2 param_6 = (v + float2(warp * 1.2999999523162841796875)) + float2((-t) * 0.00069999997504055500030517578125, t * 0.000899999984540045261383056640625);
-    float _481 = fbm(param_6);
-    float r_1 = _481;
+    float _535 = fbm(param_6);
+    float r_1 = _535;
     float wisp = 1.0 - smoothstep(0.0, fast::max(0.02199999988079071044921875, fwidth(r_1) * 1.5), abs(r_1 - 0.5));
-    col += ((sky * wisp) * (0.07999999821186065673828125 + (0.14000000059604644775390625 * cloud)));
+    col += (((sky * wisp) * (0.07999999821186065673828125 + (0.14000000059604644775390625 * cloud))) * (clear ? 0.699999988079071044921875 : 1.0));
     float2 cell = floor(wp / float2(5.0));
     float2 param_7 = cell;
     float h = hash(param_7);
@@ -180,156 +209,237 @@ float3 hdWater(thread const float2& p, thread const float3& art, constant Params
     {
         float a_1 = (float(i_1) * 0.785398185253143310546875) + 0.3926999866962432861328125;
         float2 param_10 = p + (float2(cos(a_1), sin(a_1)) * 3.5);
-        around += waterNear(param_10, _61, u_mask, u_maskSmplr);
+        around += waterNear(param_10, _80, u_mask, u_maskSmplr);
     }
     around /= 8.0;
     float2 param_11 = (wp / float2(6.0)) + float2(t * 0.00200000009499490261077880859375, (-t) * 0.00150000001303851604461669921875);
-    float _621 = fbm(param_11);
-    float broken = 0.5 + (0.5 * smoothstep(0.3499999940395355224609375, 0.64999997615814208984375, _621));
+    float _676 = fbm(param_11);
+    float broken = 0.5 + (0.5 * smoothstep(0.3499999940395355224609375, 0.64999997615814208984375, _676));
     float foam = smoothstep(1.0, 0.550000011920928955078125, around) * broken;
     col = mix(col, float3(0.949999988079071044921875, 0.980000019073486328125, 1.0), float3(foam * 0.180000007152557373046875));
     return col;
 }
 
 static inline __attribute__((always_inline))
-float _noise(thread const float2& p, constant Params& _61)
+float3 reflections(thread const float2& p, thread float3& col, constant Params& _80, texture2d<float> u_mask, sampler u_maskSmplr, texture2d<float> u_frame, sampler u_frameSmplr)
 {
-    return fract(sin(dot(p, float2(12.98980045318603515625, 78.233001708984375)) + (_61.look.z * 0.617999970912933349609375)) * 43758.546875);
+    float t = waterTime(_80);
+    for (int i = 0; i < 8; i++)
+    {
+        if (float(i) >= _80.fx.z)
+        {
+            break;
+        }
+        float4 m = _80.mirrors[i];
+        float depth = p.y - m.z;
+        float height = m.z - m.w;
+        bool _749 = p.x < (m.x - 2.0);
+        bool _759;
+        if (!_749)
+        {
+            _759 = p.x > (m.y + 2.0);
+        }
+        else
+        {
+            _759 = _749;
+        }
+        if ((_759 || (depth < 0.0)) || (depth > height))
+        {
+            continue;
+        }
+        float wave = (sin((p.y * 0.89999997615814208984375) + (t * 0.119999997317790985107421875)) * 0.60000002384185791015625) * (0.300000011920928955078125 + (depth / height));
+        float2 q = float2(p.x + wave, (m.z - depth) - 1.0);
+        float2 param = q;
+        float2 uv = onFrame(param, _80) * _80.tex.zw;
+        float2 param_1 = uv;
+        if ((maskAlpha(param_1, u_mask, u_maskSmplr) & 1) != 0)
+        {
+            continue;
+        }
+        float3 seen = u_frame.sample(u_frameSmplr, uv).xyz;
+        float fade = 0.4199999868869781494140625 * (1.0 - (depth / height));
+        col = mix(col, seen * mix(float3(1.0), col * 1.60000002384185791015625, float3(0.449999988079071044921875)), float3(fade));
+    }
+    return col;
 }
 
-fragment main0_out main0(main0_in in [[stage_in]], constant Params& _61 [[buffer(0)]], texture2d<float> u_frame [[texture(0)]], texture2d<float> u_mask [[texture(1)]], texture2d<float> u_light [[texture(2)]], sampler u_frameSmplr [[sampler(0)]], sampler u_maskSmplr [[sampler(1)]], sampler u_lightSmplr [[sampler(2)]], float4 gl_FragCoord [[position]])
+static inline __attribute__((always_inline))
+float _noise(thread const float2& p, constant Params& _80)
+{
+    return fract(sin(dot(p, float2(12.98980045318603515625, 78.233001708984375)) + (_80.look.z * 0.617999970912933349609375)) * 43758.546875);
+}
+
+fragment main0_out main0(main0_in in [[stage_in]], constant Params& _80 [[buffer(0)]], texture2d<float> u_frame [[texture(0)]], texture2d<float> u_mask [[texture(1)]], texture2d<float> u_light [[texture(2)]], sampler u_frameSmplr [[sampler(0)]], sampler u_maskSmplr [[sampler(1)]], sampler u_lightSmplr [[sampler(2)]], float4 gl_FragCoord [[position]])
 {
     main0_out out = {};
-    float2 p = in.v_uv * _61.tex.xy;
+    float2 p = in.v_uv * _80.tex.xy;
     float4 here = u_mask.sample(u_maskSmplr, in.v_uv);
-    bool _658 = _61.water.x > 0.0;
-    bool _666;
-    if (_658)
-    {
-        _666 = (here.z * 255.0) > 2.5;
-    }
-    else
-    {
-        _666 = _658;
-    }
-    float _667;
-    if (_666)
-    {
-        _667 = here.z;
-    }
-    else
-    {
-        _667 = 0.0;
-    }
-    float w = _667;
     float2 uv = in.v_uv;
-    bool _679 = _61.heat.x > 0.0;
-    bool _686;
-    if (_679)
+    float2 from = p;
+    float2 param = p;
+    float2 wp = worldAt(param, _80);
+    float t = waterTime(_80);
+    float2 bend = float2(0.0);
+    float front = 0.0;
+    if ((here.x * 255.0) > 0.5)
     {
-        _686 = (here.x * 255.0) > 0.5;
-    }
-    else
-    {
-        _686 = _679;
-    }
-    if (_686)
-    {
-        float2 hp = p + _61.heat.zw;
-        float ht = _61.heat.y;
-        float2 param = (hp / float2(70.0)) + float2(ht * 0.00150000001303851604461669921875, (-ht) * 0.0024999999441206455230712890625);
-        float _713 = fbm(param);
-        float stretch = smoothstep(0.300000011920928955078125, 0.75, _713);
-        float a = sin(((hp.y * 0.550000011920928955078125) + (ht * 0.0900000035762786865234375)) + (sin((hp.x * 0.04500000178813934326171875) + (ht * 0.0130000002682209014892578125)) * 1.5));
-        float b = sin(((hp.y * 1.39999997615814208984375) + (ht * 0.1599999964237213134765625)) + (hp.x * 0.02999999932944774627685546875));
-        float dx = (((a * 0.64999997615814208984375) + (b * 0.3499999940395355224609375)) * 0.75) * (0.300000011920928955078125 + (0.699999988079071044921875 * stretch));
-        float dy = (sin(((hp.x * 0.0900000035762786865234375) + (hp.y * 0.20000000298023223876953125)) + (ht * 0.0500000007450580596923828125)) * 0.1500000059604644775390625) * stretch;
-        float2 param_1 = p + float2(dx, dy);
-        float2 moved = onFrame(param_1, _61) * _61.tex.zw;
-        if ((u_mask.sample(u_maskSmplr, moved).x * 255.0) > 0.5)
+        if (_80.heat.x > 0.0)
         {
-            uv = moved;
+            float2 param_1 = (wp / float2(70.0)) + float2(t * 0.00150000001303851604461669921875, (-t) * 0.0024999999441206455230712890625);
+            float _892 = fbm(param_1);
+            float stretch = smoothstep(0.300000011920928955078125, 0.75, _892);
+            float a = sin(((wp.y * 0.550000011920928955078125) + (t * 0.0900000035762786865234375)) + (sin((wp.x * 0.04500000178813934326171875) + (t * 0.0130000002682209014892578125)) * 1.5));
+            float b = sin(((wp.y * 1.39999997615814208984375) + (t * 0.1599999964237213134765625)) + (wp.x * 0.02999999932944774627685546875));
+            bend.x += ((((a * 0.64999997615814208984375) + (b * 0.3499999940395355224609375)) * 1.10000002384185791015625) * (0.3499999940395355224609375 + (0.64999997615814208984375 * stretch)));
+            bend.y += ((sin(((wp.x * 0.0900000035762786865234375) + (wp.y * 0.20000000298023223876953125)) + (t * 0.0500000007450580596923828125)) * 0.25) * stretch);
+        }
+        float _966;
+        if (_80.fx.x > 0.0)
+        {
+            float2 param_2 = in.v_uv;
+            _966 = float(255 - (maskAlpha(param_2, u_mask, u_maskSmplr) | 1)) / 255.0;
+        }
+        else
+        {
+            _966 = 0.0;
+        }
+        float hot = _966;
+        if (hot > 0.0040000001899898052215576171875)
+        {
+            float2 param_3 = (wp / float2(20.0)) + float2(0.0, t * 0.0199999995529651641845703125);
+            float _995 = fbm(param_3);
+            float flick = 0.60000002384185791015625 + (0.4000000059604644775390625 * _995);
+            float a_1 = sin(((wp.y * 0.800000011920928955078125) + (t * 0.1500000059604644775390625)) + (sin((wp.x * 0.070000000298023223876953125) + (t * 0.0199999995529651641845703125)) * 1.5));
+            float b_1 = sin(((wp.y * 1.89999997615814208984375) + (t * 0.23999999463558197021484375)) + (wp.x * 0.0500000007450580596923828125));
+            bend.x += (((((a_1 * 0.60000002384185791015625) + (b_1 * 0.4000000059604644775390625)) * 1.2000000476837158203125) * hot) * flick);
+            bend.y += ((sin(((wp.x * 0.12999999523162841796875) + (wp.y * 0.300000011920928955078125)) + (t * 0.07999999821186065673828125)) * 0.300000011920928955078125) * hot);
+        }
+        for (int i = 0; i < 6; i++)
+        {
+            if (float(i) >= _80.fx.y)
+            {
+                break;
+            }
+            float4 s = _80.shocks[i];
+            float2 d = wp - s.xy;
+            float dist = length(d);
+            float width = 5.0 + (s.z * 0.100000001490116119384765625);
+            float x = (dist - s.z) / width;
+            float ring = exp((-x) * x);
+            bend -= (((d / float2(fast::max(dist, 0.001000000047497451305389404296875))) * ((x * ring) * 2.3299999237060546875)) * s.w);
+            front += (ring * s.w);
+        }
+        if (any(bend != float2(0.0)))
+        {
+            float2 param_4 = p + bend;
+            float2 moved = onFrame(param_4, _80) * _80.tex.zw;
+            if ((u_mask.sample(u_maskSmplr, moved).x * 255.0) > 0.5)
+            {
+                uv = moved;
+                float2 param_5 = p + bend;
+                from = onFrame(param_5, _80);
+            }
         }
     }
+    bool _1170 = _80.water.x > 0.0;
+    bool _1180;
+    if (_1170)
+    {
+        _1180 = (u_mask.sample(u_maskSmplr, uv).z * 255.0) > 2.5;
+    }
+    else
+    {
+        _1180 = _1170;
+    }
+    float w = float(_1180);
     float3 c = u_frame.sample(u_frameSmplr, uv).xyz;
     float m = here.x * 255.0;
     if (w > 0.0)
     {
-        float2 param_2 = p;
-        float3 param_3 = c;
-        c = hdWater(param_2, param_3, _61, u_mask, u_maskSmplr, u_frame, u_frameSmplr);
+        float2 param_6 = uv;
+        float2 param_7 = from;
+        float3 param_8 = c;
+        bool param_9 = seeThrough(param_6, u_mask, u_maskSmplr);
+        float2 param_10 = from;
+        float3 param_11 = hdWater(param_7, param_8, param_9, _80, u_mask, u_maskSmplr, u_frame, u_frameSmplr);
+        float3 _1207 = reflections(param_10, param_11, _80, u_mask, u_maskSmplr, u_frame, u_frameSmplr);
+        c = _1207;
     }
     if ((m > 0.5) && (m < 1.5))
     {
-        float3 light = u_light.sample(u_lightSmplr, (p * _61.map.zw)).xyz;
-        float3 base = fast::max(c - _61.dark.xyz, float3(0.0)) * _61.look.w;
+        float3 light = u_light.sample(u_lightSmplr, (p * _80.map.zw)).xyz;
+        float3 base = fast::max(c - _80.dark.xyz, float3(0.0)) * _80.look.w;
         float3 lit = base + (c * fast::min(light, float3(1.0)));
-        float3 over = (c * fast::max(light - float3(1.0), float3(0.0))) * _61.look.x;
+        float3 over = (c * fast::max(light - float3(1.0), float3(0.0))) * _80.look.x;
         c = fast::min(lit, c) + over;
     }
-    bool _867 = m > 0.5;
-    bool _873;
-    if (_867)
+    bool _1257 = m > 0.5;
+    bool _1263;
+    if (_1257)
     {
-        _873 = _61.look.y > 0.0;
+        _1263 = _80.look.y > 0.0;
     }
     else
     {
-        _873 = _867;
+        _1263 = _1257;
     }
-    if (_873)
+    if (_1263)
     {
         float3 glow = float3(0.0);
-        int n = int(_61.dark.w);
-        for (int i = 0; i < 48; i++)
+        int n = int(_80.dark.w);
+        for (int i_1 = 0; i_1 < 48; i_1++)
         {
-            if (i >= n)
+            if (i_1 >= n)
             {
                 break;
             }
-            float4 a_1 = _61.lights[i * 2];
-            float4 b_1 = _61.lights[(i * 2) + 1];
-            bool _910 = a_1.w <= 0.0;
-            bool _917;
-            if (!_910)
+            float4 a_2 = _80.lights[i_1 * 2];
+            float4 b_2 = _80.lights[(i_1 * 2) + 1];
+            bool _1300 = a_2.w <= 0.0;
+            bool _1307;
+            if (!_1300)
             {
-                _917 = b_1.w <= 0.0;
+                _1307 = b_2.w <= 0.0;
             }
             else
             {
-                _917 = _910;
+                _1307 = _1300;
             }
-            if (_917)
+            if (_1307)
             {
                 continue;
             }
-            float2 d = p - a_1.xy;
-            float g = exp((-dot(d, d)) / ((2.0 * a_1.w) * a_1.w));
-            glow += ((fast::normalize(b_1.xyz + float3(0.001000000047497451305389404296875)) * b_1.w) * g);
+            float2 d_1 = p - a_2.xy;
+            float g = exp((-dot(d_1, d_1)) / ((2.0 * a_2.w) * a_2.w));
+            glow += ((fast::normalize(b_2.xyz + float3(0.001000000047497451305389404296875)) * b_2.w) * g);
         }
-        glow *= _61.look.y;
+        glow *= _80.look.y;
         c += (glow * (float3(1.0) - c));
     }
-    if ((_61.heat.x > 0.0) && (m > 0.5))
+    if (front > 0.0)
+    {
+        c *= (1.0 + (fast::min(front, 5.0) * 0.02999999932944774627685546875));
+    }
+    if ((_80.heat.x > 0.0) && (m > 0.5))
     {
         c *= float3(1.0299999713897705078125, 1.0, 0.959999978542327880859375);
     }
-    bool _979 = m > 0.5;
-    bool _985;
-    if (_979)
+    bool _1378 = m > 0.5;
+    bool _1384;
+    if (_1378)
     {
-        _985 = _61.weather.x > 0.0;
+        _1384 = _80.weather.x > 0.0;
     }
     else
     {
-        _985 = _979;
+        _1384 = _1378;
     }
-    if (_985)
+    if (_1384)
     {
-        c = mix(c, fast::max(c, float3(0.85000002384185791015625, 0.89999997615814208984375, 1.0)), float3(_61.weather.x));
+        c = mix(c, fast::max(c, float3(0.85000002384185791015625, 0.89999997615814208984375, 1.0)), float3(_80.weather.x));
     }
-    float2 param_4 = floor(gl_FragCoord.xy);
-    c += float3((_noise(param_4, _61) - 0.5) / 255.0);
+    float2 param_12 = floor(gl_FragCoord.xy);
+    c += float3((_noise(param_12, _80) - 0.5) / 255.0);
     out.o_color = float4(fast::clamp(c, float3(0.0), float3(1.0)), 1.0);
     return out;
 }

@@ -41,9 +41,21 @@ const kMaxHeight = 240;
 
 var g_mask: [kMaxHeight * kMaxWidth]u8 = undefined;
 /// Which layer each pixel came from, as the PPU's compositing saw it (see
-/// ppu.LightMask): the water's ripple is for the backgrounds, not what's
-/// drawn over them.
+/// ppu.LightMask), the main screen's in the low four bits and the
+/// subscreen's in the high: the water's ripple is for the backgrounds, not
+/// what's drawn over them.
 var g_layers: [kMaxHeight * kMaxWidth]u8 = undefined;
+
+/// The main screen's layer at a pixel: 0 to 3 a background, 4 a sprite.
+fn layerAt(i: usize) u8 {
+    return g_layers[i] & 0xf;
+}
+
+/// Whether BG1 is under a pixel on the subscreen: blended in, see-through,
+/// the way Swamp Palace's water lies over the floor.
+fn bg1Underneath(i: usize) bool {
+    return g_layers[i] >> 4 == 0;
+}
 
 /// The light added to each pixel, per channel, 256 being all of the pixel
 /// as drawn.
@@ -107,9 +119,23 @@ pub const GpuFrame = struct {
     tick: u32 = 0,
     /// Out in the desert, where the heat shimmers over the picture.
     heat: bool = false,
+    /// Lava on the screen, the air above it shimmering: how hot each pixel's
+    /// air is goes in the mask's alpha.
+    lava: bool = false,
+    /// Blasts' shockwaves rippling out over the picture: where each started
+    /// in the world, how far it's spread and how hard it still pushes.
+    shocks: [kMaxShocks][4]f32 = undefined,
+    nshocks: usize = 0,
+    /// What's reflected in the water: Link and anything else standing in
+    /// or beside it, each as the columns it covers, the row its feet are on
+    /// and its top row, on the frame.
+    mirrors: [kMaxMirrors][4]f32 = undefined,
+    nmirrors: usize = 0,
     /// A pixel a u32, `width` to a row: the mask's value in red, solid
     /// ground in green, as light_map.frag reads them, and the water in blue
-    /// (255 deep, less shallow) for light_apply.frag.
+    /// (254 deep, 140 shallow, 200 see-through, odd in the water's own
+    /// colors) for light_apply.frag; in alpha, 255 less how hot the air is
+    /// over lava, and its lowest bit clear for a sprite.
     mask: []const u32,
 };
 pub const kMaxGpuLights = 48;
@@ -348,7 +374,7 @@ pub fn easeToward(now: f32, target: f32, step: f32) f32 {
 fn roomMode() Mode {
     // Particles want the HUD told apart from the scene, and indoors the
     // room's fires checked for their embers; HD Water, the water found.
-    const plain: Mode = if (g_water_on or g_heat_on or (particles.enabled() and (particles.count() != 0 or vars.player_is_indoors.* != 0))) .plain else .off;
+    const plain: Mode = if (g_water_on or g_heat_on or g_shock_on or (particles.enabled() and (particles.count() != 0 or vars.player_is_indoors.* != 0))) .plain else .off;
     if (!config.g_config.dynamic_lighting) return plain;
     if (vars.player_is_indoors.* == 0) {
         if (raining()) return .storm;
@@ -375,6 +401,7 @@ pub fn beginFrame(ppu: *Ppu, render_flags: u32, height: usize) void {
     const new_renderer = render_flags & snes_pkg.ppu_types.kPpuRenderFlags_NewRenderer != 0;
     g_water_on = new_renderer and scanWater(ppu.extraLeftRight);
     g_heat_on = new_renderer and heatHaze();
+    g_shock_on = new_renderer and g_gpu and g_nshocks != 0;
     g_mode = if (new_renderer) roomMode() else .off;
     g_active = g_mode != .off;
     // The game's flash adds the rain layer on at full strength instead of
@@ -468,10 +495,12 @@ pub fn endFrame(ppu: *Ppu, pixels: [*]u8, pitch: usize, height: usize) void {
         .flash = flash(),
         .water = g_water_on,
         .heat = g_heat_on,
+        .lava = lavaShimmer(),
         .tick = g_tick,
         .mask = &.{},
     };
     @memcpy(g_gpu_frame.lights[0..k], lights[0..k]);
+    if (g_shock_on) packShocks(&g_gpu_frame);
     g_gpu_pending = true;
 }
 
@@ -585,10 +614,45 @@ fn overworldAttr(x: i32, y: i32) u8 {
     return Overworld_GetTileAttributeAtLocation(@truncate(@as(u32, @bitCast(x)) >> 3), @truncate(@as(u32, @bitCast(y))));
 }
 
+/// A room's tile attribute at (x, y) in the world, as far as its water
+/// goes, and whether it's steps going down into water. Swamp Palace keeps
+/// its water on the upper layer, BG1, over floor on the lower one, and only
+/// while BG1's drawn (it isn't till the water's let in, though the tiles
+/// say water all along); where the lower one has deep water (and the 0x02
+/// either side) under it, those are the steps, drawn over the water.
+/// Elsewhere the water's on the lower layer, as anything else is.
+pub fn dungeonAttr(lo: u8, hi: u8, bg1_shown: bool) struct { attr: u8, steps: bool = false, upper: bool = false } {
+    if (waterDepth(hi) != 0) {
+        if (!bg1_shown) return .{ .attr = lo };
+        if (waterDepth(lo) != 0 or lo == 0x02) return .{ .attr = 0, .steps = true, .upper = true };
+        return .{ .attr = hi, .upper = true };
+    }
+    return .{ .attr = lo };
+}
+
+fn dungeonLowerAt(x: i32, y: i32) u8 {
+    return vars.dung_bg2_attr_table[@intCast((@mod(y, 512) >> 3) * 64 + (@mod(x, 512) >> 3))];
+}
+
+fn dungeonAttrAt(x: i32, y: i32, bg1_shown: bool) @TypeOf(dungeonAttr(0, 0, false)) {
+    const t: usize = @intCast((@mod(y, 512) >> 3) * 64 + (@mod(x, 512) >> 3));
+    return dungeonAttr(vars.dung_bg2_attr_table[t], vars.dung_bg1_attr_table[t], bg1_shown);
+}
+
+/// Playing in a dungeon or cave, menus over it included, and while the
+/// circle closes or opens on it going out or coming in.
+fn inDungeonPlay() bool {
+    var module = vars.main_module_index.*;
+    if (module == 14) module = vars.saved_module_for_menu.*;
+    return module == 7 or ((module == 15 or module == 16) and vars.player_is_indoors.* != 0);
+}
+
+/// Playing out in the world, menus over it included, and while the circle
+/// closes or opens on it going in a door or coming back out.
 fn inOverworldPlay() bool {
     var module = vars.main_module_index.*;
     if (module == 14) module = vars.saved_module_for_menu.*;
-    return module == 9 or module == 11;
+    return module == 9 or module == 11 or ((module == 15 or module == 16) and vars.player_is_indoors.* == 0);
 }
 
 /// Whether there's any falling water's foot on the screen, by the tiles
@@ -727,6 +791,12 @@ pub fn takeGpuFrame(pixels: [*]u8, pitch: usize) ?*const GpuFrame {
     g_gpu_pending = false;
     const f = &g_gpu_frame;
     if (f.water) noteWaterColors(pixels, pitch, f);
+    // Tiles the game counts as water that are drawn as something else
+    // entirely, like the pink clouds the Dark World's Death Mountain
+    // floats over: nothing to redraw.
+    if (f.water and g_nwater_colors == 0) f.water = false;
+    if (f.water and f.indoors) markOutsideWater(pixels, pitch, f);
+    if (f.lava) findLavaHeat(pixels, pitch, f);
     for (0..f.height) |y| {
         const row: [*]align(1) u32 = @ptrCast(pixels + y * pitch);
         const out = g_gpu_mask[y * f.width ..][0..f.width];
@@ -738,9 +808,14 @@ pub fn takeGpuFrame(pixels: [*]u8, pitch: usize) ?*const GpuFrame {
             const tx: usize = @intCast(@mod(@as(i32, @intCast(x)) - f.left + f.cam_x, 512) >> 3);
             const solid: u32 = if (f.indoors) solidness(attrs[tx]) else 0;
             const water: u32 = if (f.water) waterAt(f, x, y, row[x], m != 0) else 0;
-            o.* = 0xff000000 | m << 16 | solid << 8 | water;
+            // Alpha: 255 less the heat over lava (in even steps), and its
+            // lowest bit clear for a sprite's pixel, for reflections.
+            const cool: u32 = if (f.lava) 255 - (lavaHeatAt(f, x, y) & 0xfe) else 255;
+            const sprite: u32 = @intFromBool(layerAt(y * kMaxWidth + x) == 4);
+            o.* = (cool - sprite) << 24 | m << 16 | solid << 8 | water;
         }
     }
+    f.nmirrors = if (f.water) findMirrors(f, f.mirrors[0..]) else 0;
     f.mask = g_gpu_mask[0 .. f.width * f.height];
     return f;
 }
@@ -762,10 +837,26 @@ var g_water_outside: [kWaterRows][kWaterCols]bool = undefined;
 /// attribute), where the dark blues are falling water, not the water's
 /// shading along a shore.
 var g_water_face: [kWaterRows][kWaterCols]bool = undefined;
+/// Indoors, the tiles past the room's edges that are mostly drawn in the
+/// water's colors (markOutsideWater).
+var g_outside_wet: [kWaterRows][kWaterCols]bool = std.mem.zeroes([kWaterRows][kWaterCols]bool);
+/// Indoors, tiles whose water is on the upper layer, BG1: water only where
+/// BG1's actually blended in (a room can have the tiles without it drawn
+/// over every one of them).
+var g_water_upper: [kWaterRows][kWaterCols]bool = undefined;
+/// Indoors, the depth of the water the lower layer's tiles say there is:
+/// what a tile is where BG1 isn't blended in, whatever the upper's say.
+var g_water_lower: [kWaterRows][kWaterCols]u8 = undefined;
 var g_water_x0: i32 = 0;
 var g_water_y0: i32 = 0;
 /// There's water on the screen this frame for HD Water to work on.
 var g_water_on = false;
+/// Indoors, BG1 blended in over the floor is water this frame: wherever it
+/// is, but on steps going into it (see scanWater).
+var g_overlay_water = false;
+/// The room's tiles say there's water on the screen: its colors are found
+/// there, not in whatever else BG1 blends in.
+var g_water_by_tiles = false;
 
 /// The desert's heat shimmering over the picture this frame
 /// (light_apply.frag), in place of anything drifting in its air.
@@ -775,6 +866,297 @@ var g_heat_on = false;
 /// and the GPU to draw it.
 fn heatHaze() bool {
     return g_gpu and particles.enabled() and particles.ambienceHere() == .heat;
+}
+
+// ------------------------------------------------------- shockwaves
+
+/// A blast's shockwave: a ring of bent air spreading out from where it went
+/// off, pushing the picture outward as it passes (light_apply.frag), fading
+/// as it grows.
+const Shock = struct {
+    x: i32,
+    y: i32,
+    /// Game frames since it went off, and how many it lasts.
+    age: u16 = 0,
+    life: u16,
+    /// How far it spreads, in SNES pixels, and how far it pushes the
+    /// picture at first.
+    reach: f32,
+    push: f32,
+};
+
+pub const kMaxShocks = 6;
+var g_shocks: [kMaxShocks]Shock = undefined;
+var g_nshocks: usize = 0;
+/// There's a shockwave on its way out this frame.
+var g_shock_on = false;
+/// What each of Link's things was on the frame before, to see a blast the
+/// moment it goes off.
+const Seen = struct { kind: u8 = 0, stage: u8 = 0 };
+var g_shock_seen: [10]Seen = @splat(.{});
+/// What each half of a blown wall's blasts was on the frame before.
+var g_wall_seen: [2]u8 = .{ 0, 0 };
+
+const kBombShock = Shock{ .x = 0, .y = 0, .life = 22, .reach = 64, .push = 3.5 };
+const kWallShock = Shock{ .x = 0, .y = 0, .life = 24, .reach = 72, .push = 3.2 };
+const kBigShock = Shock{ .x = 0, .y = 0, .life = 34, .reach = 120, .push = 5 };
+const kVaneShock = Shock{ .x = 0, .y = 0, .life = 30, .reach = 96, .push = 4.5 };
+const kQuakeShock = Shock{ .x = 0, .y = 0, .life = 52, .reach = 210, .push = 6 };
+
+/// Whether blasts send out shockwaves: with particles on. (They're drawn
+/// only on a GPU, which bends the picture.)
+fn shockwaves() bool {
+    return particles.enabled();
+}
+
+fn addShock(kind: Shock, x: i32, y: i32) void {
+    var s = kind;
+    s.x = x;
+    s.y = y;
+    if (g_nshocks == kMaxShocks) {
+        // The oldest gives way.
+        var oldest: usize = 0;
+        for (g_shocks[0..g_nshocks], 0..) |o, i| {
+            if (o.age > g_shocks[oldest].age) oldest = i;
+        }
+        g_shocks[oldest] = s;
+        return;
+    }
+    g_shocks[g_nshocks] = s;
+    g_nshocks += 1;
+}
+
+/// Once a game frame: ages the shockwaves on their way, and starts new ones
+/// for whatever's just gone off: a bomb, a super bomb, the weathervane,
+/// each burst of a wall being blown open, the Quake medallion.
+pub fn stepShocks() void {
+    var n: usize = 0;
+    for (g_shocks[0..g_nshocks]) |s| {
+        var t = s;
+        t.age += 1;
+        if (t.age >= t.life) continue;
+        g_shocks[n] = t;
+        n += 1;
+    }
+    g_nshocks = n;
+
+    const on = shockwaves();
+    for (0..10) |k| {
+        const kind = vars.ancilla_type[k];
+        // How far along it is: for the weathervane, whether it's blown yet
+        // (it waits a long while first); for anything else, its frame.
+        const stage = if (kind == 0x37) vars.ancilla_arr3[k] else vars.ancilla_item_to_link[k];
+        const was = g_shock_seen[k];
+        g_shock_seen[k] = .{ .kind = kind, .stage = stage };
+        if (!on) continue;
+        const ax: i32 = @as(i32, vars.ancilla_x_lo[k]) | @as(i32, vars.ancilla_x_hi[k]) << 8;
+        const ay: i32 = @as(i32, vars.ancilla_y_lo[k]) | @as(i32, vars.ancilla_y_hi[k]) << 8;
+        const fresh = was.kind != kind;
+        const went_off = stage != 0 and (fresh or was.stage == 0);
+        switch (kind) {
+            // A bomb, the moment its fuse runs out. Its blast is drawn
+            // centered on where it is, as a super bomb's is.
+            0x07 => if (went_off) addShock(kBombShock, ax, ay),
+            0x3a => if (fresh) addShock(kBigShock, ax, ay),
+            // The weathervane, from the middle of the splinters it flies
+            // apart into.
+            0x37 => if (went_off) {
+                var sx: i32 = 0;
+                var sy: i32 = 0;
+                for (0..12) |i| {
+                    sx += @as(i32, vars.weathervane_arr8[i]) | @as(i32, vars.weathervane_arr9[i]) << 8;
+                    sy += @as(i32, vars.weathervane_arr6[i]) | @as(i32, vars.weathervane_arr7[i]) << 8;
+                }
+                addShock(kVaneShock, @divTrunc(sx, 12), @divTrunc(sy, 12));
+            },
+            // Quake: the ground heaving out from Link.
+            0x1c => if (fresh) addShock(kQuakeShock, @as(i32, vars.link_x_coord.*) + 8, @as(i32, vars.link_y_coord.*) + 12),
+            else => {},
+        }
+    }
+
+    // A wall being blown open goes off in bursts of four blasts, two sides
+    // taking turns; a ring from the middle of each burst.
+    const blowing = vars.ancilla_type[0] == 0x33;
+    for (0..2) |u| {
+        const stage = if (blowing) vars.blastwall_var5[u] else 0;
+        const was = g_wall_seen[u];
+        g_wall_seen[u] = stage;
+        if (!on or stage == 0 or was != 0) continue;
+        var sx: i32 = 0;
+        var sy: i32 = 0;
+        for (0..4) |i| {
+            sx += vars.blastwall_var11[u * 4 + i];
+            sy += vars.blastwall_var10[u * 4 + i];
+        }
+        addShock(kWallShock, @divTrunc(sx, 4), @divTrunc(sy, 4));
+    }
+    if (!on) g_nshocks = 0;
+}
+
+/// The shockwaves as light_apply.frag takes them: where each started in the
+/// world, how far its ring's spread, and how hard it still pushes, eased
+/// out as it grows (and gentler with Dim Flashes on).
+fn packShocks(f: *GpuFrame) void {
+    const gentle: f32 = if (dimFlashes()) 0.5 else 1;
+    for (g_shocks[0..g_nshocks], 0..) |s, i| {
+        const a = @as(f32, @floatFromInt(s.age)) / @as(f32, @floatFromInt(s.life));
+        const left = 1 - a;
+        f.shocks[i] = .{
+            @floatFromInt(s.x),
+            @floatFromInt(s.y),
+            s.reach * (1 - left * left * left),
+            s.push * gentle * left * @sqrt(left),
+        };
+    }
+    f.nshocks = g_nshocks;
+}
+
+// ------------------------------------------------------- reflections
+
+pub const kMaxMirrors = 8;
+
+/// Link and the sprites standing in the water or at its edge, to be
+/// reflected in it (light_apply.frag): each one's extent on the frame, as
+/// its pixels show it, its feet the line it's mirrored about. Up to
+/// `out.len` of them.
+fn findMirrors(f: *const GpuFrame, out: [][4]f32) usize {
+    var n: usize = 0;
+    const ox = f.left - f.cam_x;
+    const oy = -f.cam_y;
+    // Link first: the one most worth seeing.
+    n += mirrorAt(f, @as(i32, vars.link_x_coord.*) + ox, @as(i32, vars.link_y_coord.*) + oy, out[n..]);
+    for (0..16) |k| {
+        if (n == out.len) break;
+        if (vars.sprite_state[k] == 0) continue;
+        const sx: i32 = @as(i32, vars.sprite_x_lo[k]) | @as(i32, vars.sprite_x_hi[k]) << 8;
+        const sy: i32 = (@as(i32, vars.sprite_y_lo[k]) | @as(i32, vars.sprite_y_hi[k]) << 8) - vars.sprite_z[k];
+        n += mirrorAt(f, sx + ox, sy + oy, out[n..]);
+    }
+    return n;
+}
+
+/// The sprite drawn round (x, y) on the frame, its 16 pixel square's
+/// corner, if its feet are in the water or just above it: 1 if it's put in
+/// `out`, 0 otherwise.
+fn mirrorAt(f: *const GpuFrame, x: i32, y: i32, out: [][4]f32) usize {
+    if (out.len == 0) return 0;
+    var x0: i32 = std.math.maxInt(i32);
+    var x1: i32 = -1;
+    var top: i32 = std.math.maxInt(i32);
+    var base: i32 = -1;
+    var py = @max(y - 14, 0);
+    while (py < @min(y + 26, @as(i32, @intCast(f.height)))) : (py += 1) {
+        var px = @max(x - 4, 0);
+        while (px < @min(x + 20, @as(i32, @intCast(f.width)))) : (px += 1) {
+            if (layerAt(@as(usize, @intCast(py)) * kMaxWidth + @as(usize, @intCast(px))) != 4) continue;
+            x0 = @min(x0, px);
+            x1 = @max(x1, px);
+            top = @min(top, py);
+            base = @max(base, py);
+        }
+    }
+    if (base < 0 or base - top < 4) return 0;
+    // Feet in the water, or the water just below them.
+    const cx: usize = @intCast(@divTrunc(x0 + x1, 2));
+    var wet = false;
+    var wy = base - 4;
+    while (wy <= base + 6) : (wy += 2) {
+        if (wy < 0 or wy >= f.height) continue;
+        const t = waterTile(f, cx, @intCast(wy));
+        if (t.depth != 0) wet = true;
+    }
+    if (!wet) return 0;
+    out[0] = .{ @floatFromInt(x0), @floatFromInt(x1 + 1), @as(f32, @floatFromInt(base)) + 1, @floatFromInt(top) };
+    return 1;
+}
+
+// ------------------------------------------------------- lava shimmer
+
+/// The air over lava, a tile at a time on and around the screen, from the
+/// tile at (g_lava_x0, g_lava_y0) in the room: 255 over the lava itself,
+/// cooling with height above it and to its sides.
+var g_lava_heat: [kWaterRows][kWaterCols]u8 = undefined;
+var g_lava_x0: i32 = 0;
+var g_lava_y0: i32 = 0;
+
+/// Whether the air shimmers over lava this frame: indoors, with lava on the
+/// screen (refreshSpots found it), particles on and the GPU to draw it.
+fn lavaShimmer() bool {
+    if (!g_gpu or !particles.enabled() or vars.player_is_indoors.* == 0) return false;
+    for (g_spots[0..g_nspots]) |spot| {
+        if (spot.kind == .lava) return true;
+    }
+    return false;
+}
+
+/// Finds the lava tiles on the frame, a pit's floor drawn in lava's colors,
+/// and how hot the air is in the tiles around them: hot right over it,
+/// cooling over the three tiles above and fading to the sides.
+fn findLavaHeat(pixels: [*]const u8, pitch: usize, f: *const GpuFrame) void {
+    const wx0 = f.cam_x - f.left;
+    g_lava_x0 = @divFloor(wx0, 8);
+    g_lava_y0 = @divFloor(f.cam_y, 8);
+    const cols: usize = @min(kWaterCols, (f.width + 15) / 8);
+    const rows: usize = @min(kWaterRows, (f.height + 15) / 8);
+    var lava: [kWaterRows][kWaterCols]bool = undefined;
+    for (0..rows) |ty| {
+        for (0..cols) |tx| {
+            lava[ty][tx] = false;
+            const wx = (g_lava_x0 + @as(i32, @intCast(tx))) * 8;
+            const wy = (g_lava_y0 + @as(i32, @intCast(ty))) * 8;
+            const t: usize = @intCast((@mod(wy, 512) >> 3) * 64 + (@mod(wx, 512) >> 3));
+            if (vars.dung_bg2_attr_table[t] != kPitAttr and vars.dung_bg1_attr_table[t] != kPitAttr) continue;
+            // A few of the tile's pixels, any of them lava colored.
+            for ([_][2]i32{ .{ 2, 2 }, .{ 5, 2 }, .{ 2, 5 }, .{ 5, 5 } }) |o| {
+                const sx = wx + o[0] - wx0;
+                const sy = wy + o[1] - f.cam_y;
+                if (sx < 0 or sy < 0 or sx >= f.width or sy >= f.height) continue;
+                const row: [*]align(1) const u32 = @ptrCast(pixels + @as(usize, @intCast(sy)) * pitch);
+                const px = row[@intCast(sx)];
+                if (px >> 24 != 0 and looksLikeLava(px & 0xffffff)) {
+                    lava[ty][tx] = true;
+                    break;
+                }
+            }
+        }
+    }
+    for (0..rows) |ty| {
+        for (0..cols) |tx| {
+            var hot: f32 = 0;
+            var dy: usize = 0;
+            while (dy <= 3) : (dy += 1) {
+                const ly = ty + dy;
+                if (ly >= rows) break;
+                for ([_]i32{ -1, 0, 1 }) |dx| {
+                    const lx = @as(i32, @intCast(tx)) + dx;
+                    if (lx < 0 or lx >= cols or !lava[ly][@intCast(lx)]) continue;
+                    const h = 1 - 0.22 * @as(f32, @floatFromInt(dy)) - 0.45 * @as(f32, @floatFromInt(@abs(dx)));
+                    hot = @max(hot, h);
+                }
+            }
+            g_lava_heat[ty][tx] = @intFromFloat(hot * 255);
+        }
+    }
+}
+
+/// How hot the air is at pixel (x, y) of the frame, 0 to 255, read smoothly
+/// between the tiles' middles so the shimmer has no edges.
+fn lavaHeatAt(f: *const GpuFrame, x: usize, y: usize) u32 {
+    const fx = @as(f32, @floatFromInt(@as(i32, @intCast(x)) + f.cam_x - f.left - g_lava_x0 * 8)) / 8 - 0.5;
+    const fy = @as(f32, @floatFromInt(@as(i32, @intCast(y)) + f.cam_y - g_lava_y0 * 8)) / 8 - 0.5;
+    const ix0: usize = @intFromFloat(@max(0, @floor(fx)));
+    const iy0: usize = @intFromFloat(@max(0, @floor(fy)));
+    const ix1 = @min(ix0 + 1, kWaterCols - 1);
+    const iy1 = @min(iy0 + 1, kWaterRows - 1);
+    const ax = std.math.clamp(fx - @as(f32, @floatFromInt(ix0)), 0, 1);
+    const ay = std.math.clamp(fy - @as(f32, @floatFromInt(iy0)), 0, 1);
+    const h = std.math.lerp(
+        std.math.lerp(@as(f32, @floatFromInt(g_lava_heat[iy0][ix0])), @as(f32, @floatFromInt(g_lava_heat[iy0][ix1])), ax),
+        std.math.lerp(@as(f32, @floatFromInt(g_lava_heat[iy1][ix0])), @as(f32, @floatFromInt(g_lava_heat[iy1][ix1])), ax),
+        ay,
+    );
+    return @intFromFloat(h);
 }
 
 /// The colors the water's drawn in this frame, found in its full tiles,
@@ -805,31 +1187,72 @@ pub fn waterDepth(attr: u8) u8 {
 /// Looks over the tiles on the screen for water (outdoors, for now),
 /// filling in g_water. Whether there's any.
 fn scanWater(left: i32) bool {
-    if (!hdWater() or vars.player_is_indoors.* != 0 or !inOverworldPlay()) return false;
+    if (!hdWater()) return false;    const indoors = vars.player_is_indoors.* != 0;
+    if (indoors) {
+        if (!inDungeonPlay()) return false;
+    } else {
+        if (!inOverworldPlay()) return false;
+        if (onDeathMountain(@truncate(vars.overworld_screen_index.*))) return false;
+    }
     const cam_x: i32 = vars.BG2HOFS_copy2.*;
     const cam_y: i32 = vars.BG2VOFS_copy2.*;
     g_water_x0 = ((cam_x - left) >> 3) - 1;
     g_water_y0 = (cam_y >> 3) - 1;
     const b = vars.ow_scroll_vars0.*;
+    // Indoors, the room whose tiles' attributes are loaded, kept for its
+    // 512 pixel square; past it (the widescreen margins can show the room
+    // next door) they'd wrap round to its far side. That's the room the
+    // game's on, which on the way from one room to the next is already the
+    // next one, Link not yet in it.
+    const room_index: i32 = vars.dungeon_room_index.*;
+    const room_x: i32 = (room_index & 15) * 512;
+    const room_y: i32 = (room_index >> 4) * 512;
+    // BG1 on either screen: Swamp Palace's water, once it's let in.
+    const bg1_shown = (vars.TM_copy.* | vars.TS_copy.*) & 1 != 0;
     var attrs: [kWaterRows][kWaterCols]u8 = undefined;
     var any = false;
+    var upper = false;
+    var any_outside = false;
     for (0..kWaterRows) |r| for (0..kWaterCols) |col| {
         const wx = (g_water_x0 + @as(i32, @intCast(col))) * 8;
         const wy = (g_water_y0 + @as(i32, @intCast(r))) * 8;
-        const outside = wx < b.xstart or wx >= @as(i32, b.xend) + 256 or wy < b.ystart or wy >= @as(i32, b.yend) + 224;
+        const outside = if (indoors)
+            wx < room_x or wx >= room_x + 512 or wy < room_y or wy >= room_y + 512
+        else
+            wx < b.xstart or wx >= @as(i32, b.xend) + 256 or wy < b.ystart or wy >= @as(i32, b.yend) + 224;
         g_water_outside[r][col] = outside;
-        const attr: u8 = if (outside) 0 else overworldAttr(wx, wy);
+        any_outside = any_outside or outside;
+        const room = if (indoors and !outside) dungeonAttrAt(wx, wy, bg1_shown) else null;
+        const attr: u8 = if (outside) 0 else if (room) |a| a.attr else overworldAttr(wx, wy);
         attrs[r][col] = attr;
         g_water[r][col] = waterDepth(attr);
-        g_water_face[r][col] = attr == kFallFace;
+        // Indoors 0x02 is something else altogether; there, it's steps
+        // going down into the water instead.
+        g_water_face[r][col] = if (room) |a| a.steps else !indoors and attr == kFallFace;
+        if (room) |a| upper = upper or a.upper;
+        g_water_upper[r][col] = if (room) |a| a.upper and !a.steps else false;
+        g_water_lower[r][col] = if (room != null) waterDepth(dungeonLowerAt(wx, wy)) else 0;
     };
     // Down the middle of a waterfall the game marks a strip as shallow
     // water, between the face's own tiles on either side: it's the falls,
     // drawn as falling water, not a lake to redraw.
     for (0..kWaterRows) |r| for (0..kWaterCols) |col| {
-        if (attrs[r][col] == 0x09 and fallsBeside(&attrs[r], col)) g_water[r][col] = 0;
+        if (!indoors and attrs[r][col] == 0x09 and fallsBeside(&attrs[r], col)) g_water[r][col] = 0;
         any = any or g_water[r][col] != 0;
     };
+    // Swamp Palace's kind of water, on BG1 blended in over the floor: where
+    // the upper layer's tiles say there's water, or where some water's just
+    // been let in (the dam's lever pulled), which the room's tiles don't
+    // say till it's next entered. Plenty of rooms blend BG1 in for other
+    // things.
+    g_overlay_water = indoors and vars.TS_copy.* & 1 != 0 and
+        (upper or vars.dung_savegame_state_bits.* & 0x800 != 0);
+    g_water_by_tiles = any;
+    if (g_overlay_water) any = true;
+    // On the way from one room to the next, the one being left has no
+    // tiles to go on any more: its water's found by the colors it was just
+    // seen in, while they're still remembered.
+    if (indoors and any_outside and g_nwater_colors != 0) any = true;
     if (!any) return false;
     for (0..kWaterRows) |r| for (0..kWaterCols) |col| {
         var near: u8 = 0;
@@ -839,6 +1262,16 @@ fn scanWater(left: i32) bool {
         g_water_near[r][col] = near;
     };
     return true;
+}
+
+/// Death Mountain, Light World and Dark: no water up there, though the game
+/// counts the clouds the Dark World's floats over as water, and flashes
+/// them cyan with each strike of its lightning, as blue as any lake.
+pub fn onDeathMountain(area: u8) bool {
+    return switch (area) {
+        0x03, 0x05, 0x07, 0x43, 0x45, 0x47 => true,
+        else => false,
+    };
 }
 
 /// The attribute of a waterfall's face.
@@ -858,22 +1291,74 @@ pub fn fallsBeside(row: []const u8, col: usize) bool {
 
 /// The water tile under pixel (x, y) of the frame, and the deepest around
 /// it.
-fn waterTile(f: *const GpuFrame, x: usize, y: usize) struct { depth: u8, near: u8, outside: bool = false, face: bool = false } {
+fn waterTile(f: *const GpuFrame, x: usize, y: usize) struct { depth: u8, near: u8, outside: bool = false, face: bool = false, upper: bool = false } {
     const tx = ((@as(i32, @intCast(x)) - f.left + f.cam_x) >> 3) - g_water_x0;
     const ty = ((@as(i32, @intCast(y)) + f.cam_y) >> 3) - g_water_y0;
     if (tx < 0 or ty < 0 or tx >= kWaterCols or ty >= kWaterRows) return .{ .depth = 0, .near = 0 };
     const c: usize = @intCast(tx);
     const r: usize = @intCast(ty);
-    // Past the area's edges, any water's as good as deep and near.
-    if (g_water_outside[r][c]) return .{ .depth = 0, .near = 2, .outside = true };
-    return .{ .depth = g_water[r][c], .near = g_water_near[r][c], .face = g_water_face[r][c] };
+    // Past the area's edges, any water's as good as deep and near. Past a
+    // room's, a tile's water if it's mostly in the water's colors: its
+    // walls and floors share some of them.
+    if (g_water_outside[r][c]) {
+        if (f.indoors) return .{ .depth = if (g_outside_wet[r][c]) 2 else 0, .near = 0, .outside = true };
+        return .{ .depth = 0, .near = 2, .outside = true };
+    }
+    if (f.indoors and g_water[r][c] == 0 and g_outside_wet[r][c]) return .{ .depth = 2, .near = 2 };
+    // Upper-layer water, and steps going down into it, only where BG1's
+    // blended in: elsewhere what the lower layer's tiles say (on the way
+    // into a room the upper's can still be the last room's).
+    const upper = g_water_upper[r][c];
+    if (f.indoors and (upper or g_water_face[r][c]) and !bg1Underneath(y * kMaxWidth + x)) {
+        const lower = g_water_lower[r][c];
+        return .{ .depth = lower, .near = @max(lower, g_water_near[r][c]) };
+    }
+    return .{ .depth = g_water[r][c], .near = g_water_near[r][c], .face = g_water_face[r][c], .upper = upper };
 }
 
 /// Whether the pixel at (x, y) is a background's: a sprite over the water
 /// (Link swimming, a Zora) is left alone.
 fn backgroundAt(f: *const GpuFrame, x: usize, y: usize) bool {
     _ = f;
-    return g_layers[y * kMaxWidth + x] <= 1;
+    return layerAt(y * kMaxWidth + x) <= 1;
+}
+
+/// Whether a color is cool enough to be water's: bluer or greener than it is
+/// red, by a margin. Hyrule's water always is, blue in the Light World and
+/// green in the Dark World's swamps; the clouds over the Dark World's Death
+/// Mountain, on tiles the game counts as water, are pink.
+pub fn coolEnough(px: u32) bool {
+    const r = (px >> 16) & 0xff;
+    const cool = @max((px >> 8) & 0xff, px & 0xff);
+    // And not so dark it's the rim round a pool rather than the water.
+    return cool >= r + 0x10 and cool >= 0x50;
+}
+
+/// Indoors, which tiles the room's tiles don't call water are water all the
+/// same, three quarters of their pixels on the frame in the water's own
+/// colors: past the room's edges (the room being left, on the way to the
+/// next), and beside the water, where the next room's tiles are still
+/// coming in on the way into it. Never steps going into it.
+fn markOutsideWater(pixels: [*]const u8, pitch: usize, f: *const GpuFrame) void {
+    for (0..kWaterRows) |r| for (0..kWaterCols) |c| {
+        g_outside_wet[r][c] = false;
+        const beside = g_water[r][c] == 0 and g_water_near[r][c] != 0 and !g_water_face[r][c];
+        if (!g_water_outside[r][c] and !beside) continue;
+        const x0 = (g_water_x0 + @as(i32, @intCast(c))) * 8 - f.cam_x + f.left;
+        const y0 = (g_water_y0 + @as(i32, @intCast(r))) * 8 - f.cam_y;
+        var seen: u32 = 0;
+        var wet: u32 = 0;
+        var y = @max(y0, 0);
+        while (y < @min(y0 + 8, @as(i32, @intCast(f.height)))) : (y += 1) {
+            const row: [*]align(1) const u32 = @ptrCast(pixels + @as(usize, @intCast(y)) * pitch);
+            var x = @max(x0, 0);
+            while (x < @min(x0 + 8, @as(i32, @intCast(f.width)))) : (x += 1) {
+                seen += 1;
+                if (isWaterColor(row[@intCast(x)] & 0xffffff)) wet += 1;
+            }
+        }
+        g_outside_wet[r][c] = seen >= 16 and wet * 4 >= seen * 3;
+    };
 }
 
 /// Gathers the colors the full water tiles are drawn in: the ones that fill
@@ -892,7 +1377,9 @@ fn noteWaterColors(pixels: [*]u8, pitch: usize, f: *const GpuFrame) void {
         const row: [*]align(1) const u32 = @ptrCast(pixels + y * pitch);
         var x: usize = 0;
         while (x < f.width) : (x += 2) {
-            if (row[x] >> 24 == 0 or waterTile(f, x, y).depth == 0 or !backgroundAt(f, x, y)) continue;
+            const over = g_overlay_water and !g_water_by_tiles and bg1Underneath(y * kMaxWidth + x) and !waterTile(f, x, y).face;
+            const t = waterTile(f, x, y);
+            if (row[x] >> 24 == 0 or t.outside or (t.depth == 0 and !over) or !backgroundAt(f, x, y)) continue;
             const px = row[x] & 0xffffff;
             total += 1;
             const k = for (colors[0..n], 0..) |col, i| {
@@ -918,8 +1405,12 @@ fn noteWaterColors(pixels: [*]u8, pitch: usize, f: *const GpuFrame) void {
     }
     for (g_water_color_age[0..g_nwater_colors]) |*age| age.* +|= 1;
     for (colors[0..n], counts[0..n], filled[0..n]) |col, cnt, fill| {
-        // Even the water's rarer colors; but only what fills.
-        if (cnt * 500 < total or fill * 2 < cnt) continue;
+        // Even the water's rarer colors; but only what fills, and only
+        // what's cool enough to be water. Indoors the water's a busy,
+        // dithered pattern that fills nothing: any blue that's a fair share
+        // of it is its own.
+        const enough = if (f.indoors) cnt * 40 >= total else cnt * 500 >= total and fill * 2 >= cnt;
+        if (!enough or !coolEnough(col)) continue;
         const k = for (g_water_colors[0..g_nwater_colors], 0..) |w, i| {
             if (w == col) break i;
         } else blk: {
@@ -995,7 +1486,11 @@ fn colorNear(a: u32, b: u32, tolerance: u32) bool {
 /// to one, the pixels in the water's colors are. Something over the water,
 /// a sprite or the HUD, is 2: not water itself, but not the shore either.
 fn waterAt(f: *const GpuFrame, x: usize, y: usize, px: u32, scene: bool) u32 {
-    const t = waterTile(f, x, y);
+    var t = waterTile(f, x, y);
+    // Indoors, BG1 blended in underneath is water lying over the floor,
+    // wherever the tiles say (Swamp Palace's canals) or not (the water the
+    // dam lets through, below its gate): all but steps going into it.
+    if (g_overlay_water and !t.outside and !t.face and bg1Underneath(y * kMaxWidth + x) and isWaterColor(px)) t.depth = @max(t.depth, 2);
     if (!scene) return if (t.depth != 0) 2 else 0;
     // A sprite drawn with the water's own color behind it (a lily pad) is
     // water there; the rest of it, and every other sprite, is left be.
@@ -1004,9 +1499,21 @@ fn waterAt(f: *const GpuFrame, x: usize, y: usize, px: u32, scene: bool) u32 {
     // plainly blue is water. Beside it, so is a darker blue, the water's
     // shading along a shore, except on a waterfall's face.
     const clean = isWaterColor(px);
-    const watery = clean or (looksLikeWater(px) and (t.outside or (!t.face and !isPaleBlue(px))));
-    const depth = if (t.depth != 0) t.depth else if (t.near != 0 and watery) t.near else 0;
-    const v: u32 = switch (depth) {
+    // Indoors, past the room's edges, only the water's own colors: its
+    // floors and walls are bluish enough to pass for water otherwise.
+    const watery = clean or (!f.indoors and looksLikeWater(px) and (t.outside or (!t.face and !isPaleBlue(px))));
+    // Indoors the water fills its tiles whole, and what's next to it in
+    // the same colors (steps going down into it) isn't water: the tiles
+    // alone say, but past the room's edges, where there are none.
+    const by_tile = f.indoors and !t.outside;
+    // And in its tiles, the dark rim round a pool isn't water either.
+    const in_water = t.depth != 0 and (!by_tile or clean or looksLikeWater(px));
+    const depth = if (in_water) t.depth else if (t.near != 0 and watery and !by_tile) t.near else 0;
+    // See-through water, BG1 blended in over the floor (Swamp Palace's),
+    // is 200: what's under it shows through it. Water drawn in its own
+    // tiles is redrawn whole.
+    const see_through = f.indoors and bg1Underneath(y * kMaxWidth + x);
+    const v: u32 = if (depth != 0 and see_through) 200 else switch (depth) {
         2 => 254,
         1 => 140,
         // Something pale or blue that isn't the water's own colors (a
@@ -1233,11 +1740,11 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
             // over its last frames.
             0x07 => {
                 const stage = vars.ancilla_item_to_link[k];
-                if (stage != 0) add.world(kBlast, ax + 8, ay + 8, seed, fade(stage, 11));
+                if (stage != 0) add.world(kBlast, ax, ay, seed, fade(stage, 11));
             },
             // Blown-open walls.
             0x0e, 0x0f, 0x10, 0x12, 0x33 => add.world(kBlast, ax + 8, ay + 8, seed, 0.8),
-            0x3a => add.world(kBigBlast, ax + 8, ay + 8, seed, 1),
+            0x3a => add.world(kBigBlast, ax, ay, seed, 1),
             // A rising crystal.
             0x3e => add.world(kFairy, ax + 8, ay + 8, seed, 1),
             // Treasure held up: out of a chest, from someone, from a pond.
@@ -2261,6 +2768,28 @@ test "Dim Flashes softens the lightning and steadies the flicker" {
     try testing.expectApproxEqAbs(@as(f32, 0.8) * kDimFlash, flash(), 0.0001);
     const b = steadyBurn(kSparkBurn);
     try testing.expect(b.waver < kSparkBurn.waver and b.speed < kSparkBurn.speed and b.gutter < kSparkBurn.gutter);
+}
+
+test "HD Water takes blue and green for water, not the Dark World's pink clouds" {
+    try testing.expect(coolEnough(0x006331)); // the Dark World's swamp
+    try testing.expect(coolEnough(0x005229));
+    try testing.expect(coolEnough(0x314a7b));
+    try testing.expect(coolEnough(0x5a84c6));
+    try testing.expect(!coolEnough(0xad7b84));
+    try testing.expect(!coolEnough(0xd6a5ad));
+    try testing.expect(!coolEnough(0x101010));
+    try testing.expect(!coolEnough(0x181829)); // a pool's dark rim
+    // But the lightning flashes them cyan: Death Mountain's left out.
+    try testing.expect(coolEnough(0x00ffff));
+    try testing.expect(onDeathMountain(0x45));
+    // Indoors: Swamp Palace's water only once BG1's drawn, and the steps
+    // into it aren't water.
+    try testing.expectEqual(@as(u8, 0x08), dungeonAttr(0x00, 0x08, true).attr);
+    try testing.expectEqual(@as(u8, 0x00), dungeonAttr(0x00, 0x08, false).attr);
+    try testing.expect(dungeonAttr(0x08, 0x08, true).steps);
+    try testing.expect(dungeonAttr(0x02, 0x08, true).steps);
+    try testing.expectEqual(@as(u8, 0x08), dungeonAttr(0x08, 0x00, false).attr);
+    try testing.expect(!onDeathMountain(0x35));
 }
 
 test "HD Water knows deep from shallow, and follows the shore by the water's colors" {

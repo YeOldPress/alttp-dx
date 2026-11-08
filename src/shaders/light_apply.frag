@@ -15,6 +15,10 @@
 // HD Water: where the mask's blue says there's water (and not a sprite over
 // it), the water's drawn afresh at the screen's own resolution (hdWater).
 //
+// And the air bends: shimmering in the desert's heat and over lava, and in
+// rings rushing out from blasts. The picture's read from a little way off
+// where it does, never pulling the HUD into the scene.
+//
 // Compiled to SPIR-V and MSL by `zig build shaders`; the results are
 // committed, so building the game needs neither tool.
 
@@ -50,6 +54,16 @@ layout(set = 3, binding = 0) uniform Params {
     vec4 water;
     // The desert's heat haze: 1 when it's shimmering, then as water's.
     vec4 heat;
+    // 1 when the air over lava shimmers (how hot, 255 less the mask's
+    // alpha, its lowest bit aside), how many shockwaves there are, and how
+    // many things are reflected in the water.
+    vec4 fx;
+    // Each blast's shockwave: where it went off in the world, how far its
+    // ring has spread, and how many SNES pixels it pushes the picture.
+    vec4 shocks[6];
+    // What the water reflects: each one's left and right edges on the
+    // frame, the line under its feet, and its top.
+    vec4 mirrors[8];
     // As in light_map.frag.
     vec4 lights[kMaxLights * 2];
 };
@@ -116,11 +130,18 @@ bool cleanWater(vec2 uv) {
     return b > 2 && (b & 1) == 1;
 }
 
+// Whether the mask says the water at uv is see-through (200 or 201): BG1
+// blended in over a dungeon's floor, as Swamp Palace's is.
+bool seeThrough(vec2 uv) {
+    float b = texture(u_mask, uv).b * 255.0;
+    return b > 198.5 && b < 201.5;
+}
+
 // The water drawn afresh at p: the art's own water colors blended smooth,
 // big soft clouds of light and dark drifting over it with a little sky in
 // the light, fine wisps of light winding through, a sparkle now and then,
 // and white foam breaking along the shore.
-vec3 hdWater(vec2 p, vec3 art) {
+vec3 hdWater(vec2 p, vec3 art, bool clear) {
     // The art's color, blended over a few pixels around: its pixels gone,
     // deep and shallow still told apart.
     vec3 sum = vec3(0.0);
@@ -135,6 +156,10 @@ vec3 hdWater(vec2 p, vec3 art) {
         }
     }
     vec3 base = n > 0.0 ? sum / n : art;
+    // See-through water: what's under it (the floor, a switch, the steps
+    // going in) shows through, softened, and the light plays over it more
+    // gently.
+    if (clear) base = mix(base, art, 0.7);
 
     float t = waterTime();
     vec2 wp = worldAt(p);
@@ -143,8 +168,8 @@ vec3 hdWater(vec2 p, vec3 art) {
     // The clouds: light and dark stretches, slowly drifting and turning.
     vec2 q = wp / 56.0 + vec2(t * 0.0006, t * 0.0004);
     float cloud = fbm(q + fbm(q * 0.7 - vec2(t * 0.0003, 0.0)) * 1.6);
-    vec3 col = base * (0.72 + 0.6 * cloud);
-    col = mix(col, sky, smoothstep(0.55, 0.85, cloud) * 0.3);
+    vec3 col = base * (clear ? 0.88 + 0.25 * cloud : 0.72 + 0.6 * cloud);
+    col = mix(col, sky, smoothstep(0.55, 0.85, cloud) * (clear ? 0.12 : 0.3));
 
     // The wisps: thin lines where a slowly warping pattern crosses its
     // middle, as fine as the screen.
@@ -154,7 +179,7 @@ vec3 hdWater(vec2 p, vec3 art) {
     // Kept a screen pixel and a half wide at least, and soft-edged, so a
     // line doesn't flicker on and off as it moves between pixels.
     float wisp = 1.0 - smoothstep(0.0, max(0.022, fwidth(r) * 1.5), abs(r - 0.5));
-    col += sky * wisp * (0.08 + 0.14 * cloud);
+    col += sky * wisp * (0.08 + 0.14 * cloud) * (clear ? 0.7 : 1.0);
 
     // Now and then a sparkle, a sharp point of light that winks out.
     vec2 cell = floor(wp / 5.0);
@@ -184,30 +209,93 @@ vec3 hdWater(vec2 p, vec3 art) {
     return col;
 }
 
+// The mask's alpha as a byte: 255 less the heat over lava, its lowest bit
+// clear for a sprite's pixel.
+int maskAlpha(vec2 uv) {
+    return int(texture(u_mask, uv).a * 255.0 + 0.5);
+}
+
+// The water at p, with whatever stands in it or at its edge reflected:
+// each one mirrored about the line under its feet, wavering with the
+// water, fading the deeper it goes and tinted by the water.
+vec3 reflections(vec2 p, vec3 col) {
+    float t = waterTime();
+    for (int i = 0; i < 8; i++) {
+        if (float(i) >= fx.z) break;
+        vec4 m = mirrors[i];
+        float depth = p.y - m.z;
+        float height = m.z - m.w;
+        if (p.x < m.x - 2.0 || p.x > m.y + 2.0 || depth < 0.0 || depth > height) continue;
+        float wave = sin(p.y * 0.9 + t * 0.12) * 0.6 * (0.3 + depth / height);
+        vec2 q = vec2(p.x + wave, m.z - depth - 1.0);
+        vec2 uv = onFrame(q) * tex.zw;
+        if ((maskAlpha(uv) & 1) != 0) continue;
+        vec3 seen = texture(u_frame, uv).rgb;
+        float fade = 0.42 * (1.0 - depth / height);
+        col = mix(col, seen * mix(vec3(1.0), col * 1.6, 0.45), fade);
+    }
+    return col;
+}
+
 void main() {
     vec2 p = v_uv * tex.xy;
     vec4 here = texture(u_mask, v_uv);
+    vec2 uv = v_uv;
+    // Where the picture's read from, once the air's bent it.
+    vec2 from = p;
+    vec2 wp = worldAt(p);
+    float t = waterTime();
+    vec2 bend = vec2(0.0);
+    float front = 0.0;
+    if (here.r * 255.0 > 0.5) {
+        // The desert's heat: the picture wavers, row by row, side to side,
+        // in ripples that rise up the screen, stronger in some stretches
+        // than others as they drift.
+        if (heat.x > 0.0) {
+            float stretch = smoothstep(0.3, 0.75, fbm(wp / 70.0 + vec2(t * 0.0015, -t * 0.0025)));
+            float a = sin(wp.y * 0.55 + t * 0.09 + sin(wp.x * 0.045 + t * 0.013) * 1.5);
+            float b = sin(wp.y * 1.4 + t * 0.16 + wp.x * 0.03);
+            bend.x += (a * 0.65 + b * 0.35) * 1.1 * (0.35 + 0.65 * stretch);
+            bend.y += sin(wp.x * 0.09 + wp.y * 0.2 + t * 0.05) * 0.25 * stretch;
+        }
+        // Over lava, the same but quicker and tighter, as hot as the air
+        // is there.
+        float hot = fx.x > 0.0 ? float(255 - (maskAlpha(v_uv) | 1)) / 255.0 : 0.0;
+        if (hot > 0.004) {
+            float flick = 0.6 + 0.4 * fbm(wp / 20.0 + vec2(0.0, t * 0.02));
+            float a = sin(wp.y * 0.8 + t * 0.15 + sin(wp.x * 0.07 + t * 0.02) * 1.5);
+            float b = sin(wp.y * 1.9 + t * 0.24 + wp.x * 0.05);
+            bend.x += (a * 0.6 + b * 0.4) * 1.2 * hot * flick;
+            bend.y += sin(wp.x * 0.13 + wp.y * 0.3 + t * 0.08) * 0.3 * hot;
+        }
+        // The shockwaves: each ring a bulge in the air, the picture pushed
+        // outward ahead of it and drawn back in behind.
+        for (int i = 0; i < 6; i++) {
+            if (float(i) >= fx.y) break;
+            vec4 s = shocks[i];
+            vec2 d = wp - s.xy;
+            float dist = length(d);
+            float width = 5.0 + s.z * 0.1;
+            float x = (dist - s.z) / width;
+            float ring = exp(-x * x);
+            // x e^(-x^2) peaks at 0.43; this makes s.w the push at its peak.
+            bend -= d / max(dist, 0.001) * (x * ring * 2.33) * s.w;
+            front += ring * s.w;
+        }
+        if (bend != vec2(0.0)) {
+            vec2 moved = onFrame(p + bend) * tex.zw;
+            if (texture(u_mask, moved).r * 255.0 > 0.5) {
+                uv = moved;
+                from = onFrame(p + bend);
+            }
+        }
+    }
     // 2 in the mask is something over the water, a sprite or the HUD: not
     // drawn as water, though the shore's foam isn't drawn around it.
-    float w = water.x > 0.0 && here.b * 255.0 > 2.5 ? here.b : 0.0;
-    vec2 uv = v_uv;
-    // The desert's heat: the picture wavers, row by row, side to side, in
-    // ripples that rise up the screen, stronger in some stretches than
-    // others as they drift. Never pulling the HUD into it.
-    if (heat.x > 0.0 && here.r * 255.0 > 0.5) {
-        vec2 hp = p + heat.zw;
-        float ht = heat.y;
-        float stretch = smoothstep(0.3, 0.75, fbm(hp / 70.0 + vec2(ht * 0.0015, -ht * 0.0025)));
-        float a = sin(hp.y * 0.55 + ht * 0.09 + sin(hp.x * 0.045 + ht * 0.013) * 1.5);
-        float b = sin(hp.y * 1.4 + ht * 0.16 + hp.x * 0.03);
-        float dx = (a * 0.65 + b * 0.35) * 0.75 * (0.3 + 0.7 * stretch);
-        float dy = sin(hp.x * 0.09 + hp.y * 0.2 + ht * 0.05) * 0.15 * stretch;
-        vec2 moved = onFrame(p + vec2(dx, dy)) * tex.zw;
-        if (texture(u_mask, moved).r * 255.0 > 0.5) uv = moved;
-    }
+    float w = water.x > 0.0 && texture(u_mask, uv).b * 255.0 > 2.5 ? 1.0 : 0.0;
     vec3 c = texture(u_frame, uv).rgb;
     float m = here.r * 255.0;
-    if (w > 0.0) c = hdWater(p, c);
+    if (w > 0.0) c = reflections(from, hdWater(from, c, seeThrough(uv)));
 
     if (m > 0.5 && m < 1.5) {
         // The light map's texels sit on SNES pixel centers.
@@ -234,6 +322,9 @@ void main() {
         glow *= look.y;
         c = c + glow * (1.0 - c);
     }
+
+    // A shockwave's front catches the light a little.
+    if (front > 0.0) c *= 1.0 + min(front, 5.0) * 0.03;
 
     // And a touch warmer in the heat.
     if (heat.x > 0.0 && m > 0.5) c *= vec3(1.03, 1.0, 0.96);

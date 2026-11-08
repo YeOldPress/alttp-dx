@@ -1095,6 +1095,7 @@ pub export fn ZeldaRunFrame(inputs_in: c_int) callconv(.c) bool {
     audio.ZeldaPushApuState();
     particles.step();
     lighting.stepWeather();
+    lighting.stepShocks();
     overworld_wide.noteFrame();
 
     return is_replay;

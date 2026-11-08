@@ -489,7 +489,8 @@ var g_bg_row: [4][64]u16 = undefined;
 /// marked 1, the HUD 0.
 /// `layers`, when there, gets which layer each pixel of the frame came
 /// from, as the line's compositing sees it: 0 to 3 the backgrounds, 4 a
-/// sprite, 5 the backdrop.
+/// sprite, 5 the backdrop; and in the high four bits, the same for the
+/// subscreen the color math blends in, 15 when there isn't one.
 pub const LightMask = struct { mask: [*]u8, pitch: usize, dark: bool, layers: ?[*]u8 = null };
 pub var g_light_mask: ?LightMask = null;
 
@@ -1328,7 +1329,8 @@ fn PpuDrawWholeLine(ppu: *Ppu, y: u32) void {
         const lr = layers + row * m.pitch;
         const x0: usize = ppu.extraLeftRight - ppu.extraLeftCur;
         for (bufIndex(cwin.edges[0])..bufIndex(cwin.edges[cwin.nr]), x0..) |i, x| {
-            lr[x] = @truncate((ppu.bgBuffers[0].data[i] >> 8) & 0xf);
+            const sub: u16 = if (rendered_subscreen) (ppu.bgBuffers[1].data[i] >> 8) & 0xf else 0xf;
+            lr[x] = @truncate(((ppu.bgBuffers[0].data[i] >> 8) & 0xf) | sub << 4);
         }
     };
 

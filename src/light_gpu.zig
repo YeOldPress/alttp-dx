@@ -34,6 +34,9 @@ const ApplyParams = extern struct {
     weather: [4]f32,
     water: [4]f32,
     heat: [4]f32,
+    fx: [4]f32,
+    shocks: [lighting.kMaxShocks][4]f32,
+    mirrors: [lighting.kMaxMirrors][4]f32,
     lights: [kMaxLights * 2][4]f32,
 };
 
@@ -256,6 +259,8 @@ pub fn apply(r: *c.SDL_Renderer, frame: *c.SDL_Texture, tex_w: c_int, tex_h: c_i
     // Walls read smoothly here, for softer shadows; the second pass reads
     // the mask through a sampler of its own.
     _ = c.SDL_SetTextureScaleMode(mask, c.SDL_SCALEMODE_LINEAR);
+    // Its alpha is the heat over lava, not how much of it to draw.
+    _ = c.SDL_SetTextureBlendMode(mask, c.SDL_BLENDMODE_NONE);
     _ = c.SDL_SetGPURenderState(r, g_map_state);
     _ = c.SDL_RenderTexture(r, mask, &src, null);
     _ = c.SDL_SetGPURenderState(r, null);
@@ -275,6 +280,17 @@ pub fn apply(r: *c.SDL_Renderer, frame: *c.SDL_Texture, tex_w: c_int, tex_h: c_i
         .weather = .{ f.flash * lighting.kFlashStrength, 0, 0, 0 },
         .water = .{ if (f.water) 1 else 0, @floatFromInt(f.tick % (1 << 20)), @floatFromInt(f.cam_x - f.left), @floatFromInt(f.cam_y) },
         .heat = .{ if (f.heat) 1 else 0, @floatFromInt(f.tick % (1 << 20)), @floatFromInt(f.cam_x - f.left), @floatFromInt(f.cam_y) },
+        .fx = .{ if (f.lava) 1 else 0, @floatFromInt(f.nshocks), @floatFromInt(f.nmirrors), 0 },
+        .shocks = shocks: {
+            var list = std.mem.zeroes([lighting.kMaxShocks][4]f32);
+            @memcpy(list[0..f.nshocks], f.shocks[0..f.nshocks]);
+            break :shocks list;
+        },
+        .mirrors = mirrors: {
+            var list = std.mem.zeroes([lighting.kMaxMirrors][4]f32);
+            @memcpy(list[0..f.nmirrors], f.mirrors[0..f.nmirrors]);
+            break :mirrors list;
+        },
         .lights = lights,
     };
     _ = c.SDL_SetTextureBlendMode(frame, c.SDL_BLENDMODE_NONE);
