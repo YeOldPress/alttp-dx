@@ -1,5 +1,7 @@
 //! Particles: embers off every flame, sparks when the sword hits a wall,
-//! leaves when a bush is cut, splashes in the water, and the rain.
+//! leaves when a bush is cut, splashes in the water, and the rain; and what
+//! hangs in the air of some places, leaves in the Lost Woods, purple wisps in
+//! the Skull Woods, ash on the Dark World's mountain.
 //!
 //! They're the port's own, kept apart from the game's RAM like the lighting
 //! (lighting.zig), so the game plays the same with them on or off: each game
@@ -56,6 +58,19 @@ const Particle = struct {
     /// The least light it's lit by, for one that doesn't glow: smoke off a
     /// torch just gone out, still lit by its embers in a dark room.
     min_light: f32 = 0,
+    /// Frames it takes to come in: a few for a spark, more for a leaf that
+    /// shouldn't pop into the middle of the screen.
+    fade_in: f32 = 3,
+    /// A leaf, drawn longer than it's wide, that tips as it sways and turns
+    /// edge on and back as it falls.
+    flutter: bool = false,
+    /// Throbs brighter and dimmer as it goes (a wisp).
+    pulse: bool = false,
+    /// Blinks: dim, then a flash now and then (a firefly).
+    blink: bool = false,
+    /// How far it can turn each frame, in radians, wandering where it
+    /// likes rather than going one way (a firefly).
+    wander: f32 = 0,
 };
 
 var g_parts: [kMaxParticles]Particle = undefined;
@@ -424,6 +439,12 @@ pub fn step() void {
             g_parts[i] = g_parts[g_n];
             continue;
         }
+        if (p.wander > 0) {
+            const a = (rand() - 0.5) * p.wander;
+            const vx = p.vx * @cos(a) - p.vy * @sin(a);
+            p.vy = p.vx * @sin(a) + p.vy * @cos(a);
+            p.vx = vx;
+        }
         p.vx *= p.drag;
         p.vy = p.vy * p.drag + p.gravity;
         p.x += p.vx + p.wobble * @sin(@as(f32, @floatFromInt(p.age)) * 0.15 + @as(f32, @floatFromInt(p.seed)));
@@ -441,6 +462,9 @@ pub fn step() void {
     }
     emit();
     if (lighting.raining()) rain();
+    ambience(ambienceHere());
+    // Dust drifting in the light from a window.
+    if (vars.player_is_indoors.* != 0 and rand() < 0.3) if (lighting.beamSpot(rand())) |at| dustMote(at[0], at[1]);
 }
 
 fn emit() void {
@@ -519,12 +543,229 @@ fn emit() void {
     }
 }
 
+// ------------------------------------------------------------- the air
+
+/// What hangs in the air of some places out in the world, all the time:
+/// leaves coming down in the Lost Woods and fireflies blinking under its
+/// trees, glowing purple wisps of dark magic in the Skull Woods, ash
+/// falling on the Dark World's Death Mountain; and
+/// the desert's heat, which isn't particles but a shimmer over the picture
+/// (lighting.zig's heatHaze, light_apply.frag).
+pub const Ambience = enum { none, leaves, wisps, heat, ash };
+
+/// The ambience of an overworld area, by the game's number for it (the top
+/// left screen of a big one, as it keeps it).
+pub fn ambienceFor(area: u8) Ambience {
+    return switch (area) {
+        0x00 => .leaves,
+        0x40 => .wisps,
+        0x30 => .heat,
+        0x43, 0x45, 0x47 => .ash,
+        else => .none,
+    };
+}
+
+pub fn ambienceHere() Ambience {
+    if (vars.player_is_indoors.* != 0 or vars.main_module_index.* != 9) return .none;
+    return ambienceFor(@truncate(vars.overworld_screen_index.*));
+}
+
+/// Somewhere in the view (and its widescreen margins), in the world.
+fn inView() [2]f32 {
+    const margin: f32 = @floatFromInt(snes_types.kPpuExtraLeftRight);
+    const cam_x: f32 = @floatFromInt(vars.BG2HOFS_copy2.*);
+    const cam_y: f32 = @floatFromInt(vars.BG2VOFS_copy2.*);
+    return .{ cam_x + range(-margin, 256 + margin), cam_y + range(-8, 224) };
+}
+
+fn ambience(kind: Ambience) void {
+    switch (kind) {
+        .none => {},
+        .leaves => {
+            if (rand() < 0.14) {
+                const at = inView();
+                const col: [3]f32 = if (rand() < 0.75) kLeaves else if (rand() < 0.7) .{ 0.68, 0.7, 0.28 } else .{ 0.78, 0.5, 0.2 };
+                fallingLeaf(at[0], at[1], col);
+            }
+            if (rand() < 0.03) {
+                const at = inView();
+                firefly(at[0], at[1]);
+            }
+        },
+        .wisps => if (rand() < 0.18) {
+            const at = inView();
+            wisp(at[0], at[1]);
+        },
+        .heat => {},
+        .ash => {
+            if (rand() < 0.3) {
+                const at = inView();
+                ash(at[0], at[1]);
+            }
+            if (rand() < 0.012) {
+                const at = inView();
+                cinder(at[0], at[1]);
+            }
+        },
+    }
+}
+
+/// A leaf come loose from the trees overhead, swaying side to side as it
+/// drifts down.
+fn fallingLeaf(x: f32, y: f32, color: [3]f32) void {
+    const shade = range(0.75, 1.1);
+    const col = [3]f32{ color[0] * shade, color[1] * shade, color[2] * shade };
+    add(.{
+        .x = x,
+        .y = y,
+        .vx = range(0.03, 0.2),
+        .vy = range(0.22, 0.38),
+        .drag = 1,
+        .gravity = 0,
+        .wobble = range(0.2, 0.4),
+        .age = 0,
+        .life = @intFromFloat(range(240, 400)),
+        .size = range(1.6, 2.2),
+        .hot = col,
+        .cool = col,
+        .seed = @truncate(g_rng.random().int(u16)),
+        .glows = false,
+        .crisp = true,
+        .alpha = 0.9,
+        .fade_in = 40,
+        .flutter = true,
+    });
+}
+
+/// A wisp of the Skull Woods' dark magic: a glowing purple mote that
+/// throbs brighter and dimmer as it wanders slowly up and away.
+fn wisp(x: f32, y: f32) void {
+    add(.{
+        .x = x,
+        .y = y,
+        .vx = range(-0.12, 0.12),
+        .vy = range(-0.25, -0.08),
+        .drag = 1,
+        .gravity = 0,
+        .wobble = range(0.15, 0.3),
+        .age = 0,
+        .life = @intFromFloat(range(150, 260)),
+        .size = range(1.4, 2.0),
+        .hot = .{ 0.75, 0.35, 1.0 },
+        .cool = .{ 0.4, 0.1, 0.65 },
+        .seed = @truncate(g_rng.random().int(u16)),
+        .alpha = range(0.7, 1.0),
+        .fade_in = 40,
+        .pulse = true,
+    });
+}
+
+/// A firefly under the Lost Woods' trees: a dim green-gold mote wandering
+/// slowly, flashing bright now and then.
+fn firefly(x: f32, y: f32) void {
+    const a = range(0, std.math.tau);
+    const speed = range(0.06, 0.14);
+    add(.{
+        .x = x,
+        .y = y,
+        .vx = @cos(a) * speed,
+        .vy = @sin(a) * speed,
+        .drag = 1,
+        .gravity = 0,
+        .wobble = range(0.05, 0.12),
+        .age = 0,
+        .life = @intFromFloat(range(400, 700)),
+        .size = range(1.1, 1.5),
+        .hot = .{ 0.85, 1.0, 0.4 },
+        .cool = .{ 0.65, 0.9, 0.25 },
+        .seed = @truncate(g_rng.random().int(u16)),
+        .alpha = 0.95,
+        .fade_in = 40,
+        .blink = true,
+        .wander = 0.3,
+    });
+}
+
+/// A mote of dust in the light from a window, glinting as it drifts down.
+fn dustMote(x: f32, y: f32) void {
+    add(.{
+        .x = x,
+        .y = y,
+        .vx = range(-0.05, 0.05),
+        .vy = range(0.02, 0.07),
+        .drag = 1,
+        .gravity = 0,
+        .wobble = range(0.03, 0.08),
+        .age = 0,
+        .life = @intFromFloat(range(180, 320)),
+        .size = range(0.7, 1.0),
+        .hot = .{ 1.0, 0.96, 0.82 },
+        .cool = .{ 1.0, 0.92, 0.75 },
+        .seed = @truncate(g_rng.random().int(u16)),
+        .alpha = range(0.35, 0.6),
+        .fade_in = 40,
+        .pulse = true,
+    });
+}
+
+/// A fleck of ash, drifting down.
+fn ash(x: f32, y: f32) void {
+    const shade = range(0.55, 0.78);
+    add(.{
+        .x = x,
+        .y = y,
+        .vx = range(-0.05, 0.15),
+        .vy = range(0.15, 0.3),
+        .drag = 1,
+        .gravity = 0,
+        .wobble = range(0.06, 0.14),
+        .age = 0,
+        .life = @intFromFloat(range(250, 400)),
+        .size = range(1.3, 1.9),
+        .hot = .{ shade, shade * 0.96, shade * 0.93 },
+        .cool = .{ shade * 0.9, shade * 0.86, shade * 0.84 },
+        .seed = @truncate(g_rng.random().int(u16)),
+        .glows = false,
+        .crisp = true,
+        .alpha = range(0.55, 0.8),
+        .fade_in = 40,
+    });
+}
+
+/// Now and then among the ash, one still smoldering: a dim orange cinder
+/// that floats a while and goes out.
+fn cinder(x: f32, y: f32) void {
+    add(.{
+        .x = x,
+        .y = y,
+        .vx = range(-0.05, 0.15),
+        .vy = range(-0.06, 0.12),
+        .drag = 1,
+        .gravity = 0,
+        .wobble = range(0.05, 0.1),
+        .age = 0,
+        .life = @intFromFloat(range(120, 200)),
+        .size = range(1.0, 1.4),
+        .hot = kEmberCool,
+        .cool = .{ 0.5, 0.1, 0.02 },
+        .seed = @truncate(g_rng.random().int(u16)),
+        .alpha = range(0.4, 0.6),
+        .fade_in = 30,
+    });
+}
+
+/// A firefly's glow at its age: dim, with a flash every few seconds.
+fn blinkAt(p: *const Particle) f32 {
+    const s = @max(0, @sin(@as(f32, @floatFromInt(p.age)) * 0.035 + @as(f32, @floatFromInt(p.seed))));
+    return 0.08 + 0.92 * s * s * s * s;
+}
+
 /// How a particle looks at its age: its color, and how bright (0 to 1),
 /// coming in over its first frames and fading over the last part of its
 /// life.
 fn look(p: *const Particle) struct { color: [3]f32, alpha: f32 } {
     const t = @as(f32, @floatFromInt(p.age)) / @as(f32, @floatFromInt(p.life));
-    const in = @min(@as(f32, @floatFromInt(p.age)) / 3.0, 1.0);
+    const in = @min(@as(f32, @floatFromInt(p.age)) / p.fade_in, 1.0);
     const out = @min((1.0 - t) / 0.4, 1.0);
     return .{
         .color = .{
@@ -532,7 +773,7 @@ fn look(p: *const Particle) struct { color: [3]f32, alpha: f32 } {
             p.hot[1] + (p.cool[1] - p.hot[1]) * t,
             p.hot[2] + (p.cool[2] - p.hot[2]) * t,
         },
-        .alpha = in * out * p.alpha,
+        .alpha = in * out * p.alpha * if (p.pulse) 0.55 + 0.45 * @sin(@as(f32, @floatFromInt(p.age)) * 0.12 + @as(f32, @floatFromInt(p.seed))) else if (p.blink) blinkAt(p) else 1,
     };
 }
 
@@ -666,15 +907,24 @@ fn drawGpuPass(r: *c.SDL_Renderer, tex: *c.SDL_Texture, v: View, mask: []const u
         // is stretched along the way it's going, a streak rather than a dot.
         // A fleck is drawn its own size, a pixel of the screen at least, and
         // stretched less.
-        const half = if (crisp) @max(p.size * 0.5 * scale, 1) else p.size * 1.6 * scale;
+        var half = if (crisp) @max(p.size * 0.5 * scale, 1) else p.size * 1.6 * scale;
         const speed = @sqrt(p.vx * p.vx + p.vy * p.vy);
-        const along = [2]f32{ if (speed > 0.01) p.vx / speed else 1, if (speed > 0.01) p.vy / speed else 0 };
-        const across = [2]f32{ -along[1], along[0] };
-        const long = half + @max(speed - 0.3, 0) * (if (crisp) @as(f32, 0.8) else 2.5) * scale;
-        const cx = sx * scale;
-        const cy = sy * scale;
+        var along = [2]f32{ if (speed > 0.01) p.vx / speed else 1, if (speed > 0.01) p.vy / speed else 0 };
+        var long = half + @max(speed - 0.3, 0) * (if (crisp) @as(f32, 0.8) else 2.5) * scale;
+        if (p.flutter) {
+            // In time with its sway (step): tipped the way it's swinging,
+            // flat on at either end of it, edge on as it passes the middle.
+            const phase = @as(f32, @floatFromInt(p.age)) * 0.15 + @as(f32, @floatFromInt(p.seed));
+            const tilt = @sin(phase) * 0.7;
+            along = .{ @cos(tilt), @sin(tilt) };
+            long = half * 1.4;
+            half = @max(half * (0.3 + 0.7 * @abs(@cos(phase))), 1);
+        }
         const col = c.SDL_FColor{ .r = l.color[0], .g = l.color[1], .b = l.color[2], .a = l.alpha };
         const corners = [4][4]f32{ .{ -1, -1, 0, 0 }, .{ 1, -1, 1, 0 }, .{ 1, 1, 1, 1 }, .{ -1, 1, 0, 1 } };
+        const across = [2]f32{ -along[1], along[0] };
+        const cx = sx * scale;
+        const cy = sy * scale;
         for (corners, 0..) |k, j| verts[nq * 4 + j] = .{
             .position = .{
                 .x = cx + k[0] * long * along[0] + k[1] * half * across[0],
@@ -811,4 +1061,28 @@ test "ice is bright white to pale blue, not the floor's blue or a flame" {
     try testing.expect(looksIcy(0xc6e7ff));
     try testing.expect(!looksIcy(0x6b6bc6)); // the floor
     try testing.expect(!looksIcy(0xffd060)); // a flame
+}
+
+test "the Lost Woods drop leaves, the desert shimmers, Death Mountain's ash falls" {
+    try testing.expectEqual(Ambience.leaves, ambienceFor(0x00));
+    try testing.expectEqual(Ambience.wisps, ambienceFor(0x40));
+    try testing.expectEqual(Ambience.heat, ambienceFor(0x30));
+    try testing.expectEqual(Ambience.ash, ambienceFor(0x45));
+    try testing.expectEqual(Ambience.none, ambienceFor(0x05)); // the Light World's mountain
+    try testing.expectEqual(Ambience.none, ambienceFor(0x2c)); // Link's house
+
+    clear();
+    fallingLeaf(0, 0, kLeaves);
+    ash(0, 0);
+    const leaf = g_parts[0];
+    const fleck = g_parts[1];
+    // Both drift down slowly, and come in gently rather than popping in.
+    try testing.expect(leaf.vy > 0 and leaf.vy < 0.5 and fleck.vy > 0 and fleck.vy < 0.5);
+    var p = leaf;
+    p.age = 3;
+    try testing.expect(look(&p).alpha < 0.2);
+    p.age = 40;
+    try testing.expect(look(&p).alpha > 0.85);
+
+    clear();
 }

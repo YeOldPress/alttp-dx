@@ -168,6 +168,9 @@ pub const Config = extern struct {
     room_dimming: u8,
     /// Embers off flames, sparks off the sword (particles.zig).
     particles: bool,
+    /// Water that ripples, glints and laps at the shore on a GPU
+    /// (lighting.zig, light_apply.frag).
+    hd_water: bool,
     features0: u32,
 
     link_graphics: ?[*:0]const u8,
@@ -1008,6 +1011,8 @@ fn handleGraphics(key: [*:0]const u8, value: [*:0]u8) bool {
         return true;
     } else if (util.StringEqualsNoCase(key, "Particles")) {
         return ParseBool(value, &g_config.particles);
+    } else if (util.StringEqualsNoCase(key, "HdWater")) {
+        return ParseBool(value, &g_config.hd_water);
     } else if (util.StringEqualsNoCase(key, "NoSpriteLimits")) {
         return ParseBool(value, &g_config.no_sprite_limits);
     } else if (util.StringEqualsNoCase(key, "LinkGraphics")) {
@@ -1207,6 +1212,7 @@ export fn ParseConfigFile(filename_in: ?[*:0]const u8) callconv(.c) void {
     g_config.dynamic_lighting = true;
     g_config.room_dimming = 20;
     g_config.particles = true;
+    g_config.hd_water = true;
 
     var filename = filename_in;
     if (filename != null or !parseOneConfigFile("zelda3.user.ini", 0)) {

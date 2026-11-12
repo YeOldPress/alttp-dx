@@ -79,8 +79,13 @@ sparks or glows lights up its surroundings, from fire rod shots to Turtle
 Rock's lava to Agahnim's lightning. Rooms that aren't dark dim a little when
 they have a fire for it to light, and rooms without one are left as the
 original draws them. Embers rise off fire, the sword sparks off walls, cut
-bushes shed leaves, waterfalls throw up mist, and the opening night gets a
-proper storm.
+bushes shed leaves, waterfalls throw up mist, the air shimmers over lava and
+the desert sand, bombs send shockwaves rippling out, fireflies blink in the
+Lost Woods, dust drifts in the light from windows, magic and crystals bloom,
+and the opening night gets a proper storm. Water, out in the world and down in the dungeons, is
+redrawn at the screen's own resolution, with drifting light, fine wisps, foam
+along the shore, and Link reflected in it. Turtle Rock's lava is too, molten and
+churning under a cooling crust.
 
 <table>
   <tr>
@@ -95,8 +100,8 @@ proper storm.
 
 It's all drawing; the game plays the same with it on or off. **Dynamic
 Lighting**, **Lighting Quality** (Full, or Simple for slower graphics cards),
-**Room Dimming** and **Particles** are under Graphics in Settings. Shadows and
-glow need a GPU.
+**Room Dimming**, **Particles** and **HD Water/Lava** are under Graphics in
+Settings. Shadows, glow and HD Water/Lava need a GPU.
 
 ## Settings
 
