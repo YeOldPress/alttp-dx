@@ -1361,8 +1361,7 @@ fn findLavaHeat(pixels: [*]const u8, pitch: usize, f: *const GpuFrame) void {
             lava[ty][tx] = false;
             const wx = (g_lava_x0 + @as(i32, @intCast(tx))) * 8;
             const wy = (g_lava_y0 + @as(i32, @intCast(ty))) * 8;
-            const t: usize = @intCast((@mod(wy, 512) >> 3) * 64 + (@mod(wx, 512) >> 3));
-            if (vars.dung_bg2_attr_table[t] != kPitAttr and vars.dung_bg1_attr_table[t] != kPitAttr) continue;
+            if (!lavaFloor(wx, wy)) continue;
             g_pit_tiles[ty][tx] = true;
             // A few of the tile's pixels, any of them lava colored.
             for ([_][2]i32{ .{ 2, 2 }, .{ 5, 2 }, .{ 2, 5 }, .{ 5, 5 } }) |o| {
@@ -1411,11 +1410,15 @@ var g_lava_hd = false;
 fn hdLava(left: i32) bool {
     if (!hdWater() or vars.player_is_indoors.* == 0 or !inDungeonPlay()) return false;
     const room: i32 = vars.dungeon_room_index.*;
+    var any = false;
     for (g_spots[0..g_nspots]) |spot| {
         if (spot.kind != .lava) continue;
-        noteLavaRoom(room);
-        return true;
+        // Lava left behind in the last room, as it scrolls away, isn't
+        // this one's.
+        if (inRoom(room, spot.x, spot.y)) noteLavaRoom(room);
+        any = true;
     }
+    if (any) return true;
     // A room with lava still on the screen as it scrolls away: the tiles
     // loaded are the next room's by then, so it's found by its colors.
     const x0 = @as(i32, vars.BG2HOFS_copy2.*) - left;
@@ -2598,9 +2601,7 @@ fn findLava(frame: Frame, left: i32, cam_x: i32, cam_y: i32) void {
                     const wx = cx * kLavaCell + sx;
                     const wy = cy * kLavaCell + sy;
                     const px = frame.at(wx - cam_x + left, wy - cam_y) orelse continue;
-                    if (!looksLikeLava(px)) continue;
-                    const t: usize = @intCast((@mod(wy, 512) >> 3) * 64 + (@mod(wx, 512) >> 3));
-                    if (vars.dung_bg2_attr_table[t] != kPitAttr and vars.dung_bg1_attr_table[t] != kPitAttr) continue;
+                    if (!looksLikeLava(px) or !lavaFloor(wx, wy)) continue;
                     count += 1;
                     sum_x += wx;
                     sum_y += wy;
@@ -2622,6 +2623,19 @@ fn findLava(frame: Frame, left: i32, cam_x: i32, cam_y: i32) void {
 
 /// The attribute of floor Link falls through, which Turtle Rock's lava is.
 const kPitAttr = 0x20;
+
+/// Whether the floor at (wx, wy) in the world could be lava: in another
+/// room lava's been seen in, scrolling away from it, anywhere, as the tiles
+/// loaded are the next room's by then and only its colors can say; else
+/// where the tiles say it's a pit.
+fn lavaFloor(wx: i32, wy: i32) bool {
+    const room: i32 = vars.dungeon_room_index.*;
+    for (g_lava_rooms) |r| {
+        if (r >= 0 and r != room and inRoom(r, wx, wy)) return true;
+    }
+    const t: usize = @intCast((@mod(wy, 512) >> 3) * 64 + (@mod(wx, 512) >> 3));
+    return vars.dung_bg2_attr_table[t] == kPitAttr or vars.dung_bg1_attr_table[t] == kPitAttr;
+}
 
 /// A pixel lava might be: bright to dark red or orange, and next to no blue.
 pub fn looksLikeLava(px: u32) bool {
