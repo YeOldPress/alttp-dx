@@ -48,15 +48,16 @@ layout(set = 3, binding = 0) uniform Params {
     vec4 look;
     // The weather: how far a lightning flash washes the scene toward white.
     vec4 weather;
-    // HD Water: 1 when there's water in the mask to work on, the game's
-    // frame count for it to move by, and where the frame's left edge and
-    // top are in the world.
+    // HD Water: when there's water in the mask to work on, 1 indoors and 2
+    // out in the world; the game's frame count for it to move by, and where
+    // the frame's left edge and top are in the world.
     vec4 water;
     // The desert's heat haze: 1 when it's shimmering, then as water's.
     vec4 heat;
     // 1 when the air over lava shimmers (how hot, 255 less the mask's
-    // alpha, its lowest bit aside), how many shockwaves there are, and how
-    // many things are reflected in the water.
+    // alpha, its lowest bit aside), how many shockwaves there are, how
+    // many things are reflected in the water, and how many points of
+    // Link's wake there are.
     vec4 fx;
     // Each blast's shockwave: where it went off in the world, how far its
     // ring has spread, and how many SNES pixels it pushes the picture.
@@ -64,12 +65,15 @@ layout(set = 3, binding = 0) uniform Params {
     // What the water reflects: each one's left and right edges on the
     // frame, the line under its feet, and its top.
     vec4 mirrors[8];
-    // Unused, 1 when there's light from a window (the mask's alpha says
+    // 1 when there's lava to redraw (61 in the mask's blue), 1 when there's light from a window (the mask's alpha says
     // where), how strong the bloom is, and how many bright things bloom.
     vec4 air;
     // Each one that blooms: where it is on the frame, how far round it,
     // and how strongly.
     vec4 blooms[8];
+    // Link's wake: each point he's left behind him swimming, where it is in
+    // the world, how many frames ago, and how strong.
+    vec4 wake[48];
     // As in light_map.frag.
     vec4 lights[kMaxLights * 2];
 };
@@ -133,7 +137,13 @@ float fbm(vec2 x) {
 // (odd), not some speck on it (even), and so fit to blend into its color.
 bool cleanWater(vec2 uv) {
     int b = int(texture(u_mask, uv).b * 255.0 + 0.5);
-    return b > 2 && (b & 1) == 1;
+    return b > 2 && (b & 1) == 1 && b != 61;
+}
+
+// Whether the mask says uv is lava (61), to be drawn afresh.
+bool isLava(vec2 uv) {
+    float b = texture(u_mask, uv).b * 255.0;
+    return b > 60.5 && b < 61.5;
 }
 
 // Whether the mask says the water at uv is see-through (200 or 201): BG1
@@ -143,11 +153,94 @@ bool seeThrough(vec2 uv) {
     return b > 198.5 && b < 201.5;
 }
 
+// How much of the water round p is deep (254 or 255 in the mask), over a
+// few pixels, so the change from shallow to deep is a soft one rather
+// than a tile's square edge.
+float deepAround(vec2 p) {
+    float d = texture(u_mask, onFrame(p) * tex.zw).b * 255.0 > 229.5 ? 1.0 : 0.0;
+    for (int i = 0; i < 16; i++) {
+        float a = float(i) * 0.392699 + (i < 8 ? 0.0 : 0.196);
+        float r = i < 8 ? 4.5 : 10.0;
+        d += texture(u_mask, onFrame(p + vec2(cos(a), sin(a)) * r) * tex.zw).b * 255.0 > 229.5 ? 1.0 : 0.0;
+    }
+    return d / 17.0;
+}
+
+// The water's surface out in the world, its height at wp (in the world)
+// at time t: six trains of waves crossing, long to short, and fine
+// ripples over them.
+float waveHeight(vec2 wp, float t) {
+    // Six trains of waves at uneven angles and lengths, each bent its own
+    // way by slow noise so they never line up into a pattern; crests a
+    // little sharper than troughs, as real ones are. Fine ripples over.
+    float h = 0.0;
+    for (int i = 0; i < 6; i++) {
+        float fi = float(i);
+        float ang = 0.3 + fi * 0.97;
+        float freq = 0.2 * pow(1.33, fi);
+        float amp = 0.32 * pow(0.78, fi);
+        vec2 dir = vec2(cos(ang), sin(ang));
+        float warp = vnoise(wp / (36.0 - fi * 3.0) + vec2(fi * 7.3, fi * 3.1) + t * 0.0015) * 4.0;
+        float w = 0.5 + 0.5 * sin(dot(wp, dir) * freq - t * (0.03 + fi * 0.009) + warp);
+        h += w * w * amp;
+    }
+    h += (vnoise(wp / 3.0 + vec2(t * 0.012, -t * 0.009)) - 0.5) * 0.12;
+    return h;
+}
+
+// Link's wake at wp, as a boat leaves one: a short train of waves
+// spreading out from each point he's swum through, slower than he swims,
+// so they pile up into the V behind him (and follow him round a turn);
+// wider and lower as they spread, settling as they age. Gives the slope
+// they add to the surface, and how much white water's churned up right
+// behind him.
+vec2 wakeSlope(vec2 wp, out float churn) {
+    vec2 grad = vec2(0.0);
+    churn = 0.0;
+    for (int i = 0; i < 48; i++) {
+        if (float(i) >= fx.w) break;
+        vec4 k = wake[i];
+        vec2 off = wp - k.xy;
+        float d = length(off);
+        float age = k.z / 96.0;
+        // Fresh, the churned white water along his path.
+        if (d < 8.0) churn += k.w * exp(-d * d / 5.0) * max(1.0 - age * 3.0, 0.0) * 0.67;
+        float r = 2.0 + k.z * 0.32;
+        float x = d - r;
+        if (abs(x) > 6.0 || d < 0.01) continue;
+        float s = 1.0 - age;
+        float amp = k.w * s * sqrt(s) * 0.36 * inversesqrt(1.0 + r * 0.15);
+        // Uneven from ring to ring, so the waves inside the V don't line
+        // up like the teeth of a comb.
+        amp *= 0.6 + 0.8 * hash(k.xy);
+        float e = exp(-x * x / 4.0);
+        // A crest or two, leading the ring, the steepest at its front.
+        float slope = (1.5 * cos(x * 1.5) - x / 2.0 * sin(x * 1.5)) * e;
+        grad += amp * slope * off / d;
+    }
+    return grad;
+}
+
 // The water drawn afresh at p: the art's own water colors blended smooth,
 // big soft clouds of light and dark drifting over it with a little sky in
 // the light, fine wisps of light winding through, a sparkle now and then,
 // and white foam breaking along the shore.
 vec3 hdWater(vec2 p, vec3 art, bool clear) {
+    bool outdoors = water.x > 1.5;
+    // Out in the world, the waves: the surface's slope here, which lights
+    // it and bends what's seen through it.
+    vec3 normal = vec3(0.0, 0.0, 1.0);
+    float churn = 0.0;
+    if (outdoors) {
+        vec2 wq = worldAt(p);
+        float tw = waterTime();
+        float e = 0.75;
+        float dx = waveHeight(wq + vec2(e, 0.0), tw) - waveHeight(wq - vec2(e, 0.0), tw);
+        float dy = waveHeight(wq + vec2(0.0, e), tw) - waveHeight(wq - vec2(0.0, e), tw);
+        vec2 slope = vec2(dx, dy) * 0.6 + wakeSlope(wq, churn);
+        normal = normalize(vec3(-slope * 1.0, 1.0));
+    }
+    vec2 seen = p + normal.xy * 2.0;
     // The art's color, blended over a few pixels around: its pixels gone,
     // deep and shallow still told apart.
     vec3 sum = vec3(0.0);
@@ -155,13 +248,27 @@ vec3 hdWater(vec2 p, vec3 art, bool clear) {
     for (int i = 0; i < 12; i++) {
         float a = float(i) * 2.39996;
         float r = 1.5 + 4.5 * sqrt((float(i) + 0.5) / 12.0);
-        vec2 uv = onFrame(p + vec2(cos(a), sin(a)) * r) * tex.zw;
+        vec2 uv = onFrame(seen + vec2(cos(a), sin(a)) * r) * tex.zw;
         if (cleanWater(uv)) {
             sum += texture(u_frame, uv).rgb;
             n += 1.0;
         }
     }
     vec3 base = n > 0.0 ? sum / n : art;
+    // The water's colors further round, to set its darker patches (where
+    // the art draws it deeper) further apart from the rest.
+    vec3 wide = vec3(0.0);
+    float wn = 0.0;
+    for (int i = 0; i < 12; i++) {
+        float a = float(i) * 2.39996 + 1.1;
+        float r = 6.0 + 10.0 * sqrt((float(i) + 0.5) / 12.0);
+        vec2 uv = onFrame(p + vec2(cos(a), sin(a)) * r) * tex.zw;
+        if (cleanWater(uv)) {
+            wide += texture(u_frame, uv).rgb;
+            wn += 1.0;
+        }
+    }
+    if (outdoors && wn > 0.0) base = clamp(wide / wn + (base - wide / wn) * 1.4, 0.0, 1.0);
     // See-through water: what's under it (the floor, a switch, the steps
     // going in) shows through, softened, and the light plays over it more
     // gently.
@@ -174,8 +281,24 @@ vec3 hdWater(vec2 p, vec3 art, bool clear) {
     // The clouds: light and dark stretches, slowly drifting and turning.
     vec2 q = wp / 56.0 + vec2(t * 0.0006, t * 0.0004);
     float cloud = fbm(q + fbm(q * 0.7 - vec2(t * 0.0003, 0.0)) * 1.6);
-    vec3 col = base * (clear ? 0.88 + 0.25 * cloud : 0.72 + 0.6 * cloud);
-    col = mix(col, sky, smoothstep(0.55, 0.85, cloud) * (clear ? 0.12 : 0.3));
+    // Gentle enough not to hide which water's deep.
+    // Out in the world, gentle enough not to hide which water's deep.
+    vec3 col = base * (clear ? 0.88 + 0.25 * cloud : outdoors ? 0.84 + 0.32 * cloud : 0.72 + 0.6 * cloud);
+    col = mix(col, sky, smoothstep(0.55, 0.85, cloud) * (clear ? 0.12 : outdoors ? 0.2 : 0.3));
+    // Out in the world, deep water (where Link swims) darker and richer,
+    // shallow (where he wades) lighter, as the game's tiles have them.
+    if (outdoors) {
+        float deep = deepAround(p);
+        col *= mix(1.07, 0.8, smoothstep(0.0, 1.0, deep));
+        // The waves lit by the sun, high to the top left: faces turned to
+        // it brighter, the backs of them darker, and glints off the crests.
+        vec3 sun = normalize(vec3(-0.45, -0.6, 0.66));
+        float facing = dot(normal, sun) - sun.z;
+        col *= 1.0 + facing * 0.75;
+        vec3 bounce = reflect(-sun, normal);
+        float glint = pow(max(bounce.z, 0.0), 40.0);
+        col += vec3(1.0, 0.98, 0.92) * glint * 0.45;
+    }
 
     // The wisps: thin lines where a slowly warping pattern crosses its
     // middle, as fine as the screen.
@@ -209,9 +332,113 @@ vec3 hdWater(vec2 p, vec3 art, bool clear) {
     float broken = 0.5 + 0.5 * smoothstep(0.35, 0.65, fbm(wp / 6.0 + vec2(t * 0.002, -t * 0.0015)));
     float foam = smoothstep(1.0, 0.55, around) * broken;
     col = mix(col, vec3(0.95, 0.98, 1.0), foam * 0.18);
+    // And white water churned up behind Link as he swims, broken up.
+    col = mix(col, vec3(0.95, 0.98, 1.0), clamp(churn * 0.15, 0.0, 0.2) * broken);
 
     // Deep and shallow alike: the art's own colors, blended above, already
     // tell them apart, where the tiles' say might not match what's drawn.
+    return col;
+}
+
+// How much of what's round p (in SNES pixels) is lava, read smoothly
+// between pixels.
+float lavaNear(vec2 p) {
+    vec2 q = clamp(p, vec2(1.0), map.xy - 1.0) - 0.5;
+    vec2 i = floor(q);
+    vec2 f = q - i;
+    float a = isLava((i + vec2(0.5, 0.5)) * tex.zw) ? 1.0 : 0.0;
+    float b = isLava((i + vec2(1.5, 0.5)) * tex.zw) ? 1.0 : 0.0;
+    float c = isLava((i + vec2(0.5, 1.5)) * tex.zw) ? 1.0 : 0.0;
+    float d = isLava((i + vec2(1.5, 1.5)) * tex.zw) ? 1.0 : 0.0;
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// The lava drawn afresh at p: its own colors blended smooth, churning
+// slowly, a dark crust cooling over it in drifting plates with glowing
+// cracks between, hot spots throbbing, the odd bubble swelling and
+// bursting, and the crust thicker along its banks.
+vec3 hdLava(vec2 p, vec3 art) {
+    vec2 wp = worldAt(p);
+    // Lava's thick: everything on it moves at half the water's pace.
+    float t = waterTime() * 0.5;
+    // The art's three colors, its dark red, red and orange, each found
+    // among the pixels around and blended in the same measure everywhere,
+    // as much of each as shows over time. (The game animates its lava,
+    // much more of the dark red showing on some frames than others:
+    // blended as they come, the whole of it would pulse in time.)
+    vec3 dark = vec3(0.0);
+    vec3 red = vec3(0.0);
+    vec3 orange = vec3(0.0);
+    vec3 n3 = vec3(0.0);
+    for (int i = 0; i < 17; i++) {
+        vec2 uv = onFrame(p) * tex.zw;
+        if (i > 0) {
+            float a = float(i) * 2.39996;
+            float r = 1.5 + 8.0 * sqrt((float(i) - 0.5) / 16.0);
+            uv = onFrame(p + vec2(cos(a), sin(a)) * r) * tex.zw;
+        }
+        if (!isLava(uv)) continue;
+        vec3 c = texture(u_frame, uv).rgb;
+        if (c.g > 0.3) { orange += c; n3.z += 1.0; }
+        else if (c.r < 0.75) { dark += c; n3.x += 1.0; }
+        else { red += c; n3.y += 1.0; }
+    }
+    // One missing is made from the others, as Turtle Rock's are.
+    if (n3.y > 0.0) red /= n3.y;
+    else if (n3.z > 0.0) red = orange / n3.z * vec3(0.906, 0.27, 1.0);
+    else if (n3.x > 0.0) red = dark / n3.x * vec3(1.56, 1.37, 1.4);
+    else red = art;
+    dark = n3.x > 0.0 ? dark / n3.x : red * vec3(0.64, 0.73, 0.71);
+    orange = n3.z > 0.0 ? orange / n3.z : red * vec3(1.1, 3.7, 1.0);
+    vec3 base = dark * 0.28 + red * 0.52 + orange * 0.2;
+
+    // The slow churn: the pattern drifting and folding over on itself.
+    vec2 q = wp / 30.0;
+    vec2 flow = vec2(fbm(q + vec2(0.0, t * 0.0016)), fbm(q + vec2(5.2, 1.3) - vec2(t * 0.0013, 0.0)));
+    float heat = fbm(q * 1.4 + flow * 2.4 + vec2(t * 0.0009, -t * 0.0012));
+    // Molten where it's hot, crusted over darker where it's cooled.
+    float molten = smoothstep(0.22, 0.55, heat);
+    vec3 crust = base * vec3(0.66, 0.42, 0.38);
+    vec3 col = mix(crust, base * vec3(1.12, 1.18, 1.0), molten);
+    // The cracks in the crust glowing yellow, thin lines where a second,
+    // quicker pattern crosses its middle, kept soft as fine as the screen.
+    vec2 v = wp / 24.0 + flow * 1.2;
+    float r = fbm(v + vec2(t * 0.0018, t * 0.0014));
+    float crack = 1.0 - smoothstep(0.0, max(0.05, fwidth(r) * 2.0), abs(r - 0.5));
+    col = mix(col, vec3(1.0, 0.62, 0.2), crack * (1.0 - molten) * 0.6);
+    // The hottest spots brighten toward yellow white, and throb.
+    float throb = 0.5 + 0.5 * sin(t * 0.015 + heat * 4.0);
+    col = mix(col, vec3(1.0, 0.86, 0.45), smoothstep(0.68, 0.85, heat) * (0.35 + 0.25 * throb));
+
+    // Now and then a bubble swells up, glowing, and bursts.
+    vec2 cell = floor(wp / 14.0);
+    float h = hash(cell + 3.7);
+    if (h > 0.55) {
+        // Slower still than the rest, as thick as it is: swelling for a
+        // second or two, bursting, and settling.
+        float tb = t * 0.35;
+        float period = 90.0 + 120.0 * hash(cell + 9.1);
+        float phase = fract(tb / period + h * 7.0);
+        vec2 at = (cell + 0.3 + 0.4 * vec2(hash(cell + 1.3), hash(cell + 5.9))) * 14.0;
+        float d = length(wp - at);
+        float size = 1.0 + 3.0 * smoothstep(0.0, 0.12, phase);
+        // Swelling, a bright dome with a darker rim.
+        float dome = (1.0 - smoothstep(size - 0.8, size, d)) * step(phase, 0.12);
+        col = mix(col, vec3(1.0, 0.8, 0.4), dome * (0.25 + 0.5 * (1.0 - d / size)));
+        // Burst, a ring spreading out and fading.
+        float since = (phase - 0.12) * period;
+        float ring = exp(-pow(d - (size + since * 0.25), 2.0) / 0.8) * step(0.12, phase) * exp(-since / 10.0);
+        col = mix(col, vec3(1.0, 0.85, 0.5), ring * 0.6);
+    }
+
+    // Cooler and crusted along its banks.
+    float around = 0.0;
+    for (int i = 0; i < 8; i++) {
+        float a = float(i) * 0.7853982 + 0.3927;
+        around += lavaNear(p + vec2(cos(a), sin(a)) * 3.0);
+    }
+    around /= 8.0;
+    col = mix(crust, col, 0.35 + 0.65 * smoothstep(0.45, 0.95, around));
     return col;
 }
 
@@ -342,7 +569,8 @@ void main() {
     float w = water.x > 0.0 && texture(u_mask, uv).b * 255.0 > 2.5 ? 1.0 : 0.0;
     vec3 c = texture(u_frame, uv).rgb;
     float m = here.r * 255.0;
-    if (w > 0.0) c = reflections(from, hdWater(from, c, seeThrough(uv)));
+    if (w > 0.0 && !isLava(uv)) c = reflections(from, hdWater(from, c, seeThrough(uv)));
+    if (air.x > 0.0 && isLava(uv)) c = hdLava(from, c);
     if (air.y > 0.0 && here.r * 255.0 > 0.5) c = windowLight(from, wp, c);
 
     if (m > 0.5 && m < 1.5) {

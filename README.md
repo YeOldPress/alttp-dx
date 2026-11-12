@@ -84,7 +84,8 @@ the desert sand, bombs send shockwaves rippling out, fireflies blink in the
 Lost Woods, dust drifts in the light from windows, magic and crystals bloom,
 and the opening night gets a proper storm. Water, out in the world and down in the dungeons, is
 redrawn at the screen's own resolution, with drifting light, fine wisps, foam
-along the shore, and Link reflected in it.
+along the shore, and Link reflected in it. Turtle Rock's lava is too, molten and
+churning under a cooling crust.
 
 <table>
   <tr>
@@ -99,8 +100,8 @@ along the shore, and Link reflected in it.
 
 It's all drawing; the game plays the same with it on or off. **Dynamic
 Lighting**, **Lighting Quality** (Full, or Simple for slower graphics cards),
-**Room Dimming**, **Particles** and **HD Water** are under Graphics in
-Settings. Shadows, glow and HD Water need a GPU.
+**Room Dimming**, **Particles** and **HD Water/Lava** are under Graphics in
+Settings. Shadows, glow and HD Water/Lava need a GPU.
 
 ## Settings
 

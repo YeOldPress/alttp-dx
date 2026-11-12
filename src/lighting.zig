@@ -123,6 +123,8 @@ pub const GpuFrame = struct {
     /// Lava on the screen, the air above it shimmering: how hot each pixel's
     /// air is goes in the mask's alpha.
     lava: bool = false,
+    /// HD Lava: lava on the screen to redraw, marked 61 in the mask's blue.
+    lava_hd: bool = false,
     /// Blasts' shockwaves rippling out over the picture: where each started
     /// in the world, how far it's spread and how hard it still pushes.
     shocks: [kMaxShocks][4]f32 = undefined,
@@ -140,6 +142,10 @@ pub const GpuFrame = struct {
     /// far round it, and how strongly.
     blooms: [kMaxBlooms][4]f32 = undefined,
     nblooms: usize = 0,
+    /// Link's wake as he swims: the points he's left behind him in the
+    /// world, how many frames ago, and how hard he was going.
+    wake: [kMaxWake][4]f32 = undefined,
+    nwake: usize = 0,
     /// A pixel a u32, `width` to a row: the mask's value in red, solid
     /// ground in green, as light_map.frag reads them, and the water in blue
     /// (254 deep, 140 shallow, 200 see-through, odd in the water's own
@@ -383,7 +389,7 @@ pub fn easeToward(now: f32, target: f32, step: f32) f32 {
 fn roomMode() Mode {
     // Particles want the HUD told apart from the scene, and indoors the
     // room's fires checked for their embers; HD Water, the water found.
-    const plain: Mode = if (g_water_on or g_heat_on or g_shock_on or (particles.enabled() and (particles.count() != 0 or vars.player_is_indoors.* != 0))) .plain else .off;
+    const plain: Mode = if (g_water_on or g_lava_hd or g_heat_on or g_shock_on or (particles.enabled() and (particles.count() != 0 or vars.player_is_indoors.* != 0))) .plain else .off;
     if (!config.g_config.dynamic_lighting) return plain;
     if (vars.player_is_indoors.* == 0) {
         if (raining()) return .storm;
@@ -410,6 +416,7 @@ pub fn beginFrame(ppu: *Ppu, render_flags: u32, height: usize) void {
     const new_renderer = render_flags & snes_pkg.ppu_types.kPpuRenderFlags_NewRenderer != 0;
     g_water_on = new_renderer and scanWater(ppu.extraLeftRight);
     g_heat_on = new_renderer and heatHaze();
+    g_lava_hd = new_renderer and hdLava(ppu.extraLeftRight);
     g_shock_on = new_renderer and g_gpu and g_nshocks != 0;
     g_mode = if (new_renderer) roomMode() else .off;
     g_active = g_mode != .off;
@@ -505,12 +512,14 @@ pub fn endFrame(ppu: *Ppu, pixels: [*]u8, pitch: usize, height: usize) void {
         .water = g_water_on,
         .heat = g_heat_on,
         .lava = lavaShimmer(),
+        .lava_hd = g_lava_hd,
         .beams = windowLight(),
         .tick = g_tick,
         .mask = &.{},
     };
     @memcpy(g_gpu_frame.lights[0..k], lights[0..k]);
     if (g_shock_on) packShocks(&g_gpu_frame);
+    packWake(&g_gpu_frame);
     g_gpu_frame.nblooms = findBlooms(ppu.extraLeftRight, &g_gpu_frame.blooms);
     g_gpu_pending = true;
 }
@@ -854,7 +863,7 @@ pub fn takeGpuFrame(pixels: [*]u8, pitch: usize) ?*const GpuFrame {
     // floats over: nothing to redraw.
     if (f.water and g_nwater_colors == 0) f.water = false;
     if (f.water and f.indoors) markOutsideWater(pixels, pitch, f);
-    if (f.lava) findLavaHeat(pixels, pitch, f);
+    if (f.lava or f.lava_hd) findLavaHeat(pixels, pitch, f);
     g_nbeam_spots = 0;
     g_beam_seen = 0;
     for (0..f.height) |y| {
@@ -867,7 +876,9 @@ pub fn takeGpuFrame(pixels: [*]u8, pitch: usize) ?*const GpuFrame {
             row[x] &= 0xffffff;
             const tx: usize = @intCast(@mod(@as(i32, @intCast(x)) - f.left + f.cam_x, 512) >> 3);
             const solid: u32 = if (f.indoors) solidness(attrs[tx]) else 0;
-            const water: u32 = if (f.water) waterAt(f, x, y, row[x], m != 0) else 0;
+            var water: u32 = if (f.water) waterAt(f, x, y, row[x], m != 0) else 0;
+            if (f.lava_hd and water == 0 and m != 0 and layerAt(y * kMaxWidth + x) != 4 and
+                looksLikeLava(row[x]) and lavaAt(f, x, y)) water = kLavaMark;
             // Alpha: 255 less the heat over lava (in steps of 4), its
             // lowest bit clear for a sprite's pixel (reflections, bloom),
             // the next for light from a window.
@@ -1079,6 +1090,93 @@ fn packShocks(f: *GpuFrame) void {
     f.nshocks = g_nshocks;
 }
 
+// --------------------------------------------------------------- wake
+
+/// Link's wake, as a boat's: every couple of frames he's swimming along, a
+/// point dropped where he is, each sending a ring of waves out from it.
+/// The rings overlap into the V a boat leaves behind it, following him
+/// round his turns, and once he stops no new ones start and the last
+/// spread out and settle.
+pub const kMaxWake = 48;
+const kWakeLife = 96;
+const kWakeEvery = 2;
+const WakePoint = struct { x: i32, y: i32, age: u16, strength: f32 };
+var g_wake: [kMaxWake]WakePoint = undefined;
+var g_nwake: usize = 0;
+/// Where Link was last frame, and where he left the last point.
+var g_wake_was: ?[2]i32 = null;
+var g_wake_drop: [2]i32 = .{ 0, 0 };
+var g_wake_clock: u8 = 0;
+var g_wake_world: u8 = 0;
+
+/// Once a game frame: ages the wake, and drops a fresh point behind Link
+/// if he's swimming and moving.
+pub fn stepWake() void {
+    var n: usize = 0;
+    for (g_wake[0..g_nwake]) |w| {
+        var v = w;
+        v.age += 1;
+        if (v.age >= kWakeLife) continue;
+        g_wake[n] = v;
+        n += 1;
+    }
+    g_nwake = n;
+
+    const world = @as(u8, @truncate(vars.overworld_screen_index.*)) & 0x40;
+    if (vars.player_is_indoors.* != 0 or world != g_wake_world) {
+        g_nwake = 0;
+        g_wake_was = null;
+        g_wake_world = world;
+        return;
+    }
+    // Where his body meets the water, about where the game splashes.
+    const at = [2]i32{ @as(i32, vars.link_x_coord.*) + 8, @as(i32, vars.link_y_coord.*) + 20 };
+    const was = g_wake_was;
+    g_wake_was = at;
+    if (vars.link_is_in_deep_water.* == 0) return;
+    const prev = was orelse {
+        g_wake_drop = at;
+        return;
+    };
+    // Standing still (treading water) leaves no wake; nor does a jump
+    // that's too far to have swum.
+    const mx = at[0] - prev[0];
+    const my = at[1] - prev[1];
+    if (mx == 0 and my == 0) return;
+    if (@abs(mx) > 8 or @abs(my) > 8) {
+        g_wake_drop = at;
+        return;
+    }
+    g_wake_clock +%= 1;
+    if (g_wake_clock % kWakeEvery != 0) return;
+    const dx: f32 = @floatFromInt(at[0] - g_wake_drop[0]);
+    const dy: f32 = @floatFromInt(at[1] - g_wake_drop[1]);
+    g_wake_drop = at;
+    // Harder going (a stroke) stirs bigger waves.
+    const strength = std.math.clamp(@sqrt(dx * dx + dy * dy) / (2.0 * kWakeEvery), 0.3, 1.0);
+    const point = WakePoint{ .x = at[0], .y = at[1], .age = 0, .strength = strength };
+    if (g_nwake == kMaxWake) {
+        // The oldest gives way.
+        var oldest: usize = 0;
+        for (g_wake[0..g_nwake], 0..) |o, i| {
+            if (o.age > g_wake[oldest].age) oldest = i;
+        }
+        g_wake[oldest] = point;
+        return;
+    }
+    g_wake[g_nwake] = point;
+    g_nwake += 1;
+}
+
+/// The wake as light_apply.frag takes it: each point's place in the
+/// world, its age in frames, and how strong its ring is.
+fn packWake(f: *GpuFrame) void {
+    for (g_wake[0..g_nwake], 0..) |w, i| {
+        f.wake[i] = .{ @floatFromInt(w.x), @floatFromInt(w.y), @floatFromInt(w.age), w.strength };
+    }
+    f.nwake = g_nwake;
+}
+
 // ------------------------------------------------------- reflections
 
 pub const kMaxMirrors = 8;
@@ -1252,14 +1350,20 @@ fn findLavaHeat(pixels: [*]const u8, pitch: usize, f: *const GpuFrame) void {
     g_lava_y0 = @divFloor(f.cam_y, 8);
     const cols: usize = @min(kWaterCols, (f.width + 15) / 8);
     const rows: usize = @min(kWaterRows, (f.height + 15) / 8);
-    var lava: [kWaterRows][kWaterCols]bool = undefined;
+    const lava = &g_lava_tiles;
+    for (&g_pit_tiles, &g_lava_tiles) |*a, *b| {
+        @memset(a, false);
+        @memset(b, false);
+    }
     for (0..rows) |ty| {
         for (0..cols) |tx| {
+            g_pit_tiles[ty][tx] = false;
             lava[ty][tx] = false;
             const wx = (g_lava_x0 + @as(i32, @intCast(tx))) * 8;
             const wy = (g_lava_y0 + @as(i32, @intCast(ty))) * 8;
             const t: usize = @intCast((@mod(wy, 512) >> 3) * 64 + (@mod(wx, 512) >> 3));
             if (vars.dung_bg2_attr_table[t] != kPitAttr and vars.dung_bg1_attr_table[t] != kPitAttr) continue;
+            g_pit_tiles[ty][tx] = true;
             // A few of the tile's pixels, any of them lava colored.
             for ([_][2]i32{ .{ 2, 2 }, .{ 5, 2 }, .{ 2, 5 }, .{ 5, 5 } }) |o| {
                 const sx = wx + o[0] - wx0;
@@ -1291,6 +1395,81 @@ fn findLavaHeat(pixels: [*]const u8, pitch: usize, f: *const GpuFrame) void {
             g_lava_heat[ty][tx] = @intFromFloat(hot * 255);
         }
     }
+}
+
+/// The pit tiles (lava's, in Turtle Rock) on and around the screen, and
+/// those of them with lava showing, from (g_lava_x0, g_lava_y0).
+var g_pit_tiles: [kWaterRows][kWaterCols]bool = undefined;
+var g_lava_tiles: [kWaterRows][kWaterCols]bool = undefined;
+
+/// What the mask's blue says for lava, to be redrawn (light_apply.frag).
+const kLavaMark = 61;
+
+/// HD Lava: with HD Water/Lava on, a GPU to draw it, and lava on the screen in
+/// a dungeon (refreshSpots found it).
+var g_lava_hd = false;
+fn hdLava(left: i32) bool {
+    if (!hdWater() or vars.player_is_indoors.* == 0 or !inDungeonPlay()) return false;
+    const room: i32 = vars.dungeon_room_index.*;
+    for (g_spots[0..g_nspots]) |spot| {
+        if (spot.kind != .lava) continue;
+        noteLavaRoom(room);
+        return true;
+    }
+    // A room with lava still on the screen as it scrolls away: the tiles
+    // loaded are the next room's by then, so it's found by its colors.
+    const x0 = @as(i32, vars.BG2HOFS_copy2.*) - left;
+    const y0: i32 = vars.BG2VOFS_copy2.*;
+    for (g_lava_rooms) |r| {
+        if (r < 0 or r == room) continue;
+        const rx = (r & 15) * 512;
+        const ry = (r >> 4) * 512;
+        if (x0 < rx + 512 and x0 + 256 + 2 * left > rx and y0 < ry + 512 and y0 + 240 > ry) return true;
+    }
+    return false;
+}
+
+/// The last couple of rooms lava was seen in, the latest first.
+var g_lava_rooms: [2]i32 = .{ -1, -1 };
+
+fn noteLavaRoom(room: i32) void {
+    if (g_lava_rooms[0] == room) return;
+    g_lava_rooms[1] = g_lava_rooms[0];
+    g_lava_rooms[0] = room;
+}
+
+/// Whether pixel (x, y) of the frame, lava colored, is lava: in the room
+/// the tiles are loaded for, on or beside its lava's tiles; in another room
+/// lava's been seen in (scrolling away from it), wherever it's lava colored.
+fn lavaAt(f: *const GpuFrame, x: usize, y: usize) bool {
+    const wx = @as(i32, @intCast(x)) + f.cam_x - f.left;
+    const wy = @as(i32, @intCast(y)) + f.cam_y;
+    const room: i32 = vars.dungeon_room_index.*;
+    if (inRoom(room, wx, wy)) return lavaTileNear(f, x, y);
+    for (g_lava_rooms) |r| {
+        if (r >= 0 and r != room and inRoom(r, wx, wy)) return true;
+    }
+    return false;
+}
+
+/// Whether pixel (x, y) of the frame is on a pit tile, or next to one with
+/// lava showing: lava colored there is lava, edges and all.
+fn lavaTileNear(f: *const GpuFrame, x: usize, y: usize) bool {
+    const tx = @divFloor(@as(i32, @intCast(x)) + f.cam_x - f.left, 8) - g_lava_x0;
+    const ty = @divFloor(@as(i32, @intCast(y)) + f.cam_y, 8) - g_lava_y0;
+    if (tx < 0 or ty < 0 or tx >= kWaterCols or ty >= kWaterRows) return false;
+    if (g_pit_tiles[@intCast(ty)][@intCast(tx)]) return true;
+    var dy: i32 = -1;
+    while (dy <= 1) : (dy += 1) {
+        var dx: i32 = -1;
+        while (dx <= 1) : (dx += 1) {
+            const nx = tx + dx;
+            const ny = ty + dy;
+            if (nx < 0 or ny < 0 or nx >= kWaterCols or ny >= kWaterRows) continue;
+            if (g_lava_tiles[@intCast(ny)][@intCast(nx)]) return true;
+        }
+    }
+    return false;
 }
 
 /// How hot the air is at pixel (x, y) of the frame, 0 to 255, read smoothly
@@ -1883,7 +2062,10 @@ fn gatherLights(ppu: *const Ppu, out: []Light) usize {
         switch (spot.kind) {
             .candle => add.world(kCandle, spot.x, spot.y, seed, 1),
             .warp => add.worldColored(kWarp, spot.x, spot.y, seed, spot.color),
-            .lava => add.world(kLava, spot.x, spot.y, seed, spot.amount),
+            // Seeded by its square of the room rather than where in it the
+            // lava's middle is, which moves as the camera does: else its
+            // flicker would jump each time.
+            .lava => add.world(kLava, spot.x, spot.y, 0x60000 +% (@as(u32, @bitCast(@divFloor(spot.x, kLavaCell))) *% 73856093 ^ @as(u32, @bitCast(@divFloor(spot.y, kLavaCell))) *% 19349663), spot.amount),
             // A waterfall gives off mist (particles.zig), not light.
             .waterfall => {},
             else => add.world(kTorch, spot.x, spot.y, seed, 1),
@@ -2115,7 +2297,7 @@ const kBlast = Source{ .r = 84, .c = .{ 1.0, 0.85, 0.6 }, .strength = 1.7, .burn
 const kBigBlast = Source{ .r = 130, .c = .{ 1.0, 0.85, 0.6 }, .strength = 1.8, .burn = kFireBurn, .glow_r = 20, .glow = 0.9 };
 const kEye = Source{ .r = 22, .c = .{ 1.0, 0.3, 0.25 }, .strength = 1.1, .burn = kLanternBurn, .glow_r = 3, .glow = 0.6 };
 /// Lava breathes: a slow swell and ebb, never guttering like a flame.
-pub const kLavaBurn = Burn{ .waver = 0.12, .speed = 0.035, .gutter = 0, .gutter_odds = 0, .sway = 0 };
+pub const kLavaBurn = Burn{ .waver = 0.12, .speed = 0.006, .gutter = 0, .gutter_odds = 0, .sway = 0 };
 const kLava = Source{ .r = 64, .c = .{ 1.0, 0.42, 0.16 }, .strength = 1.15, .burn = kLavaBurn };
 const kBolt = Source{ .r = 84, .c = .{ 0.72, 0.84, 1.0 }, .strength = 2.0, .burn = kSparkBurn, .glow_r = 11, .glow = 0.5 };
 /// A bolt's trail lights the floor but has no glow of its own: there are a

@@ -39,6 +39,7 @@ const ApplyParams = extern struct {
     mirrors: [lighting.kMaxMirrors][4]f32,
     air: [4]f32,
     blooms: [lighting.kMaxBlooms][4]f32,
+    wake: [lighting.kMaxWake][4]f32,
     lights: [kMaxLights * 2][4]f32,
 };
 
@@ -280,9 +281,9 @@ pub fn apply(r: *c.SDL_Renderer, frame: *c.SDL_Texture, tex_w: c_int, tex_h: c_i
         },
         .look = .{ g_overbright, if (simple()) 0 else g_glow, @floatFromInt(g_frame_count % 4096), f.ambient },
         .weather = .{ f.flash * lighting.kFlashStrength, 0, 0, 0 },
-        .water = .{ if (f.water) 1 else 0, @floatFromInt(f.tick % (1 << 20)), @floatFromInt(f.cam_x - f.left), @floatFromInt(f.cam_y) },
+        .water = .{ if (!f.water) 0 else if (f.indoors) 1 else 2, @floatFromInt(f.tick % (1 << 20)), @floatFromInt(f.cam_x - f.left), @floatFromInt(f.cam_y) },
         .heat = .{ if (f.heat) 1 else 0, @floatFromInt(f.tick % (1 << 20)), @floatFromInt(f.cam_x - f.left), @floatFromInt(f.cam_y) },
-        .fx = .{ if (f.lava) 1 else 0, @floatFromInt(f.nshocks), @floatFromInt(f.nmirrors), 0 },
+        .fx = .{ if (f.lava) 1 else 0, @floatFromInt(f.nshocks), @floatFromInt(f.nmirrors), @floatFromInt(f.nwake) },
         .shocks = shocks: {
             var list = std.mem.zeroes([lighting.kMaxShocks][4]f32);
             @memcpy(list[0..f.nshocks], f.shocks[0..f.nshocks]);
@@ -293,11 +294,16 @@ pub fn apply(r: *c.SDL_Renderer, frame: *c.SDL_Texture, tex_w: c_int, tex_h: c_i
             @memcpy(list[0..f.nmirrors], f.mirrors[0..f.nmirrors]);
             break :mirrors list;
         },
-        .air = .{ 0, if (f.beams) 1 else 0, if (simple()) 0 else 1, @floatFromInt(f.nblooms) },
+        .air = .{ if (f.lava_hd) 1 else 0, if (f.beams) 1 else 0, if (simple()) 0 else 1, @floatFromInt(f.nblooms) },
         .blooms = blooms: {
             var list = std.mem.zeroes([lighting.kMaxBlooms][4]f32);
             @memcpy(list[0..f.nblooms], f.blooms[0..f.nblooms]);
             break :blooms list;
+        },
+        .wake = wake: {
+            var list = std.mem.zeroes([lighting.kMaxWake][4]f32);
+            @memcpy(list[0..f.nwake], f.wake[0..f.nwake]);
+            break :wake list;
         },
         .lights = lights,
     };

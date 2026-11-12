@@ -160,7 +160,7 @@ pub const kSettings = [_]Setting{
     } } },
     .{ .section = "Graphics", .key = "RoomDimming", .label = "Room Dimming", .kind = .{ .number = .{ .min = 0, .max = 40, .step = 5, .suffix = "%" } } },
     .{ .section = "Graphics", .key = "Particles", .label = "Particles", .kind = .toggle },
-    .{ .section = "Graphics", .key = "HdWater", .label = "HD Water", .kind = .toggle },
+    .{ .section = "Graphics", .key = "HdWater", .label = "HD Water/Lava", .kind = .toggle },
     .{ .section = "Graphics", .key = "DimFlashes", .label = "Dim Flashes", .kind = .toggle },
     .{ .section = "Graphics", .key = "WindowSize", .label = "Window Size", .kind = .text },
 
@@ -681,7 +681,7 @@ pub fn describe(s: Setting) []const u8 {
         .{ "LightingQuality", "Full casts soft shadows from walls, gives flames a glow, and blooms magic, crystals and the Master Sword. Simple keeps the light and its flicker without them, for slower graphics cards. Without a GPU it's always simple." },
         .{ "RoomDimming", "How much rooms that aren't dark are dimmed so their torches, braziers and candles have something to light. Rooms without any are left as the original draws them. 0 leaves every room that way, with just the flames' glow." },
         .{ "Particles", "Embers, sparks, leaves, splashes, heavier rain, fireflies in the Lost Woods, dust in window light, and on a GPU, heat shimmering over the desert and lava and shockwaves from bombs. Needs New Renderer." },
-        .{ "HdWater", "Redraws water, outdoors and in dungeons, at your screen's resolution instead of in big pixels, with soft drifting light, fine wisps, sparkles and foam, and Link and whatever's in it reflected. Needs a GPU and New Renderer." },
+        .{ "HdWater", "Redraws water and lava at your screen's resolution instead of in big pixels. Water gets waves, drifting light, foam, reflections and a wake behind Link as he swims. Lava churns under a cooling crust with glowing cracks and slow bubbles. Needs a GPU and New Renderer." },
         .{ "DimFlashes", "Tone down flashing effects, as the Virtual Console releases did." },
         .{ "Volume", "How loud the whole game plays, music and sound effects together, MSU music included. Changes as you move it. Shift and plus or minus on the keyboard change it too." },
         .{ "EnableAudio", "Play sound and music at all." },
