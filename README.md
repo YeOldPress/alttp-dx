@@ -228,8 +228,9 @@ a deluxe pack. MSU needs `AudioChannels = 2` and sets the audio rate itself.
 Each track can be a different kind, and the game plays the first of `.pcm`,
 `.flac` and `.ogg` it finds. FLAC sounds exactly like the `.pcm` in about half
 the space; Ogg Vorbis takes about an eighth, and you won't hear the difference
-either. Both have to be 44100 Hz and keep their loop point as a `LOOPSTART`
-tag, in samples, the way game music rips usually do. To make your own from a
+either. They can be any sample rate (the game matches them to its own) and
+keep their loop point as a `LOOPSTART` tag, in samples at the track's own
+rate, the way game music rips usually do. To make your own from a
 `.pcm`, skip its 8-byte header, which holds the loop point:
 
 ```sh

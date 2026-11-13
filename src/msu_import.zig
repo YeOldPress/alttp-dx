@@ -1013,13 +1013,11 @@ fn trackProblem(ext: Ext, size: u64, head: ?[]const u8) ?[]const u8 {
     }
 }
 
-/// The normal game mixes tracks at 44.1kHz with no resampling of its own.
+/// Any rate plays: both MSU players resample to the output. Only one that
+/// can't be a real recording is a problem.
 fn rateProblem(rate: u32) ?[]const u8 {
-    if (rate == 44100) return null;
-    return switch (rate) {
-        48000 => "is 48000 Hz; tracks need to be 44100 Hz, the same as a .pcm",
-        else => "isn't 44100 Hz; tracks need to be 44100 Hz, the same as a .pcm",
-    };
+    if (rate >= 8000 and rate <= 192000) return null;
+    return "says its sample rate is something no recording has";
 }
 
 // --------------------------------------------------------------------- zips
@@ -1047,7 +1045,7 @@ test "a track's problems are put plainly" {
     try testing.expect(trackProblem(.flac, 100, "OggS\x00\x00\x00\x00") != null);
 }
 
-test "a FLAC or Ogg track at the wrong rate is caught from its header" {
+test "FLAC and Ogg tracks at any real rate pass, and a nonsense one is caught" {
     // fLaC, a STREAMINFO header, then block sizes, frame sizes, and the
     // packed rate/channels/bits.
     var flac: [42]u8 = @splat(0);
@@ -1061,6 +1059,10 @@ test "a FLAC or Ogg track at the wrong rate is caught from its header" {
     flac[at] = 48000 >> 12;
     flac[at + 1] = (48000 >> 4) & 0xff;
     flac[at + 2] = ((48000 & 0xf) << 4) | stereo_16;
+    try testing.expectEqual(@as(?[]const u8, null), trackProblem(.flac, 1000, &flac));
+    flac[at] = 0;
+    flac[at + 1] = 0;
+    flac[at + 2] = stereo_16;
     try testing.expect(trackProblem(.flac, 1000, &flac) != null);
 
     // OggS page with one segment, then the Vorbis identification packet.
@@ -1073,6 +1075,8 @@ test "a FLAC or Ogg track at the wrong rate is caught from its header" {
     std.mem.writeInt(u32, ogg[40..44], 44100, .little);
     try testing.expectEqual(@as(?[]const u8, null), trackProblem(.ogg, 1000, &ogg));
     std.mem.writeInt(u32, ogg[40..44], 22050, .little);
+    try testing.expectEqual(@as(?[]const u8, null), trackProblem(.ogg, 1000, &ogg));
+    std.mem.writeInt(u32, ogg[40..44], 0, .little);
     try testing.expect(trackProblem(.ogg, 1000, &ogg) != null);
 }
 

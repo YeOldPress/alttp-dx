@@ -961,20 +961,9 @@ fn portSetup() void {
     if (config.g_config.audio_freq < 11025 or config.g_config.audio_freq > 48000)
         config.g_config.audio_freq = kDefaultFreq;
 
-    // The MSU mixer only plays at the right pitch when the output runs at the
-    // rate its decoder produces, so take that rate rather than asking the user
-    // to match it by hand. Nothing is lost by overriding them: SDL3's stream
-    // resamples the finished mix to whatever the device is actually running at,
-    // so AudioFreq no longer has to name a rate the hardware supports.
-    if (audio.MsuRequiredAudioFreq(config.g_config.enable_msu)) |msu_freq| {
-        if (config.g_config.audio_freq != msu_freq) {
-            _ = printf("MSU: using AudioFreq = %d, the rate its audio decodes at\n", @as(c_int, msu_freq));
-            config.g_config.audio_freq = msu_freq;
-        }
-    }
-
-    // ZeldaEnableMsu scales the volume ramp by audio_freq, so it has to run
-    // after the rate above is settled.
+    // The MSU player resamples each track to AudioFreq itself, whatever rate
+    // the track was made at. ZeldaEnableMsu scales the volume ramp by
+    // audio_freq, so it has to run after the rate above is settled.
     audio.ZeldaEnableMsu(config.g_config.enable_msu);
     ZeldaSetLanguage(config.g_config.language);
 }

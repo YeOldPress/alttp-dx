@@ -744,7 +744,7 @@ pub fn describe(s: Setting) []const u8 {
         .{ "DimFlashes", "Tone down flashing effects, as the Virtual Console releases did." },
         .{ "Volume", "How loud the whole game plays, music and sound effects together, MSU music included. Changes as you move it. Shift and plus or minus on the keyboard change it too." },
         .{ "EnableAudio", "Play sound and music at all." },
-        .{ "AudioFreq", "The rate the game mixes its sound at. Higher is clearer. MSU audio sets its own." },
+        .{ "AudioFreq", "The rate the game mixes its sound at. Higher is clearer. MSU tracks are matched to it." },
         .{ "AudioChannels", "Mono or stereo sound." },
         .{ "AudioSamples", "The sound buffer's size. Smaller means less delay before you hear things, larger helps if the sound crackles." },
         .{ "EnableMSU", "Play an MSU music pack instead of the SNES music. Tracks can be .pcm, FLAC or Ogg Vorbis. Deluxe packs give each area its own track, and Opuz packs are their own compressed kind." },
