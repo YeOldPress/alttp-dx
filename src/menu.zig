@@ -15,6 +15,7 @@ const builtin = @import("builtin");
 const fileio = @import("fileio.zig");
 const msu_import = @import("msu_import.zig");
 const updater = @import("updater.zig");
+const start_logo = @import("start_logo.zig");
 const rom_mod = @import("rom.zig");
 const asset_all = @import("asset_all.zig");
 const c = @import("sdl.zig").c;
@@ -27,6 +28,7 @@ const pad_art = @import("pad_art.zig");
 const crt = @import("crt.zig");
 const achievement_list = @import("achievement_list.zig");
 const start_page = @import("start_page.zig");
+const tools_gui = @import("tools_gui.zig");
 
 /// The zelda3.ini this build shipped with, written out whenever there is no
 /// ini to be found, so a fresh folder or data directory still starts.
@@ -121,6 +123,7 @@ pub const kSettings = [_]Setting{
         .values = &.{ "modern", "retro" },
         .labels = &.{ "Modern", "Retro" },
     } } },
+    .{ .section = "General", .key = "StartBanner", .label = "40th Banner", .kind = .toggle },
     .{ .section = "General", .key = "CheckForUpdates", .label = "Check For Updates", .kind = .toggle },
     .{ .section = "General", .key = "UpdateChannel", .label = "Update Channel", .kind = .{ .choice = .{
         .values = &.{ "releases", "nightly" },
@@ -592,6 +595,10 @@ fn isUpdateSetting(s: Setting) bool {
         (std.mem.eql(u8, s.key, "CheckForUpdates") or std.mem.eql(u8, s.key, "UpdateChannel"));
 }
 
+fn isLogoSetting(s: Setting) bool {
+    return std.mem.eql(u8, s.section, "General") and std.mem.eql(u8, s.key, "StartBanner");
+}
+
 pub fn isCrtFilter(s: Setting) bool {
     return std.mem.eql(u8, s.section, "Graphics") and std.mem.eql(u8, s.key, "CrtFilter");
 }
@@ -601,7 +608,13 @@ pub fn isCrtFilter(s: Setting) bool {
 pub fn displayValue(buf: []u8, s: Setting, value: []const u8) []const u8 {
     const v = std.mem.trim(u8, value, " \t");
     switch (s.kind) {
-        .toggle => return if (std.mem.eql(u8, v, "1")) "ON" else "OFF",
+        .toggle => {
+            const on = std.mem.eql(u8, v, "1");
+            // The banner says how its download's going, while it is.
+            if (on and isLogoSetting(s) and start_logo.note().len != 0)
+                return std.fmt.bufPrint(buf, "ON - {s}", .{start_logo.note()}) catch "ON";
+            return if (on) "ON" else "OFF";
+        },
         .text => return if (v.len == 0) "(none)" else v,
         .action => return "",
         .choice => |opts| return opts.labelFor(v),
@@ -657,6 +670,7 @@ fn firstSelectable(from: usize, to: usize) usize {
 pub fn describe(s: Setting) []const u8 {
     const kDescriptions = [_][2][]const u8{
         .{ "StartMenu", "Show the start menu, with settings and the ROM and assets, before the game begins. When off, the game starts straight away unless its assets need building." },
+        .{ "StartBanner", "Hangs Nintendo's own 40th anniversary banner small in the front page's corner. It's theirs, so it isn't shipped. Turning this on downloads it from their site once and keeps it beside the ini. Modern style only." },
         .{ "StartMenuStyle", "Modern is the front page made for the series' 40th anniversary, in real type with the Triforce and drifting light. Retro is the old one, all in the 8x8 debug font. Everything does the same either way." },
         .{ "CheckForUpdates", "When the start menu opens, ask GitHub whether there's a newer version. If there is, an Update button shows under the title. Nothing downloads until you press it. A game you built yourself never updates." },
         .{ "UpdateChannel", "Releases offers each numbered release. Nightly offers the rolling test build of the newest changes, rebuilt most nights, and sometimes broken. Back on Releases, the next release is the next update." },
@@ -1028,6 +1042,15 @@ fn modernIn(ini: *const Ini) bool {
     return !std.ascii.eqlIgnoreCase(v, "retro");
 }
 
+/// Whether StartBanner wants Nintendo's banner in the modern page's corner,
+/// from the ini every frame like g_modern.
+var g_logo = false;
+
+fn logoIn(ini: *const Ini) bool {
+    const i = settingIndex("General", "StartBanner") orelse return false;
+    return std.mem.eql(u8, std.mem.trim(u8, ini.values[i] orelse "", " \t"), "1");
+}
+
 /// The modern page's text and glow, made once there's a renderer.
 var g_page: ?start_page.Page = null;
 
@@ -1334,6 +1357,8 @@ pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const 
         g_page.?.deinit();
         g_page = null;
     }
+    g_logo = logoIn(&ini);
+    defer start_logo.release();
     if (seed) |sp| _ = loadSeed(sp);
     const screen = std.meta.stringToEnum(Screen, which) orelse .alttpr;
     g_spoilers = std.c.getenv("SPOILERS") != null;
@@ -1424,6 +1449,8 @@ fn drawModernMain(page: *const start_page.Page, v: View) void {
         .hints = pageHints(v, &hints),
         .time = pageTime(),
         .dimmed = v.modal != .none,
+        .logo = if (g_logo) start_logo.texture(page.paint.r) else null,
+        .logo_aspect = start_logo.aspect(),
     });
 }
 
@@ -3236,10 +3263,57 @@ pub fn settingIndex(section: []const u8, key: []const u8) ?usize {
     return null;
 }
 
-pub const Outcome = enum { play, quit, randomizer, tools };
+pub const Outcome = enum { play, quit, randomizer };
 
-/// Set on the way back from the tools, so the menu opens where it was left.
-pub var g_from_tools = false;
+/// Opens the menu straight into the tools, for `zelda3 tools`.
+pub var g_open_tools = false;
+
+const kWindowTitle = "The Legend of Zelda: A Link to the Past DX";
+
+/// How many pixels a point is in `window`: 2 on a Retina screen.
+fn pixelDensity(window: *c.SDL_Window) f32 {
+    const d = c.SDL_GetWindowPixelDensity(window);
+    return if (d > 0) d else 1;
+}
+
+/// Resizes `window`, keeping its middle where it was.
+fn resizeCentered(window: *c.SDL_Window, w: c_int, h: c_int) void {
+    var wx: c_int = 0;
+    var wy: c_int = 0;
+    var ow: c_int = 0;
+    var oh: c_int = 0;
+    _ = c.SDL_GetWindowPosition(window, &wx, &wy);
+    _ = c.SDL_GetWindowSize(window, &ow, &oh);
+    _ = c.SDL_SetWindowSize(window, w, h);
+    _ = c.SDL_SetWindowPosition(window, @max(0, wx + @divTrunc(ow - w, 2)), @max(0, wy + @divTrunc(oh - h, 2)));
+}
+
+/// The tools, in this window rather than one of their own: it grows to
+/// their size and can be resized while they're up, then goes back to the
+/// menu's, as it was.
+fn runTools(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_Renderer) tools_gui.Outcome {
+    // Windows sizes a window in pixels and says how big its points are on
+    // the side; a Mac or Wayland sizes it in points already, and says 1.
+    const content = c.SDL_GetDisplayContentScale(c.SDL_GetDisplayForWindow(window));
+    const k: f32 = if (content > 0) content else 1;
+    _ = c.SDL_SetWindowTitle(window, "A Link to the Past DX Tools");
+    resizeCentered(window, @intFromFloat(tools_gui.kWindowW * k), @intFromFloat(tools_gui.kWindowH * k));
+    _ = c.SDL_SetWindowMinimumSize(window, @intFromFloat(tools_gui.kMinW * k), @intFromFloat(tools_gui.kMinH * k));
+    _ = c.SDL_SetWindowResizable(window, true);
+
+    const outcome = tools_gui.runIn(alloc, window, renderer);
+
+    // Out of fullscreen or maximized first, or the size won't take.
+    _ = c.SDL_RestoreWindow(window);
+    _ = c.SDL_SetWindowResizable(window, false);
+    _ = c.SDL_SetWindowMinimumSize(window, 0, 0);
+    resizeCentered(window, @intFromFloat(windowW()), @intFromFloat(windowH()));
+    _ = c.SDL_SetWindowTitle(window, kWindowTitle);
+    // The tools drew at their own scale; the menu's comes back.
+    const d = pixelDensity(window);
+    _ = c.SDL_SetRenderScale(renderer, d, d);
+    return outcome;
+}
 
 /// The seed dropped on the menu, when the outcome is .randomizer.
 pub var g_randomizer_rom: [:0]const u8 = "";
@@ -3333,7 +3407,9 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     defer c.SDL_Quit();
 
     g_modern = modernIn(&ini);
-    const window = c.SDL_CreateWindow("The Legend of Zelda: A Link to the Past DX", @intFromFloat(windowW()), @intFromFloat(windowH()), 0) orelse {
+    // Drawn at the screen's own density, so the start page's type and the
+    // tools', which open in this same window, come out sharp on Retina.
+    const window = c.SDL_CreateWindow(kWindowTitle, @intFromFloat(windowW()), @intFromFloat(windowH()), c.SDL_WINDOW_HIGH_PIXEL_DENSITY) orelse {
         std.debug.print("Failed to create window: {s}\n", .{c.SDL_GetError()});
         return error.SdlWindow;
     };
@@ -3344,11 +3420,12 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
         return error.SdlRenderer;
     };
     defer c.SDL_DestroyRenderer(renderer);
-    g_page = start_page.Page.init(renderer);
+    g_page = start_page.Page.initScaled(renderer, pixelDensity(window));
     defer {
         g_page.?.deinit();
         g_page = null;
     }
+    defer start_logo.release();
     g_modern = modernIn(&ini);
 
     // Any pad can drive the menu, and one plugged in later works too.
@@ -3375,7 +3452,6 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     var dirty = false;
     var launch = false;
     var randomizer = false;
-    var tools = false;
     var status: []const u8 = "";
     var assets = checkAssets(alloc);
     if (seed != null and loadSeed(seed.?)) {
@@ -3385,26 +3461,34 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     } else if (!assets.playable()) {
         modal = .rom;
         main_cursor = kMainLaunch;
-    } else if (g_from_tools) {
-        // Back from the tools: on Tools, where it was left.
-        main_cursor = kMainTools;
     } else if (g_modern) {
         // The modern page opens on Play, the thing it's for.
         main_cursor = kMainLaunch;
     }
-    // Back from the tools, the update check's already been made.
-    const returning = g_from_tools;
-    g_from_tools = false;
+    // `zelda3 tools` opens on them, missing assets or not: they're how to
+    // make some.
+    var open_tools = g_open_tools;
+    g_open_tools = false;
+    if (open_tools) {
+        screen = .main;
+        modal = .none;
+        main_cursor = kMainTools;
+    }
     var running = true;
     var event: c.SDL_Event = undefined;
-    if (!returning and updatesOnIn(&ini)) updater.check(updateChannelIn(&ini));
+    if (updatesOnIn(&ini)) updater.check(updateChannelIn(&ini));
 
+    // Save Settings on the front page is confirmed after this frame's save
+    // has already been and gone, so it's kept for the next one; a flag
+    // made fresh each frame forgot it, and the entry never saved.
+    var save_queued = false;
     while (running) {
         const now = c.SDL_GetTicks();
         var confirm = false;
         var start = false;
         var back = false;
-        var save = false;
+        var save = save_queued;
+        save_queued = false;
         var info = false;
         var build = false;
         // Presses arrive as events so that a tap shorter than a frame still
@@ -3587,6 +3671,11 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
         }
         // Whole rows of wheel; trackpads get there a sliver at a time.
         const wheel = g_pointer.takeWheel();
+        // Asked for the tools on the command line: as if Tools was picked.
+        if (open_tools) {
+            open_tools = false;
+            confirm = true;
+        }
 
         // Directions come from the current state of every input rather than
         // from key events, so the keyboard and the pads behave alike and a
@@ -3630,20 +3719,20 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
         g_msu_on = msuOnIn(&ini);
         const was_modern = g_modern;
         g_modern = modernIn(&ini);
+        // Picking the banner fetches it if it isn't here, and picking it
+        // again after a failed try tries again.
+        const was_logo = g_logo;
+        g_logo = logoIn(&ini);
+        if (g_logo and !was_logo) start_logo.retry();
+        start_logo.want(g_logo and g_modern);
         if (g_modern != was_modern) {
             // Widescreen one way, 4:3 the other, kept where it was centered.
-            var wx: c_int = 0;
-            var wy: c_int = 0;
-            _ = c.SDL_GetWindowPosition(window, &wx, &wy);
-            const old_w: c_int = @intFromFloat(if (was_modern) start_page.kW else kWindowW);
-            const old_h: c_int = @intFromFloat(if (was_modern) start_page.kH else kWindowH);
-            const new_w: c_int = @intFromFloat(windowW());
-            const new_h: c_int = @intFromFloat(windowH());
-            _ = c.SDL_SetWindowSize(window, new_w, new_h);
-            _ = c.SDL_SetWindowPosition(window, @max(0, wx + @divTrunc(old_w - new_w, 2)), @max(0, wy + @divTrunc(old_h - new_h, 2)));
+            resizeCentered(window, @intFromFloat(windowW()), @intFromFloat(windowH()));
             g_back_hover = false;
             g_pointer.forget();
         }
+        // The window may have moved to a screen with other pixels.
+        if (g_page) |*pg| pg.paint.setScale(pixelDensity(window));
         if (!mainShown(main_cursor)) main_cursor = kMainLaunch;
         if (modal == .msu and !g_msu_on) modal = .none;
         if (modal == .update and !updateShown()) modal = .none;
@@ -3858,7 +3947,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         screen = .achievements;
                         status = "";
                     },
-                    kMainSave => save = true,
+                    kMainSave => save_queued = true,
                     kMainBuild => {
                         modal = .rom;
                         status = "";
@@ -3878,11 +3967,29 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         status = "";
                     },
                     kMainTools => {
-                        // The menu starts over from the file when it comes
-                        // back, so what's been changed has to be in it.
-                        if (dirty) ini.save("zelda3.ini") catch {};
-                        tools = true;
-                        running = false;
+                        const outcome = runTools(alloc, window, renderer);
+                        // What was held when they opened was let go in them.
+                        held = .{};
+                        vrepeat = .{};
+                        hrepeat = .{};
+                        g_pointer.forget();
+                        // They may well have built some.
+                        assets = checkAssets(alloc);
+                        status = "";
+                        switch (outcome) {
+                            .menu => {},
+                            .quit => running = false,
+                            // As Play here does: keep the settings, and go
+                            // if there's something to play.
+                            .play => {
+                                if (dirty) ini.save("zelda3.ini") catch {};
+                                dirty = false;
+                                if (assets.playable()) {
+                                    launch = true;
+                                    running = false;
+                                } else modal = .rom;
+                            },
+                        }
                     },
                     else => {
                         ini.save("zelda3.ini") catch |err| {
@@ -4151,7 +4258,6 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     }
 
     if (randomizer) return .randomizer;
-    if (tools) return .tools;
     return if (launch) .play else .quit;
 }
 
@@ -4168,9 +4274,10 @@ fn scratchName(buf: []u8, base: []const u8, ext: []const u8) ![:0]const u8 {
 
 test {
     // The MSU-1 importer's own tests, with the start menu that uses it, and
-    // the modern front page's.
+    // the modern front page's, and the banner it can show.
     _ = msu_import;
     _ = start_page;
+    _ = start_logo;
 }
 
 test "every setting on the Settings and Features pages has a description that fits its box" {

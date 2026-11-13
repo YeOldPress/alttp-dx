@@ -18,10 +18,14 @@ pub const Image = struct {
     pixels: []u8,
     /// The palette of an indexed image, empty otherwise.
     palette: [][3]u8,
+    /// How opaque each palette entry is, from tRNS: as long as the image
+    /// gave, with any entries past it opaque. Empty for every other kind.
+    alpha: []u8 = &.{},
 
     pub fn deinit(self: *Image, alloc: std.mem.Allocator) void {
         alloc.free(self.pixels);
         alloc.free(self.palette);
+        alloc.free(self.alpha);
         self.* = undefined;
     }
 
@@ -51,6 +55,16 @@ pub const Image = struct {
             },
         };
     }
+
+    /// How opaque the pixel at x, y is, 0 to 255.
+    pub fn alphaAt(self: Image, x: usize, y: usize) u8 {
+        const i = y * self.width + x;
+        return switch (self.kind) {
+            .indexed => if (self.pixels[i] < self.alpha.len) self.alpha[self.pixels[i]] else 255,
+            .gray, .rgb => 255,
+            .rgba => self.pixels[i * 4 + 3],
+        };
+    }
 };
 
 pub const DecodeError = error{ NotPng, Corrupt, Unsupported, OutOfMemory };
@@ -66,6 +80,7 @@ pub fn decode(alloc: std.mem.Allocator, bytes: []const u8) DecodeError!Image {
     var color: u8 = 0;
     var palette: std.ArrayList([3]u8) = .empty;
     errdefer palette.deinit(alloc);
+    var trns: []const u8 = &.{};
     var idat: std.ArrayList(u8) = .empty;
     defer idat.deinit(alloc);
 
@@ -85,6 +100,8 @@ pub fn decode(alloc: std.mem.Allocator, bytes: []const u8) DecodeError!Image {
         } else if (std.mem.eql(u8, kind, "PLTE")) {
             var i: usize = 0;
             while (i + 3 <= data.len) : (i += 3) try palette.append(alloc, .{ data[i], data[i + 1], data[i + 2] });
+        } else if (std.mem.eql(u8, kind, "tRNS")) {
+            trns = data;
         } else if (std.mem.eql(u8, kind, "IDAT")) {
             try idat.appendSlice(alloc, data);
         } else if (std.mem.eql(u8, kind, "IEND")) break;
@@ -160,7 +177,11 @@ pub fn decode(alloc: std.mem.Allocator, bytes: []const u8) DecodeError!Image {
             }
         }
     }
-    return .{ .width = width, .height = height, .kind = out_kind, .pixels = pixels, .palette = try palette.toOwnedSlice(alloc) };
+    // Only an indexed image's tRNS is kept: the others' name one color as
+    // see-through, which nothing here has needed.
+    const alpha = try alloc.dupe(u8, if (color == 3) trns[0..@min(trns.len, 256)] else &.{});
+    errdefer alloc.free(alpha);
+    return .{ .width = width, .height = height, .kind = out_kind, .pixels = pixels, .palette = try palette.toOwnedSlice(alloc), .alpha = alpha };
 }
 
 fn paeth(a: u8, b: u8, c: u8) u8 {
@@ -249,6 +270,28 @@ test "an indexed image survives a round trip" {
     try std.testing.expectEqual(Kind.indexed, img.kind);
     try std.testing.expectEqualSlices(u8, &pixels, img.pixels);
     try std.testing.expectEqual(@as(u32, 0xff0000), img.rgbAt(1, 0));
+}
+
+test "an indexed image's tRNS says which colors show through" {
+    const alloc = std.testing.allocator;
+    const pixels = [_]u8{ 0, 1, 2 };
+    const pal = [_][3]u8{ .{ 0, 0, 0 }, .{ 255, 0, 0 }, .{ 0, 255, 0 } };
+    const plain = try encode(alloc, 3, 1, .indexed, &pixels, &pal);
+    defer alloc.free(plain);
+    // A tRNS for the first two entries, slipped in before the image data;
+    // the third isn't listed, so it's opaque.
+    const at = std.mem.indexOf(u8, plain, "IDAT").? - 4;
+    var trns: [14]u8 = undefined;
+    std.mem.writeInt(u32, trns[0..4], 2, .big);
+    trns[4..10].* = "tRNS\x00\x80".*;
+    std.mem.writeInt(u32, trns[10..14], std.hash.Crc32.hash(trns[4..10]), .big);
+    const bytes = try std.mem.concat(alloc, u8, &.{ plain[0..at], &trns, plain[at..] });
+    defer alloc.free(bytes);
+    var img = try decode(alloc, bytes);
+    defer img.deinit(alloc);
+    try std.testing.expectEqual(@as(u8, 0), img.alphaAt(0, 0));
+    try std.testing.expectEqual(@as(u8, 0x80), img.alphaAt(1, 0));
+    try std.testing.expectEqual(@as(u8, 255), img.alphaAt(2, 0));
 }
 
 test "an RGB image survives a round trip" {

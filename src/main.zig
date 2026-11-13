@@ -10,7 +10,6 @@ const rumble = @import("rumble.zig");
 const menu = @import("menu.zig");
 const updater = @import("updater.zig");
 const tools_cli = @import("tools_cli.zig");
-const tools_gui = @import("tools_gui.zig");
 const settings_menu = @import("settings_menu.zig");
 const title_dx = @import("title_dx.zig");
 const achievements = @import("achievements.zig");
@@ -990,7 +989,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
 
     // `zelda3 tools [command]` is the asset tools. A command runs where it
     // was typed and exits; no command opens their window, which closes into
-    // the start menu like the menu's own Tools entry does.
+    // the start menu, as the menu's own Tools entry does.
     var open_tools = false;
     if (argc >= 1 and strcmp(argv[0], "tools") == 0) {
         const args = alloc.alloc([:0]const u8, @intCast(argc - 1)) catch return 1;
@@ -1116,46 +1115,17 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         // against a ROM (zelda3 <rom>) is a developer tool and goes straight in.
         // A seed always gets its options screen first.
         if (open_tools or rando_rom != null or (argc == 0 and (!menu.checkAssets(alloc).playable() or menu.wantsStartMenu(alloc)))) {
-            // The menu and the tools hand over to each other until one of
-            // them starts something or quits.
-            var in_tools = open_tools;
-            var seed = rando_rom;
-            screens: while (true) {
-                if (in_tools) {
-                    const outcome = tools_gui.run(alloc) catch |err| {
-                        std.debug.print("The tools failed: {s}\n", .{@errorName(err)});
-                        return 1;
-                    };
-                    switch (outcome) {
-                        .quit => return 0,
-                        .play => {
-                            rando_rom = null;
-                            break :screens;
-                        },
-                        .menu => {
-                            menu.g_from_tools = true;
-                            in_tools = false;
-                        },
-                    }
-                    continue;
-                }
-                const outcome = menu.run(alloc, seed) catch |err| {
-                    std.debug.print("The start menu failed: {s}\n", .{@errorName(err)});
-                    return 1;
-                };
-                // A seed opens its page the first time round, not every time.
-                seed = null;
-                switch (outcome) {
-                    .quit => return 0,
-                    .randomizer => rando_rom = menu.g_randomizer_rom,
-                    // Backed out of the seed and chose the normal game instead.
-                    .play => rando_rom = null,
-                    .tools => {
-                        in_tools = true;
-                        continue;
-                    },
-                }
-                break;
+            // `zelda3 tools` opens the menu on them.
+            menu.g_open_tools = open_tools;
+            const outcome = menu.run(alloc, rando_rom) catch |err| {
+                std.debug.print("The start menu failed: {s}\n", .{@errorName(err)});
+                return 1;
+            };
+            switch (outcome) {
+                .quit => return 0,
+                .randomizer => rando_rom = menu.g_randomizer_rom,
+                // Backed out of the seed and chose the normal game instead.
+                .play => rando_rom = null,
             }
         }
     }

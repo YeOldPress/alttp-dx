@@ -30,10 +30,12 @@ const Rect = draw.Rect;
 const Color = draw.Color;
 const Paint = draw.Paint;
 
-const kWindowW = 1080;
-const kWindowH = 720;
-const kMinW = 880;
-const kMinH = 600;
+/// The window's size while it's the tools, in points, and the least it can
+/// be dragged down to.
+pub const kWindowW = 1080;
+pub const kWindowH = 720;
+pub const kMinW = 880;
+pub const kMinH = 600;
 
 const kSideW: f32 = 236;
 /// Around the page, and as wide as its rows get on a big window.
@@ -1718,31 +1720,20 @@ fn windowScale(window: *c.SDL_Window) f32 {
     return if (s > 0) s else 1;
 }
 
-pub fn run(alloc: std.mem.Allocator) !Outcome {
-    kit.configureJoysticks();
-    if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_GAMEPAD | c.SDL_INIT_AUDIO)) {
-        std.debug.print("Could not start SDL: {s}\n", .{c.SDL_GetError()});
-        return error.SdlInit;
-    }
-    defer c.SDL_Quit();
-    // Windows sizes a window in pixels and says how big its points are on
-    // the side; a Mac or Wayland sizes it in points already, and says 1.
-    const content = c.SDL_GetDisplayContentScale(c.SDL_GetPrimaryDisplay());
-    const start: f32 = if (content > 0) content else 1;
-    const window = c.SDL_CreateWindow(
-        "ALttP DX Tools",
-        @intFromFloat(kWindowW * start),
-        @intFromFloat(kWindowH * start),
-        c.SDL_WINDOW_HIGH_PIXEL_DENSITY | c.SDL_WINDOW_RESIZABLE,
-    ) orelse return error.SdlWindow;
-    defer c.SDL_DestroyWindow(window);
-    _ = c.SDL_SetWindowMinimumSize(window, @intFromFloat(kMinW * start), @intFromFloat(kMinH * start));
-    const renderer = c.SDL_CreateRenderer(window, null) orelse return error.SdlRenderer;
-    defer c.SDL_DestroyRenderer(renderer);
-    _ = c.SDL_SetRenderVSync(renderer, 1);
-    g_dialog_lock = c.SDL_CreateMutex();
-    defer c.SDL_DestroyMutex(g_dialog_lock);
-    g_log_lock = c.SDL_CreateMutex();
+/// The page last open, so coming back to the tools finds it again.
+var g_last_screen: Screen = .assets;
+
+/// Runs the tools in the start menu's window until they're closed, and says
+/// where to go next. The window is the menu's: it comes in sized for the
+/// tools and goes back to the menu as it was, render scale aside, which
+/// the menu sets again.
+pub fn runIn(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_Renderer) Outcome {
+    // The music page plays through SDL; the menu has no sound of its own.
+    const audio = c.SDL_InitSubSystem(c.SDL_INIT_AUDIO);
+    defer if (audio) c.SDL_QuitSubSystem(c.SDL_INIT_AUDIO);
+    // Made once and kept: a file dialog can answer after the tools close.
+    if (g_dialog_lock == null) g_dialog_lock = c.SDL_CreateMutex();
+    if (g_log_lock == null) g_log_lock = c.SDL_CreateMutex();
 
     const arrow = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT);
     const hand = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER);
@@ -1752,9 +1743,12 @@ pub fn run(alloc: std.mem.Allocator) !Outcome {
     }
 
     var st = initialState(alloc);
+    st.screen = g_last_screen;
     defer {
+        g_last_screen = st.screen;
         st.tunes.drop(alloc);
         if (st.gfx.tex) |t| c.SDL_DestroyTexture(t);
+        _ = c.SDL_SetCursor(c.SDL_GetDefaultCursor());
     }
 
     // Any pad can drive the window, and one plugged in later works too.

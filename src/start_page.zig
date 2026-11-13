@@ -47,6 +47,11 @@ pub const State = struct {
     time: f32,
     /// A question is up over the page: it steps back behind it.
     dimmed: bool = false,
+    /// Nintendo's anniversary banner, when StartBanner asks for it and it's
+    /// been fetched: hung small in the bottom left corner.
+    logo: ?*c.SDL_Texture = null,
+    /// Its width over its height.
+    logo_aspect: f32 = 1,
 };
 
 pub const Line = struct {
@@ -170,8 +175,14 @@ pub const Page = struct {
     glow: ?*c.SDL_Texture,
 
     pub fn init(r: *c.SDL_Renderer) Page {
+        return initScaled(r, 1);
+    }
+
+    /// At a window's pixel density: 2 on a Retina screen, so the type is
+    /// baked sharp rather than stretched.
+    pub fn initScaled(r: *c.SDL_Renderer, scale: f32) Page {
         return .{
-            .paint = Paint.initStyles(r, 1, std.EnumSet(ui.Style).initMany(&.{ .small, .body, .strong, .item, .eyebrow, .subtitle, .title, .button, .headline, .hero_eyebrow, .hero_subtitle, .hero_small, .hero_chip })),
+            .paint = Paint.initStyles(r, scale, std.EnumSet(ui.Style).initMany(&.{ .small, .body, .strong, .item, .eyebrow, .subtitle, .title, .button, .headline, .hero_eyebrow, .hero_subtitle, .hero_small, .hero_chip })),
             .glow = makeGlow(r),
         };
     }
@@ -195,6 +206,7 @@ pub const Page = struct {
         self.sky(s.time);
         self.motes(s.time, 1);
         self.title(s.time);
+        if (s.logo) |tex| self.banner(tex, s.logo_aspect, s.time);
         self.menu(s);
         self.footerBar(s.hints, s.version, kDim);
         // What just happened, under the title.
@@ -222,25 +234,54 @@ pub const Page = struct {
         self.glowAt(kW - 80, kH + 40, 380, Color.hex(0x7a5a2a).alpha(34));
         // Two thin rings round the title, the outer turning slowly, with
         // ticks: a dial, or an old seal.
-        const cx = kTitleX;
-        const cy = kTitleY;
-        const k_s = kTitleScale;
-        ring(p.r, cx, cy, 150 * k_s, 0, 200, Color.hex(0xe6bf62).alpha(26));
-        ring(p.r, cx, cy, kRingR, 0, 200, Color.hex(0xe6bf62).alpha(12));
-        const turn = t * 0.025;
-        var k: usize = 0;
-        while (k < 48) : (k += 1) {
-            const a = turn + @as(f32, @floatFromInt(k)) * std.math.tau / 48;
-            const long = k % 4 == 0;
-            const r0: f32 = (if (long) @as(f32, 150) else 154) * k_s;
-            const col = Color.hex(0xe6bf62).alpha(if (long) 40 else 22);
-            _ = c.SDL_SetRenderDrawColor(p.r, col.r, col.g, col.b, col.a);
-            _ = c.SDL_RenderLine(p.r, cx + @cos(a) * r0, cy + @sin(a) * r0, cx + @cos(a) * kRingR, cy + @sin(a) * kRingR);
-        }
+        self.seal(t);
         // The edge between the title and the menu, fading out at both ends.
         const line = Color.hex(0x9fb6bd);
         gradient(p.r, .{ .x = 560, .y = 80, .w = 1, .h = 196 }, line.alpha(0), line.alpha(40), .vertical);
         gradient(p.r, .{ .x = 560, .y = 276, .w = 1, .h = 196 }, line.alpha(40), line.alpha(0), .vertical);
+    }
+
+    fn seal(self: *const Page, t: f32) void {
+        const p = &self.paint;
+        const cx = kTitleX;
+        const cy = kTitleY;
+        const k_s = kTitleScale;
+        // A royal seal: two gold rings, and between them a band of little
+        // Triforces pointing outward with a diamond between each pair,
+        // turning slowly. Strokes with some width rather than hairlines,
+        // which all but vanish on a dark sky.
+        const r_in = 150 * k_s;
+        const r_mid = (r_in + kRingR) / 2;
+        ring(p.r, cx, cy, r_in, 1.6, 200, kGold.alpha(100));
+        ring(p.r, cx, cy, kRingR, 1.6, 200, kGold.alpha(100));
+        // A faint third ring outside, which the clasps sit on.
+        ring(p.r, cx, cy, kRingR + 9 * k_s, 1, 200, kGold.alpha(34));
+        const turn = t * 0.025;
+        const kSlots = 36;
+        var k: usize = 0;
+        while (k < kSlots) : (k += 1) {
+            const a = turn + @as(f32, @floatFromInt(k)) * std.math.tau / kSlots;
+            if (k % 3 == 0) {
+                triforceTurned(p.r, cx + @cos(a) * r_mid, cy + @sin(a) * r_mid, 10 * k_s, a, kGoldHi.alpha(170), kGoldDeep.alpha(170));
+            } else {
+                diamond(p.r, cx + @cos(a) * r_mid, cy + @sin(a) * r_mid, 1.8 * k_s, kGold.alpha(110));
+            }
+        }
+        // Clasps at the four points, still while the band turns: a diamond
+        // with a smaller one inside, and a little one each side along the
+        // ring.
+        const r_clasp = kRingR + 9 * k_s;
+        for ([_]f32{ -std.math.pi / 2.0, 0, std.math.pi / 2.0, std.math.pi }) |a| {
+            const x = cx + @cos(a) * r_clasp;
+            const y = cy + @sin(a) * r_clasp;
+            self.glowAt(x, y, 16 * k_s, kGold.alpha(50));
+            diamond(p.r, x, y, 6 * k_s, kGold);
+            diamond(p.r, x, y, 2.5 * k_s, kGoldHi);
+            for ([_]f32{ -1, 1 }) |side| {
+                const b = a + side * 0.07;
+                diamond(p.r, cx + @cos(b) * r_clasp, cy + @sin(b) * r_clasp, 2 * k_s, kGold.alpha(160));
+            }
+        }
     }
 
     /// Specks of gold, and the odd one of teal, rising slowly and swaying,
@@ -329,6 +370,24 @@ pub const Page = struct {
         gradient(p.r, .{ .x = cx + ww / 2 + gap + 8, .y = mid_y, .w = rule_w, .h = 1 }, kGold.alpha(150), kGold.alpha(0), .horizontal);
         const years = "1986  \xc2\xb7  2026";
         p.textEx(.hero_small, cx - p.textWidthTracked(.hero_small, years, 3 * k) / 2, at(102), kMuted, kMuted, 3 * k, years);
+    }
+
+    /// Nintendo's banner, small in the bottom left corner under the seal,
+    /// hanging in a little warm light and drifting a breath up and down.
+    fn banner(self: *const Page, tex: *c.SDL_Texture, aspect: f32, t: f32) void {
+        const p = &self.paint;
+        const h: f32 = 112;
+        const w = h * aspect;
+        const x: f32 = 24;
+        const top = kFooterY - 10 - h + 1.5 * @sin(t * 0.9);
+        self.glowAt(x + w / 2, top + h * 0.42, h * 0.7, kGold.alpha(34));
+        // A soft shadow on the sky behind it.
+        _ = c.SDL_SetTextureColorMod(tex, 0, 0, 0);
+        _ = c.SDL_SetTextureAlphaMod(tex, 90);
+        _ = c.SDL_RenderTexture(p.r, tex, null, &.{ .x = x + 2, .y = top + 3, .w = w, .h = h });
+        _ = c.SDL_SetTextureColorMod(tex, 255, 255, 255);
+        _ = c.SDL_SetTextureAlphaMod(tex, 255);
+        _ = c.SDL_RenderTexture(p.r, tex, null, &.{ .x = x, .y = top, .w = w, .h = h });
     }
 
     // --------------------------------------------------------- the menu
@@ -723,6 +782,34 @@ fn triforce(r: *c.SDL_Renderer, cx: f32, top: f32, h: f32, gap: f32) void {
     _ = c.SDL_RenderGeometry(r, null, &v, v.len, null, 0);
 }
 
+/// A small Triforce `h` tall centered on (x, y), its point toward angle
+/// `a`, shading from `top` at each point to `bottom` at each base.
+fn triforceTurned(r: *c.SDL_Renderer, x: f32, y: f32, h: f32, a: f32, top: Color, bottom: Color) void {
+    const w = h * 2 / @sqrt(3.0);
+    // Laid out pointing up around its middle, then turned: "up" becomes
+    // outward along `a`.
+    const ux = @cos(a);
+    const uy = @sin(a);
+    const at = struct {
+        fn p(cx: f32, cy: f32, ox: f32, oy: f32, lx: f32, ly: f32) c.SDL_FPoint {
+            // ly up is outward, lx across is along the ring.
+            return .{ .x = cx + ox * ly - oy * lx, .y = cy + oy * ly + ox * lx };
+        }
+    }.p;
+    const tris = [_][3][2]f32{
+        .{ .{ 0, h / 2 }, .{ w / 4, 0 }, .{ -w / 4, 0 } },
+        .{ .{ -w / 4, 0 }, .{ 0, -h / 2 }, .{ -w / 2, -h / 2 } },
+        .{ .{ w / 4, 0 }, .{ w / 2, -h / 2 }, .{ 0, -h / 2 } },
+    };
+    var v: [9]c.SDL_Vertex = undefined;
+    for (tris, 0..) |tri, i| {
+        for (tri, 0..) |pt, j| {
+            v[i * 3 + j] = .{ .position = at(x, y, ux, uy, pt[0], pt[1]), .color = fcolor(if (j == 0) top else bottom), .tex_coord = .{ .x = 0, .y = 0 } };
+        }
+    }
+    _ = c.SDL_RenderGeometry(r, null, &v, v.len, null, 0);
+}
+
 fn triangle(r: *c.SDL_Renderer, a: [2]f32, b: [2]f32, d: [2]f32, col: Color) void {
     const fc = fcolor(col);
     const v = [_]c.SDL_Vertex{
@@ -752,16 +839,24 @@ fn sideDiamonds(r: *c.SDL_Renderer, rect: ui.Rect, col: Color) void {
     diamond(r, rect.x + rect.w + 12, rect.y + rect.h / 2, 4, col);
 }
 
-/// A circle of `segments` straight lines.
-fn ring(r: *c.SDL_Renderer, cx: f32, cy: f32, radius: f32, turn: f32, segments: usize, col: Color) void {
-    _ = c.SDL_SetRenderDrawColor(r, col.r, col.g, col.b, col.a);
-    var pts: [257]c.SDL_FPoint = undefined;
-    const n = @min(segments, pts.len - 1);
+/// A circle `width` points thick, as `segments` short quads round it.
+fn ring(r: *c.SDL_Renderer, cx: f32, cy: f32, radius: f32, width: f32, segments: usize, col: Color) void {
+    const fc = fcolor(col);
+    var v: [2 * 257]c.SDL_Vertex = undefined;
+    var idx: [6 * 256]c_int = undefined;
+    const n: usize = @min(segments, 256);
+    const r_in = radius - width / 2;
+    const r_out = radius + width / 2;
     for (0..n + 1) |i| {
-        const a = turn + @as(f32, @floatFromInt(i)) * std.math.tau / @as(f32, @floatFromInt(n));
-        pts[i] = .{ .x = cx + @cos(a) * radius, .y = cy + @sin(a) * radius };
+        const a = @as(f32, @floatFromInt(i)) * std.math.tau / @as(f32, @floatFromInt(n));
+        v[i * 2] = .{ .position = .{ .x = cx + @cos(a) * r_in, .y = cy + @sin(a) * r_in }, .color = fc, .tex_coord = .{ .x = 0, .y = 0 } };
+        v[i * 2 + 1] = .{ .position = .{ .x = cx + @cos(a) * r_out, .y = cy + @sin(a) * r_out }, .color = fc, .tex_coord = .{ .x = 0, .y = 0 } };
     }
-    _ = c.SDL_RenderLines(r, &pts, @intCast(n + 1));
+    for (0..n) |i| {
+        const b: c_int = @intCast(i * 2);
+        for ([_]c_int{ 0, 1, 3, 0, 3, 2 }, 0..) |k, j| idx[i * 6 + j] = b + k;
+    }
+    _ = c.SDL_RenderGeometry(r, null, &v, @intCast((n + 1) * 2), &idx, @intCast(n * 6));
 }
 
 const kGlowSize = 128;

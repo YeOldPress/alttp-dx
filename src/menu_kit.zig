@@ -174,9 +174,14 @@ pub fn drawTextScaled(r: *c.SDL_Renderer, x: f32, y: f32, col: Rgb, text: []cons
     @memcpy(buf[0..n], text[0..n]);
     buf[n] = 0;
     setColor(r, col);
-    _ = c.SDL_SetRenderScale(r, scale, scale);
+    // On top of whatever scale the window already draws at, which is 2 on
+    // a Retina screen, and back to it after.
+    var sx: f32 = 1;
+    var sy: f32 = 1;
+    _ = c.SDL_GetRenderScale(r, &sx, &sy);
+    _ = c.SDL_SetRenderScale(r, sx * scale, sy * scale);
     _ = c.SDL_RenderDebugText(r, x / scale, y / scale, @ptrCast(&buf));
-    _ = c.SDL_SetRenderScale(r, 1, 1);
+    _ = c.SDL_SetRenderScale(r, sx, sy);
 }
 
 // -------------------------------------------------------------------- input
