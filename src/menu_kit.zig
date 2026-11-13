@@ -44,6 +44,11 @@ pub const Rect = struct {
     pub fn contains(self: Rect, px: f32, py: f32) bool {
         return px >= self.x and px < self.x + self.w and py >= self.y and py < self.y + self.h;
     }
+
+    /// The same, `d` in from every side.
+    pub fn inset(self: Rect, d: f32) Rect {
+        return .{ .x = self.x + d, .y = self.y + d, .w = self.w - d * 2, .h = self.h - d * 2 };
+    }
 };
 
 // ------------------------------------------------------------------ drawing

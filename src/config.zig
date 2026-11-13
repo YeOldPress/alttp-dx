@@ -1115,6 +1115,7 @@ fn handleGeneral(key: [*:0]const u8, value: [*:0]u8) bool {
     } else if (util.StringEqualsNoCase(key, "DisableFrameDelay")) {
         return ParseBool(value, &g_config.disable_frame_delay);
     } else if (util.StringEqualsNoCase(key, "StartMenu") or
+        util.StringEqualsNoCase(key, "StartMenuStyle") or
         util.StringEqualsNoCase(key, "CheckForUpdates") or
         util.StringEqualsNoCase(key, "UpdateChannel"))
     {

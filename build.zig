@@ -102,6 +102,22 @@ pub fn build(b: *std.Build) void {
         .root_source_file = default_ini_files.add("default_ini.zig", "pub const text = @embedFile(\"zelda3.ini\");\n"),
     });
 
+    // The fonts the tools window and the start menu draw with, embedded the
+    // same way as the ini: Inter, cut down to Latin, and Cinzel, the start
+    // page's titles, cut down to ASCII.
+    const font_files = b.addWriteFiles();
+    _ = font_files.addCopyFile(b.path("third_party/inter/Inter-Regular.ttf"), "Inter-Regular.ttf");
+    _ = font_files.addCopyFile(b.path("third_party/inter/Inter-SemiBold.ttf"), "Inter-SemiBold.ttf");
+    _ = font_files.addCopyFile(b.path("third_party/cinzel/Cinzel-SemiBold.ttf"), "Cinzel-SemiBold.ttf");
+    const tools_fonts = b.createModule(.{
+        .root_source_file = font_files.add("tools_fonts.zig",
+            \\pub const regular = @embedFile("Inter-Regular.ttf");
+            \\pub const semibold = @embedFile("Inter-SemiBold.ttf");
+            \\pub const display = @embedFile("Cinzel-SemiBold.ttf");
+            \\
+        ),
+    });
+
     // The ported modules compile to one object that is linked in alongside the
     // remaining C. Each one exports the same symbols its C file used to.
     const zig_obj = b.addObject(.{
@@ -117,8 +133,10 @@ pub fn build(b: *std.Build) void {
     zig_obj.root_module.addImport("snes", snes_mod);
     zig_obj.root_module.addImport("sdl_c", sdl_c_mod);
     zig_obj.root_module.addImport("default_ini", default_ini);
+    zig_obj.root_module.addImport("tools_fonts", tools_fonts);
     zig_obj.root_module.addOptions("build_info", build_info);
     exe.root_module.addObject(zig_obj);
+    exe.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
 
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -132,6 +150,8 @@ pub fn build(b: *std.Build) void {
     tests.root_module.addImport("snes", snes_mod);
     tests.root_module.addImport("sdl_c", sdl_c_mod);
     tests.root_module.addImport("default_ini", default_ini);
+    tests.root_module.addImport("tools_fonts", tools_fonts);
+    tests.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
     tests.root_module.addOptions("build_info", build_info);
     // Exercise the same C/Zig boundaries as the game while the port is in
     // progress. Real implementations replace the former panic-only stubs.
@@ -187,6 +207,8 @@ pub fn build(b: *std.Build) void {
     });
     menu_tests.root_module.addIncludePath(b.path("."));
     menu_tests.root_module.addImport("default_ini", default_ini);
+    menu_tests.root_module.addImport("tools_fonts", tools_fonts);
+    menu_tests.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
     menu_tests.root_module.addOptions("build_info", build_info);
     menu_tests.root_module.addImport("sdl_c", sdl_c_mod);
     addSdlIncludes(b, menu_tests.root_module);
@@ -239,19 +261,6 @@ pub fn build(b: *std.Build) void {
     }
 
     b.installArtifact(exe);
-
-    // The tools window's font, Inter, cut down to Latin, embedded the same
-    // way as the ini.
-    const font_files = b.addWriteFiles();
-    _ = font_files.addCopyFile(b.path("third_party/inter/Inter-Regular.ttf"), "Inter-Regular.ttf");
-    _ = font_files.addCopyFile(b.path("third_party/inter/Inter-SemiBold.ttf"), "Inter-SemiBold.ttf");
-    const tools_fonts = b.createModule(.{
-        .root_source_file = font_files.add("tools_fonts.zig",
-            \\pub const regular = @embedFile("Inter-Regular.ttf");
-            \\pub const semibold = @embedFile("Inter-SemiBold.ttf");
-            \\
-        ),
-    });
 
     // zelda3-tools: the asset tools, with a window and a command line. It
     // needs the asset builder and SDL, not the game.

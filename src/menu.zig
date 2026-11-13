@@ -8,6 +8,8 @@
 //!
 //! Drawing uses SDL3's built in 8x8 font (SDL_RenderDebugText), so the menu
 //! needs no font file and no toolkit - just the SDL the game already links.
+//! The front page is the exception: unless the ini asks for the retro one,
+//! it's start_page.zig's, in real type.
 const std = @import("std");
 const builtin = @import("builtin");
 const fileio = @import("fileio.zig");
@@ -17,12 +19,14 @@ const rom_mod = @import("rom.zig");
 const asset_all = @import("asset_all.zig");
 const c = @import("sdl.zig").c;
 const kit = @import("menu_kit.zig");
+const ui = @import("tools_draw.zig");
 const seed_info = @import("seed_info.zig");
 const config = @import("config.zig");
 const controls = @import("controls.zig");
 const pad_art = @import("pad_art.zig");
 const crt = @import("crt.zig");
 const achievement_list = @import("achievement_list.zig");
+const start_page = @import("start_page.zig");
 
 /// The zelda3.ini this build shipped with, written out whenever there is no
 /// ini to be found, so a fresh folder or data directory still starts.
@@ -113,6 +117,10 @@ const kSectionMark = "\x00SECTION";
 pub const kSettings = [_]Setting{
     .{ .section = kSectionMark, .key = "", .label = "GENERAL", .kind = .text },
     .{ .section = "General", .key = "StartMenu", .label = "Start Menu", .kind = .toggle },
+    .{ .section = "General", .key = "StartMenuStyle", .label = "Start Menu Style", .kind = .{ .choice = .{
+        .values = &.{ "modern", "retro" },
+        .labels = &.{ "Modern", "Retro" },
+    } } },
     .{ .section = "General", .key = "CheckForUpdates", .label = "Check For Updates", .kind = .toggle },
     .{ .section = "General", .key = "UpdateChannel", .label = "Update Channel", .kind = .{ .choice = .{
         .values = &.{ "releases", "nightly" },
@@ -649,6 +657,7 @@ fn firstSelectable(from: usize, to: usize) usize {
 pub fn describe(s: Setting) []const u8 {
     const kDescriptions = [_][2][]const u8{
         .{ "StartMenu", "Show the start menu, with settings and the ROM and assets, before the game begins. When off, the game starts straight away unless its assets need building." },
+        .{ "StartMenuStyle", "Modern is the front page made for the series' 40th anniversary, in real type with the Triforce and drifting light. Retro is the old one, all in the 8x8 debug font. Everything does the same either way." },
         .{ "CheckForUpdates", "When the start menu opens, ask GitHub whether there's a newer version. If there is, an Update button shows under the title. Nothing downloads until you press it. A game you built yourself never updates." },
         .{ "UpdateChannel", "Releases offers each numbered release. Nightly offers the rolling test build of the newest changes, rebuilt most nights, and sometimes broken. Back on Releases, the next release is the next update." },
         .{ "Autosave", "Save a snapshot of the game when you quit and pick up from it next time you start." },
@@ -813,11 +822,168 @@ fn firstRow(screen: Screen) usize {
 /// Where a list starts and how many rows show. The ALTTPR.COM page gives
 /// the top of the screen to the seed.
 fn listStartY(screen: Screen) f32 {
+    if (g_modern) return kModernListY;
     return if (screen == .alttpr) kEmuNoteY + kEmuNoteH + 10 else kListStartY;
 }
 
 fn visibleRows(screen: Screen) usize {
+    if (g_modern) return kModernVisible;
     return if (screen == .alttpr) 9 else kVisibleRows;
+}
+
+// The modern sub-screens are widescreen: a list down the left, and beside it
+// a panel saying more about what's picked.
+const kModernRowH: f32 = 28;
+const kModernListX: f32 = 40;
+const kModernListW: f32 = 520;
+const kModernListY: f32 = start_page.kBodyTop + 6;
+const kModernVisible = 13;
+const kModernPanel = Rect{ .x = 592, .y = start_page.kBodyTop, .w = start_page.kW - 40 - 592, .h = start_page.kBodyBottom - start_page.kBodyTop };
+/// The seed's details, across the whole body.
+const kModernDetailsBox = Rect{ .x = 40, .y = start_page.kBodyTop, .w = start_page.kW - 80, .h = start_page.kBodyBottom - start_page.kBodyTop };
+
+/// Row `slot` of a modern list, as drawn and clicked.
+fn modernRowRect(slot: usize) Rect {
+    return .{ .x = kModernListX, .y = kModernListY + kModernRowH * @as(f32, @floatFromInt(slot)), .w = kModernListW, .h = kModernRowH - 2 };
+}
+
+/// The window's size: widescreen for the modern menu, 4:3 for the retro.
+fn windowW() f32 {
+    return if (g_modern) start_page.kW else kWindowW;
+}
+
+fn windowH() f32 {
+    return if (g_modern) start_page.kH else kWindowH;
+}
+
+/// Whether the pointer is over the modern sub-screens' Back button.
+var g_back_hover = false;
+
+/// The pointer, between frames. It picks a row by moving onto one, not by
+/// being over one: a nudge that stays on the same row leaves the keys'
+/// choice alone, so a hand on the mouse doesn't fight the one on the arrows.
+const Pointer = struct {
+    x: f32 = -1,
+    y: f32 = -1,
+    /// What it last moved onto, as a place on the screen (a slot, not a
+    /// row), so a list scrolling under a still pointer isn't a move.
+    over: ?usize = null,
+    /// Wheel travel short of a whole row, for trackpads that send slivers.
+    wheel: f32 = 0,
+    /// Holding a scrollbar.
+    dragging: bool = false,
+
+    /// Whether `target` is somewhere new, remembering it either way.
+    fn enters(self: *Pointer, target: ?usize) bool {
+        defer self.over = target;
+        return target != null and !std.meta.eql(target, self.over);
+    }
+
+    fn addWheel(self: *Pointer, dy: f32) void {
+        // Turning back throws away what was going the other way.
+        if (dy * self.wheel < 0) self.wheel = 0;
+        self.wheel += dy;
+    }
+
+    /// Whole rows of wheel travel, up positive, keeping the rest.
+    fn takeWheel(self: *Pointer) i32 {
+        const steps: i32 = @intFromFloat(@trunc(self.wheel));
+        self.wheel -= @floatFromInt(steps);
+        return steps;
+    }
+
+    /// A new screen or question: what it was over there means nothing here.
+    fn forget(self: *Pointer) void {
+        self.over = null;
+        self.wheel = 0;
+        self.dragging = false;
+    }
+};
+var g_pointer = Pointer{};
+
+/// `top` moved by `by` rows, kept between the first and `max_top`.
+fn scrolled(top: usize, by: i32, max_top: usize) usize {
+    const want = @as(i64, @intCast(top)) + by;
+    return @intCast(std.math.clamp(want, 0, @as(i64, @intCast(max_top))));
+}
+
+/// The cursor brought into rows `top` to `top + shown`, onto the nearest row
+/// that can be picked, when the list has scrolled out from under it.
+fn keepInView(screen: Screen, cursor: usize, top: usize, shown: usize) usize {
+    const end = @min(rowCount(screen), top + shown);
+    if (cursor >= top and cursor < end) return cursor;
+    if (cursor < top) {
+        var p = top;
+        while (p < end) : (p += 1) if (rowSelectable(screen, p)) return p;
+    } else {
+        var p = end;
+        while (p > top) {
+            p -= 1;
+            if (rowSelectable(screen, p)) return p;
+        }
+    }
+    return cursor;
+}
+
+/// A scrollbar the pointer can take hold of: where it's drawn, widened to
+/// something a hand can hit, and what it scrolls.
+const Scroll = struct {
+    track: Rect,
+    len: usize,
+    shown: usize,
+
+    /// The top that puts the thumb's middle under `py`.
+    fn topAt(self: Scroll, py: f32) usize {
+        const frac = std.math.clamp((py - self.track.y) / self.track.h, 0, 1);
+        const want = frac * @as(f32, @floatFromInt(self.len)) - @as(f32, @floatFromInt(self.shown)) / 2;
+        return @min(self.len -| self.shown, @as(usize, @intFromFloat(@max(0, @round(want)))));
+    }
+};
+
+/// The modern screen's scrollbar, when it has one with somewhere to go.
+fn scrollOf(screen: Screen) ?Scroll {
+    if (!g_modern) return null;
+    const list_track = struct {
+        fn of(shown: usize) Rect {
+            return .{ .x = kModernListX + kModernListW + 4, .y = kModernListY, .w = 20, .h = @as(f32, @floatFromInt(shown)) * kModernRowH - 2 };
+        }
+    }.of;
+    const s: Scroll = switch (screen) {
+        .settings, .features, .alttpr => .{ .track = list_track(visibleRows(screen)), .len = rowCount(screen), .shown = visibleRows(screen) },
+        .achievements => .{ .track = list_track(achVisible()), .len = kAchRows, .shown = achVisible() },
+        .details => .{ .track = .{ .x = kModernDetailsBox.x + kModernDetailsBox.w - 24, .y = kModernDetailsBox.y + 14, .w = 20, .h = kModernDetailsBox.h - 28 }, .len = detailCount(), .shown = kDetailsRows },
+        else => return null,
+    };
+    return if (s.len > s.shown) s else null;
+}
+
+/// Which of a question's buttons is under a point.
+fn choiceUnder(n: usize, px: f32, py: f32) ?usize {
+    for (0..n) |i| if (modalChoiceRect(i).contains(px, py)) return i;
+    return null;
+}
+
+/// A modern list's value, as drawn beside a setting.
+const ValueBufs = struct { v: [64]u8 = undefined, s: [64]u8 = undefined, f: [80]u8 = undefined };
+
+fn modernValue(p: *const ui.Paint, st: Setting, raw: []const u8, b: *ValueBufs) []const u8 {
+    return p.fit(.strong, soft(&b.s, displayValue(&b.v, st, raw)), 220, &b.f);
+}
+
+/// Whether a click on row `slot` of a modern list landed on the arrow left
+/// of its value, which steps it back rather than on.
+fn onLeftArrow(ini: *const Ini, screen: Screen, pos: usize, slot: usize, px: f32, py: f32) bool {
+    if (!g_modern) return false;
+    const page = modernPage() orelse return false;
+    const at = rowAt(screen, pos);
+    if (at >= kSettings.len) return false;
+    const st = kSettings[at];
+    if (isSection(st) or st.kind == .text or st.kind == .action) return false;
+    var b = ValueBufs{};
+    const vw = page.paint.textWidth(.strong, modernValue(&page.paint, st, ini.values[at] orelse "(missing)", &b));
+    const r = modernRowRect(slot);
+    const right = r.x + r.w - 20;
+    return (Rect{ .x = right - vw - 30, .y = r.y, .w = 28, .h = r.h }).contains(px, py);
 }
 
 const kMainItems = [_][]const u8{ "Settings", "Features", "Controls", "Achievements", "Save Settings", "Build Assets", "Import MSU-1", "Play", "Randomizer", "Update" };
@@ -848,6 +1014,55 @@ fn msuPathIn(ini: *const Ini) []const u8 {
     const i = settingIndex("Sound", "MSUPath") orelse return "msu/alttp_msu-";
     const v = std.mem.trim(u8, ini.values[i] orelse "", " \t");
     return if (v.len == 0) "msu/alttp_msu-" else v;
+}
+
+/// Whether the front page is the modern one, from the ini every frame like
+/// g_msu_on, so it changes as soon as the setting does.
+var g_modern = false;
+
+fn modernIn(ini: *const Ini) bool {
+    const i = settingIndex("General", "StartMenuStyle") orelse return true;
+    const v = std.mem.trim(u8, ini.values[i] orelse "modern", " \t");
+    return !std.ascii.eqlIgnoreCase(v, "retro");
+}
+
+/// The modern page's text and glow, made once there's a renderer.
+var g_page: ?start_page.Page = null;
+
+fn modernPage() ?*const start_page.Page {
+    if (!g_modern) return null;
+    return if (g_page) |*p| p else null;
+}
+
+/// The front page's entries as the modern page draws them.
+const PageItems = struct {
+    items: [kMainItems.len]start_page.Item = undefined,
+    update_buf: [64]u8 = undefined,
+};
+
+fn pageItems(out: *PageItems) []const start_page.Item {
+    for (kMainItems, 0..) |label, i| {
+        out.items[i] = .{
+            .label = label,
+            .shown = mainShown(i),
+            .role = switch (i) {
+                kMainLaunch => .play,
+                kMainRandomizer => .randomizer,
+                kMainUpdate => .update,
+                else => .entry,
+            },
+        };
+    }
+    // "Update to v1.9", not the retro page's shouting.
+    var ver = updater.offerLabel();
+    var lower_v: [32]u8 = undefined;
+    if (ver.len > 1 and ver.len <= lower_v.len and ver[0] == 'V' and std.ascii.isDigit(ver[1])) {
+        @memcpy(lower_v[0..ver.len], ver);
+        lower_v[0] = 'v';
+        ver = lower_v[0..ver.len];
+    }
+    out.items[kMainUpdate].label = std.fmt.bufPrint(&out.update_buf, "Update to {s}", .{ver}) catch "Update";
+    return &out.items;
 }
 
 fn mainShown(i: usize) bool {
@@ -1106,17 +1321,24 @@ fn viewOf(
 pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const u8, seed: ?[]const u8) !void {
     var ini = try Ini.load(alloc, "zelda3.ini");
     defer ini.deinit();
-    const surface = c.SDL_CreateSurface(kWindowW, kWindowH, c.SDL_PIXELFORMAT_XRGB8888) orelse return error.SdlSurface;
+    g_modern = modernIn(&ini);
+    defer g_modern = false;
+    const surface = c.SDL_CreateSurface(@intFromFloat(windowW()), @intFromFloat(windowH()), c.SDL_PIXELFORMAT_XRGB8888) orelse return error.SdlSurface;
     defer c.SDL_DestroySurface(surface);
     const renderer = c.SDL_CreateSoftwareRenderer(surface) orelse return error.SdlRenderer;
     defer c.SDL_DestroyRenderer(renderer);
+    g_page = start_page.Page.init(renderer);
+    defer {
+        g_page.?.deinit();
+        g_page = null;
+    }
     if (seed) |sp| _ = loadSeed(sp);
     const screen = std.meta.stringToEnum(Screen, which) orelse .alttpr;
     g_spoilers = std.c.getenv("SPOILERS") != null;
     if (std.c.getenv("DETAILS_TOP")) |t| g_details_top = std.fmt.parseInt(usize, std.mem.span(t), 10) catch 0;
     // CTL_ROW=n picks a row on the Controls screen; CAPTURE=1 has it waiting.
     if (std.c.getenv("CTL_ROW")) |t| g_ctl_row = std.fmt.parseInt(usize, std.mem.span(t), 10) catch 0;
-    if (g_ctl_row >= kCtlVisible) g_ctl_top = g_ctl_row + 1 - kCtlVisible;
+    if (g_ctl_row >= ctlVisible()) g_ctl_top = g_ctl_row + 1 - ctlVisible();
     if (std.c.getenv("CAPTURE") != null) g_ctl_capture = g_ctl_row;
     // LIST_ROW=n picks a row on the lists; INFO=1 has its info box open.
     const row: usize = if (std.c.getenv("LIST_ROW")) |t| std.fmt.parseInt(usize, std.mem.span(t), 10) catch 0 else 0;
@@ -1133,9 +1355,10 @@ pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const 
     if (screen == .achievements) {
         g_ach_unlocked = achievement_list.Unlocked.load(alloc);
         g_ach_row = row;
-        if (row >= kAchVisible) g_ach_top = row + 1 - kAchVisible;
+        if (row >= achVisible()) g_ach_top = row + 1 - achVisible();
     }
-    const main_pick: usize = if (std.c.getenv("UPDATE_PICKED") != null) kMainUpdate else kMainControls;
+    // MAIN_ROW=n picks an entry on the front page.
+    const main_pick: usize = if (std.c.getenv("UPDATE_PICKED") != null) kMainUpdate else if (std.c.getenv("MAIN_ROW")) |t| std.fmt.parseInt(usize, std.mem.span(t), 10) catch kMainControls else kMainControls;
     // ASSETS=check shows what's really there, rather than the verified file
     // every other shot assumes.
     const assets: AssetState = if (std.c.getenv("ASSETS") != null) checkAssets(alloc) else .verified;
@@ -1144,6 +1367,11 @@ pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const 
 }
 
 fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
+    if (modernPage()) |page| {
+        drawModern(page, ini, v);
+        _ = c.SDL_RenderPresent(renderer);
+        return;
+    }
     fillBackground(renderer);
     drawFrame(renderer, 16, 16, kWindowW - 32, kWindowH - 32);
 
@@ -1168,6 +1396,630 @@ fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     drawFooter(renderer, v);
     if (v.modal != .none) drawModal(renderer, v);
     _ = c.SDL_RenderPresent(renderer);
+}
+
+/// The seconds the modern page's motes and glows go by; a menu shot can
+/// pin it with TIME=.
+fn pageTime() f32 {
+    if (std.c.getenv("TIME")) |t| return std.fmt.parseFloat(f32, std.mem.span(t)) catch 2;
+    return @as(f32, @floatFromInt(c.SDL_GetTicks())) / 1000;
+}
+
+fn drawModernMain(page: *const start_page.Page, v: View) void {
+    var pi = PageItems{};
+    var vbuf: [40]u8 = undefined;
+    var hints: [5]start_page.Hint = undefined;
+    const status = if (v.status.len != 0) v.status else if (v.dirty) "UNSAVED CHANGES" else "";
+    page.draw(.{
+        .items = pageItems(&pi),
+        .cursor = v.cursor,
+        .assets_line = v.assets.line(),
+        .assets_ok = v.assets.playable(),
+        .assets_note = if (v.assets == .missing) "Drag a .sfc ROM onto this window" else "",
+        .status = status,
+        .status_warn = v.status.len == 0 and v.dirty,
+        .version = if (updater.installed == .dev) "Dev build" else updater.installedLabel(&vbuf),
+        .hints = pageHints(v, &hints),
+        .time = pageTime(),
+        .dimmed = v.modal != .none,
+    });
+}
+
+/// The modern page's questions: the retro ones' words in its own dress, in
+/// the same places, so the same clicks answer them.
+fn drawModernModal(page: *const start_page.Page, v: View) void {
+    const L = start_page.Line;
+    var rects: [2]Rect = .{ modalChoiceRect(0), modalChoiceRect(1) };
+    var buf: [64]u8 = undefined;
+    var buf2: [64]u8 = undefined;
+    var mine: [40]u8 = undefined;
+    // Lines made as it runs live here, for as long as the dialog does.
+    var lines: [3]L = undefined;
+    var d = start_page.Dialog{ .box = modalRect(), .title = "" };
+    switch (v.modal) {
+        .quit => {
+            d.title = "Quit the game?";
+            d.lines = if (v.dirty) &.{L{ .text = "Unsaved changes will be lost", .tone = .warn }} else &.{L{ .text = "Hyrule will be here when you get back" }};
+            d.choices = &kQuitChoices;
+            d.choice_rects = &rects;
+            d.picked = v.quit_choice;
+        },
+        .rom => {
+            d.title = "Drop a ROM on this window";
+            if (g_rom_path != null) {
+                d.lines = &.{
+                    L{ .text = "Any .sfc file. The name doesn't matter, it's checked." },
+                    L{ .text = "" },
+                    L{ .text = "Or press A / Enter to use", .tone = .plain },
+                    L{ .text = kRomPath, .tone = .accent },
+                };
+            } else {
+                d.lines = &.{
+                    L{ .text = "Any .sfc file. The name doesn't matter, it's checked." },
+                    L{ .text = "" },
+                    L{ .text = "B / Esc to cancel" },
+                };
+            }
+        },
+        .msu => {
+            d.title = "Import an MSU-1 pack";
+            d.lines = &.{
+                L{ .text = "Drop a folder or .zip here, or browse for one" },
+                L{ .text = "Replaces the pack you have", .tone = .warn },
+            };
+            d.choices = &kMsuChoices;
+            d.choice_rects = &rects;
+            d.picked = g_msu_choice;
+        },
+        .update => switch (updater.phase()) {
+            .downloading, .installing, .ready => |ph| {
+                d.title = switch (ph) {
+                    .downloading => std.fmt.bufPrint(&buf, "Downloading {s}", .{updater.offerLabel()}) catch "Downloading",
+                    .installing => "Installing...",
+                    else => "Restarting...",
+                };
+                const pr = updater.progress();
+                d.progress = if (ph != .downloading) 1 else if (pr.total == 0) 0 else @min(1, @as(f32, @floatFromInt(pr.done)) / @as(f32, @floatFromInt(pr.total)));
+                if (ph == .downloading) {
+                    const mb = 1024.0 * 1024.0;
+                    const size = std.fmt.bufPrint(&buf2, "{d:.1} of {d:.1} MB", .{ @as(f32, @floatFromInt(pr.done)) / mb, @as(f32, @floatFromInt(pr.total)) / mb }) catch "";
+                    lines = .{ L{ .text = "" }, L{ .text = "" }, L{ .text = size } };
+                    d.lines = &lines;
+                }
+            },
+            .failed => {
+                d.title = "Couldn't update";
+                lines[0] = .{ .text = updater.message(), .tone = .warn };
+                lines[1] = .{ .text = "The release page has it to download by hand" };
+                d.lines = lines[0..2];
+                d.choices = &kUpdateFailedChoices;
+                d.choice_rects = &rects;
+                d.picked = g_update_choice;
+            },
+            else => {
+                d.title = std.fmt.bufPrint(&buf, "Update to {s}?", .{updater.offerLabel()}) catch "Update?";
+                lines[0] = .{ .text = std.fmt.bufPrint(&buf2, "You have {s}", .{updater.installedLabel(&mine)}) catch "", .tone = .plain };
+                lines[1] = .{ .text = "Downloads from GitHub, then restarts. Saves stay put." };
+                d.lines = lines[0..2];
+                d.choices = &kUpdateChoices;
+                d.choice_rects = &rects;
+                d.picked = g_update_choice;
+            },
+        },
+        // Only the lists have info; the front page has nothing to explain.
+        .info, .none => return,
+    }
+    page.dialog(d);
+}
+
+/// What the buttons do, for the modern page's footer: the front page's, or
+/// a question's while one is up.
+fn pageHints(v: View, out: *[5]start_page.Hint) []const start_page.Hint {
+    const choose = start_page.Hint{ .key = "\xe2\x86\x90 \xe2\x86\x92", .action = "Choose" };
+    const cancel = start_page.Hint{ .key = "B / Esc", .action = "Cancel" };
+    const list: []const start_page.Hint = switch (v.modal) {
+        .none => &.{ .{ .key = "A / Enter", .action = "Select" }, .{ .key = "X / S", .action = "Save" }, .{ .key = "B / Esc", .action = "Quit" } },
+        .quit => &.{ choose, .{ .key = "A / Enter", .action = "Confirm" }, cancel },
+        .rom => &.{ .{ .key = "Drop", .action = "A file on the window" }, cancel },
+        .info => &.{.{ .key = "A / B", .action = "Close" }},
+        .msu => &.{ choose, .{ .key = "A / Enter", .action = "Browse" }, cancel },
+        .update => switch (updater.phase()) {
+            .downloading => &.{cancel},
+            .installing, .ready => &.{},
+            else => &.{ choose, .{ .key = "A / Enter", .action = "Confirm" }, cancel },
+        },
+    };
+    @memcpy(out[0..list.len], list);
+    return out[0..list.len];
+}
+
+// ------------------------------------------------------------ modern menu
+
+const P = start_page;
+
+/// Every screen in the modern dress: the front page, or a sub-screen's
+/// header, what it shows, and the footer, with any question over the top.
+fn drawModern(page: *const start_page.Page, ini: *const Ini, v: View) void {
+    if (v.screen == .main) {
+        drawModernMain(page, v);
+        if (v.modal != .none) drawModernModal(page, v);
+        return;
+    }
+    const t = pageTime();
+    page.backdrop(t, switch (v.screen) {
+        .settings => "Settings",
+        .features => "Features",
+        .hub => "Randomizer",
+        .controls => "Controls",
+        .achievements => "Achievements",
+        .alttpr => "ALTTPR.com",
+        .details => "Seed Details",
+        .main => unreachable,
+    }, g_back_hover);
+    switch (v.screen) {
+        .settings, .features => {
+            drawModernList(page, ini, v);
+            const at = rowAt(v.screen, v.cursor);
+            page.panel(kModernPanel);
+            if (at < kSettings.len and !isSection(kSettings[at])) drawModernAbout(page, kModernPanel.inset(22), at, ini, true);
+        },
+        .alttpr => {
+            drawModernList(page, ini, v);
+            drawModernSeed(page, v);
+        },
+        .achievements => drawModernAchievements(page, v),
+        .controls => drawModernControls(page, ini, v),
+        .hub => drawModernHub(page, v),
+        .details => {
+            setMsuGamePath(ini);
+            drawModernDetails(page, v);
+        },
+        .main => unreachable,
+    }
+
+    var hints: [5]start_page.Hint = undefined;
+    const note = modernNote(v);
+    page.footerBar(if (v.modal != .none) pageHints(v, &hints) else subHints(v, &hints), note.text, note.col);
+    if (v.modal != .none) {
+        page.dim();
+        if (v.modal == .info) drawModernInfo(page, ini, v) else drawModernModal(page, v);
+    }
+}
+
+/// The few words at the right of a sub-screen's footer: what just happened,
+/// a warning about what's picked, or that there's something to save.
+fn modernNote(v: View) struct { text: []const u8, col: ui.Color } {
+    if (v.status.len != 0) return .{ .text = v.status, .col = P.kTeal };
+    if (v.screen == .alttpr and v.modal == .none) {
+        const at = rowAt(.alttpr, v.cursor);
+        const note = if (at < kSettings.len) kSettings[at].note else if (!g_seed_loaded) "DROP A SEED ON THIS WINDOW FIRST" else "";
+        if (note.len != 0) return .{ .text = note, .col = P.kWarn };
+    }
+    if (v.dirty) return .{ .text = "UNSAVED CHANGES", .col = P.kGold };
+    return .{ .text = "", .col = P.kDim };
+}
+
+/// What the buttons do on each sub-screen.
+fn subHints(v: View, out: *[5]start_page.Hint) []const start_page.Hint {
+    const H = start_page.Hint;
+    const change = H{ .key = "\xe2\x86\x90 \xe2\x86\x92", .action = "Change" };
+    const save = H{ .key = "X / S", .action = "Save" };
+    const back = H{ .key = "B / Esc", .action = "Back" };
+    const list: []const H = switch (v.screen) {
+        .settings, .features => &.{ change, .{ .key = "Y / I", .action = "More info" }, save, back },
+        .alttpr => &.{ change, .{ .key = "Start", .action = "Play" }, save, back },
+        .achievements => &.{ .{ .key = "\xe2\x86\x91 \xe2\x86\x93", .action = "Browse" }, back },
+        .hub => &.{ .{ .key = "A / Enter", .action = "Select" }, back },
+        .controls => if (g_ctl_capture != null)
+            &.{ .{ .key = "Any key or button", .action = "Assign" }, .{ .key = "Esc", .action = "Cancel" } }
+        else
+            &.{ .{ .key = "A / Enter", .action = "Change" }, save, back },
+        .details => &.{ .{ .key = "\xe2\x86\x91 \xe2\x86\x93", .action = "Scroll" }, .{ .key = "A / Enter", .action = if (g_spoilers) "Hide spoilers" else "Show spoilers" }, back },
+        .main => &.{},
+    };
+    @memcpy(out[0..list.len], list);
+    return out[0..list.len];
+}
+
+/// The retro menu's capitals in sentence case, for the modern one's real
+/// type: "IN DUNGEON" reads "In dungeon". Anything with a small letter in
+/// it is already written to be read, and is left alone, and so are the
+/// handful of words that are capitals anyway.
+fn soft(buf: []u8, text: []const u8) []const u8 {
+    for (text) |ch| if (std.ascii.isLower(ch)) return text;
+    const kAcronyms = [_][]const u8{ "SNES", "MSU", "MSU-1", "KB", "MB", "GT", "ROM", "CRT", "PC", "HD", "MSUPATH", "SFC", "OK", "DX" };
+    const kNames = [_][]const u8{ "JAPANESE", "GANON", "GITHUB", "ALTTPR.COM", "HYRULE", "LINK" };
+    const n = @min(buf.len, text.len);
+    @memcpy(buf[0..n], text[0..n]);
+    var i: usize = 0;
+    var first = true;
+    while (i < n) {
+        while (i < n and buf[i] == ' ') i += 1;
+        const start = i;
+        while (i < n and buf[i] != ' ') i += 1;
+        const word = buf[start..i];
+        if (word.len == 0) break;
+        // The word without what's around it, to look up.
+        var a: usize = 0;
+        var b: usize = word.len;
+        while (a < b and !std.ascii.isAlphanumeric(word[a])) a += 1;
+        while (b > a and !std.ascii.isAlphanumeric(word[b - 1])) b -= 1;
+        const bare = word[a..b];
+        var keep = false;
+        for (kAcronyms) |k| keep = keep or std.mem.eql(u8, bare, k);
+        var name = false;
+        for (kNames) |k| name = name or std.mem.eql(u8, bare, k);
+        if (!keep) {
+            for (word, 0..) |*ch, j| {
+                ch.* = if ((first or name) and j == a) ch.* else std.ascii.toLower(ch.*);
+            }
+            if (std.mem.eql(u8, bare, "ALTTPR.COM")) @memcpy(word[a..b], "ALTTPR.com");
+        }
+        if (bare.len != 0) first = false;
+    }
+    return buf[0..n];
+}
+
+/// A settings list: headings in gold, each setting's name, and its value
+/// at the right, with arrows round it once it's picked.
+fn drawModernList(page: *const start_page.Page, ini: *const Ini, v: View) void {
+    const p = &page.paint;
+    const t = pageTime();
+    const n = rowCount(v.screen);
+    const shown = visibleRows(v.screen);
+    var pos = v.top;
+    var slot: usize = 0;
+    while (pos < n and slot < shown) : ({
+        pos += 1;
+        slot += 1;
+    }) {
+        const r = modernRowRect(slot);
+        const at = rowAt(v.screen, pos);
+        const picked = pos == v.cursor;
+        const text_y = r.y + (r.h - p.lineHeight(.item)) / 2;
+        if (at >= kSettings.len) {
+            // The ALTTPR.COM page's two buttons, which want a seed.
+            page.band(r, picked, t);
+            const play = at == kPlayRow;
+            const col = if (!g_seed_loaded) P.kDim else if (play) (if (picked) P.kGoldHi else P.kGold) else if (picked) P.kCream else P.kMuted;
+            p.text(.item, r.x + 26, text_y, col, if (play) "Play this seed" else "Seed details");
+            if (play and g_seed_loaded) p.text(.small, r.x + r.w - 18 - p.textWidth(.small, "Start"), r.y + (r.h - p.lineHeight(.small)) / 2, P.kDim, "Start");
+        } else if (isSection(kSettings[at])) {
+            page.heading(r.x + 6, r.y, r.w - 6, r.h, kSettings[at].label);
+        } else {
+            const st = kSettings[at];
+            page.band(r, picked, t);
+            p.text(.item, r.x + 26, text_y, if (picked) P.kCream else P.kMuted, st.label);
+            var vb = ValueBufs{};
+            const value = modernValue(p, st, ini.values[at] orelse "(missing)", &vb);
+            const right = r.x + r.w - 20;
+            const vw = p.textWidth(.strong, value);
+            const fixed = st.kind == .text or st.kind == .action;
+            const col = if (fixed) P.kDim else if (picked) P.kGoldHi else P.kTeal;
+            p.text(.strong, right - vw, r.y + (r.h - p.lineHeight(.strong)) / 2, col, value);
+            if (picked and !fixed) page.chevrons(right - vw - 14, right + 12, r.y + r.h / 2, P.kGold);
+            if (st.kind == .action) p.text(.small, right - p.textWidth(.small, "A / Enter"), r.y + (r.h - p.lineHeight(.small)) / 2, if (picked) P.kGold else P.kDim, "A / Enter");
+        }
+    }
+    if (n > shown) {
+        const nf: f32 = @floatFromInt(n);
+        const sf: f32 = @floatFromInt(shown);
+        page.scrollbar(kModernListX + kModernListW + 12, kModernListY, sf * kModernRowH - 2, @as(f32, @floatFromInt(v.top)) / nf, sf / nf);
+    }
+}
+
+/// The section a setting is under, for the line over its name.
+fn sectionOf(at: usize) []const u8 {
+    var i = at;
+    while (i > 0) {
+        i -= 1;
+        if (isSection(kSettings[i])) return kSettings[i].label;
+    }
+    return "";
+}
+
+/// What a setting does: its section, its name, the description, what its
+/// note warns of, and what it was to start with.
+fn drawModernAbout(page: *const start_page.Page, box: Rect, at: usize, ini: *const Ini, show_default: bool) void {
+    _ = ini;
+    const p = &page.paint;
+    const st = kSettings[at];
+    const x = box.x;
+    const w = box.w;
+    var y = box.y;
+    var sec_buf: [32]u8 = undefined;
+    const sec = upper(&sec_buf, sectionOf(at));
+    p.textEx(.eyebrow, x, y, P.kGold, P.kGold, 3, sec);
+    y += 22;
+    y = page.wrap(.subtitle, x, y, w, 24, P.kCream, st.label, 2) + 8;
+    const bottom = box.y + box.h - if (show_default) @as(f32, 46) else 0;
+    var note_buf: [80]u8 = undefined;
+    const note = if (st.note.len != 0) soft(&note_buf, st.note) else "";
+    const note_lines: f32 = if (note.len != 0) 2 else 0;
+    const room = bottom - y - note_lines * 20 - 8;
+    const lines: usize = if (room > 0) @intFromFloat(room / 20) else 0;
+    y = page.wrap(.body, x, y, w, 20, P.kMuted, describe(st), lines);
+    if (note.len != 0) _ = page.wrap(.body, x, y + 8, w, 20, P.kWarn, note, 2);
+
+    if (show_default) {
+        if (defaultValue(st.section, st.key)) |d| {
+            const ry = box.y + box.h - 34;
+            p.fill(.{ .x = x, .y = ry, .w = w, .h = 1 }, P.kChipLine);
+            p.textEx(.eyebrow, x, ry + 14, P.kDim, P.kDim, 3, "DEFAULT");
+            var vbuf: [64]u8 = undefined;
+            var sbuf: [64]u8 = undefined;
+            var fbuf: [80]u8 = undefined;
+            const value = p.fit(.strong, soft(&sbuf, displayValue(&vbuf, st, d)), w - 90, &fbuf);
+            p.text(.strong, x + w - p.textWidth(.strong, value), ry + 11, P.kCream, value);
+        }
+    }
+}
+
+/// The info box, Y on a setting: the panel's words, in a card of their own
+/// over the list.
+fn drawModernInfo(page: *const start_page.Page, ini: *const Ini, v: View) void {
+    const at = rowAt(v.screen, v.cursor);
+    if (at >= kSettings.len or isSection(kSettings[at])) return;
+    const p = &page.paint;
+    const box = modernInfoRect();
+    const r = ui.Rect{ .x = box.x, .y = box.y, .w = box.w, .h = box.h };
+    p.shadow(r, 14);
+    p.box(r, 14, 1, P.kGold.alpha(110), ui.Color.hex(0x0c161c));
+    start_page.diamond(p.r, r.x + r.w / 2, r.y, 5, P.kGold);
+    drawModernAbout(page, box.inset(28), at, ini, true);
+}
+
+fn modernInfoRect() Rect {
+    return .{ .x = (start_page.kW - 600) / 2, .y = 110, .w = 600, .h = 330 };
+}
+
+/// The seed beside the ALTTPR.COM page's list: what it is, or where to get
+/// one, and why it plays in an emulator.
+fn drawModernSeed(page: *const start_page.Page, v: View) void {
+    const p = &page.paint;
+    const box = kModernPanel;
+    page.panel(box);
+    const in = box.inset(22);
+    const x = in.x;
+    const w = in.w;
+    var y = in.y;
+    p.textEx(.eyebrow, x, y, P.kGold, P.kGold, 3, "SEED");
+    y += 22;
+    var buf: [128]u8 = undefined;
+    if (!g_seed_loaded) {
+        y = page.wrap(.subtitle, x, y, w, 24, P.kCream, "Drop a seed here", 1) + 6;
+        y = page.wrap(.body, x, y, w, 20, P.kMuted, "Generate one at alttpr.com from the Japanese 1.0 ROM, then drag the .sfc onto this window.", 4);
+    } else if (!g_seed_is_seed) {
+        y = page.wrap(.subtitle, x, y, w, 24, P.kCream, p.fit(.subtitle, g_seed_name, w, &buf), 1) + 6;
+        p.text(.body, x, y, P.kWarn, "Japanese 1.0 ROM, not a seed");
+        y += 20;
+        p.text(.body, x, y, P.kMuted, "It plays, but unrandomized");
+        y += 20;
+    } else {
+        const info = &g_seed_info;
+        // In Inter, not the title's type: a hash's capitals matter.
+        p.text(.item, x, y, P.kGoldHi, p.fit(.item, info.titleText(), w, &buf));
+        y += 24;
+        var link_buf: [64]u8 = undefined;
+        p.text(.small, x, y, P.kDim, seedLink(&link_buf, info));
+        y += 24;
+        // The hash, the five pictures the game shows on its file select.
+        var hash_buf: [128]u8 = undefined;
+        var hn: usize = 0;
+        for (info.hash, 0..) |h, i| {
+            const name = seed_info.kHashIcons[h];
+            const sep: []const u8 = if (i == 0) "" else "  \xc2\xb7  ";
+            if (hn + sep.len + name.len > hash_buf.len) break;
+            @memcpy(hash_buf[hn..][0..sep.len], sep);
+            hn += sep.len;
+            @memcpy(hash_buf[hn..][0..name.len], name);
+            hn += name.len;
+        }
+        y = page.wrap(.strong, x, y, w, 20, P.kTeal, hash_buf[0..hn], 2) + 6;
+        var sum_buf: [128]u8 = undefined;
+        const summary = std.fmt.bufPrint(&sum_buf, "{s}  \xc2\xb7  {s}  \xc2\xb7  {s}", .{ info.logic, info.mode, info.goal }) catch "";
+        y = page.wrap(.body, x, y, w, 20, P.kCream, summary, 2);
+        var cnt_buf: [96]u8 = undefined;
+        const counts = std.fmt.bufPrint(&cnt_buf, "GT {d}  \xc2\xb7  Ganon {d}  \xc2\xb7  {d} items", .{ info.tower_crystals, info.ganon_crystals, info.total_items }) catch "";
+        p.text(.body, x, y, P.kMuted, counts);
+        y += 20;
+        if (g_seed_has_save) {
+            p.text(.body, x, y, P.kOk, "Save found beside the seed");
+            y += 20;
+        }
+    }
+
+    // What's picked in the list, under the seed.
+    const at = rowAt(.alttpr, v.cursor);
+    const bottom = in.y + in.h - 64;
+    if (at < kSettings.len and describe(kSettings[at]).len != 0 and y + 60 < bottom) {
+        y += 12;
+        p.fill(.{ .x = x, .y = y, .w = w, .h = 1 }, P.kChipLine);
+        y += 12;
+        p.text(.strong, x, y, P.kCream, kSettings[at].label);
+        y += 22;
+        const room = bottom - y;
+        _ = page.wrap(.small, x, y, w, 17, P.kMuted, describe(kSettings[at]), if (room > 0) @intFromFloat(room / 17) else 0);
+    }
+
+    // Why this page plays in an emulator and the rest doesn't.
+    _ = page.wrap(.small, x, in.y + in.h - 52, w, 17, P.kWarn.alpha(210), "Seeds run in a SNES emulator, not the PC port: alttpr.com rewrites too much of the game for anything but the ROM to play it exactly.", 3);
+}
+
+fn drawModernAchievements(page: *const start_page.Page, v: View) void {
+    const p = &page.paint;
+    const t = pageTime();
+    const all = achievement_list.kList;
+    const shown = achVisible();
+    for (0..shown) |slot| {
+        const row = g_ach_top + slot;
+        if (row >= all.len) break;
+        const ach = all[row];
+        const r = achRowRect(slot);
+        const picked = row == v.cursor;
+        const has = g_ach_unlocked.has(ach.id);
+        page.band(r, picked, t);
+        page.mark(r.x + 40, r.y + r.h / 2, has);
+        p.text(.item, r.x + 58, r.y + (r.h - p.lineHeight(.item)) / 2, if (picked) P.kCream else if (has) ui.Color.hex(0xd9cfb6) else P.kMuted, ach.name);
+        const cat = ach.category.label();
+        p.text(.small, r.x + r.w - 20 - p.textWidth(.small, cat), r.y + (r.h - p.lineHeight(.small)) / 2, P.kDim, cat);
+    }
+    if (all.len > shown) {
+        const nf: f32 = @floatFromInt(all.len);
+        const sf: f32 = @floatFromInt(shown);
+        page.scrollbar(kModernListX + kModernListW + 12, kModernListY, sf * kModernRowH - 2, @as(f32, @floatFromInt(g_ach_top)) / nf, sf / nf);
+    }
+
+    // The picked one, and how far along the whole lot is.
+    const box = kModernPanel;
+    page.panel(box);
+    const in = box.inset(22);
+    const picked = all[@min(v.cursor, all.len - 1)];
+    const has = g_ach_unlocked.has(picked.id);
+    var cat_buf: [16]u8 = undefined;
+    p.textEx(.eyebrow, in.x, in.y, P.kGold, P.kGold, 3, upper(&cat_buf, picked.category.label()));
+    var y = page.wrap(.subtitle, in.x, in.y + 22, in.w, 24, if (has) P.kGoldHi else P.kCream, picked.name, 2) + 8;
+    y = page.wrap(.body, in.x, y, in.w, 20, P.kMuted, picked.about, 6) + 10;
+    page.mark(in.x + 7, y + 9, has);
+    p.text(.strong, in.x + 22, y + 1, if (has) P.kGold else P.kDim, if (has) "Unlocked" else "Not yet");
+
+    const got = g_ach_unlocked.count();
+    var count_buf: [32]u8 = undefined;
+    const count = std.fmt.bufPrint(&count_buf, "{d} of {d} unlocked", .{ got, all.len }) catch "";
+    const by = in.y + in.h - 22;
+    p.fill(.{ .x = in.x, .y = by - 30, .w = in.w, .h = 1 }, P.kChipLine);
+    p.text(.body, in.x, by - 18, P.kCream, count);
+    const bar = ui.Rect{ .x = in.x, .y = by + 6, .w = in.w, .h = 8 };
+    p.fillRound(bar, 4, ui.Color.hex(0x1a2a32));
+    const frac = @as(f32, @floatFromInt(got)) / @as(f32, @floatFromInt(all.len));
+    if (frac > 0) p.fillRound(.{ .x = bar.x, .y = bar.y, .w = @max(bar.w * frac, 8), .h = bar.h }, 4, P.kGold);
+}
+
+fn drawModernControls(page: *const start_page.Page, ini: *const Ini, v: View) void {
+    const p = &page.paint;
+    const t = pageTime();
+    // The pad on the left, lighting up the button picked.
+    const art = Rect{ .x = 40, .y = start_page.kBodyTop, .w = kModernCtlX - 40 - 28, .h = start_page.kBodyBottom - start_page.kBodyTop };
+    page.panel(art);
+    const scale: f32 = 3;
+    const art_x = art.x + (art.w - pad_art.kWidth * scale) / 2;
+    const art_y = art.y + 40 + pad_art.kShoulderRise * scale;
+    const blink = (c.SDL_GetTicks() / 267) % 2 == 0;
+    const lit: ?usize = if (v.cursor < 12 and (blink or g_ctl_capture != null)) v.cursor else null;
+    drawPadArt(page.paint.r, lit, art_x, art_y, scale, .{ .r = 0xff, .g = 0xd9, .b = 0x6a });
+
+    const keys = controls.current(ini, .keyboard);
+    const pads = controls.current(ini, .gamepad);
+    const in = art.inset(26);
+    var y = art_y + pad_art.kHeight * scale + 30;
+    if (v.cursor < 12) {
+        p.textEx(.eyebrow, in.x, y, P.kGold, P.kGold, 3, "BUTTON");
+        y += 20;
+        p.textEx(.headline, in.x, y, P.kGoldHi, P.kGoldDeep, 2, controls.kButtonNames[v.cursor]);
+        y += 46;
+        if (g_ctl_capture != null) {
+            const left = kCtlCaptureMs -| (c.SDL_GetTicks() - g_ctl_capture_at);
+            const pulse = 0.6 + 0.4 * @sin(t * 6);
+            p.text(.item, in.x, y, P.kGold.alpha(@intFromFloat(255 * pulse)), "Press a key or button\xe2\x80\xa6");
+            var sec_buf: [24]u8 = undefined;
+            p.text(.small, in.x, y + 24, P.kDim, std.fmt.bufPrint(&sec_buf, "{d} seconds, or Esc", .{left / 1000 + 1}) catch "");
+        } else {
+            var kb: [8]u8 = undefined;
+            p.text(.body, in.x, y, P.kMuted, "Keyboard");
+            p.text(.strong, in.x + 110, y, P.kCream, controls.keyLabel(&kb, keys.get(v.cursor)));
+            p.text(.body, in.x, y + 22, P.kMuted, "Controller");
+            p.text(.strong, in.x + 110, y + 22, P.kCream, controls.padLabel(pads.get(v.cursor)));
+        }
+    } else {
+        p.textEx(.eyebrow, in.x, y, P.kGold, P.kGold, 3, "RESET");
+        _ = page.wrap(.body, in.x, y + 22, in.w, 20, P.kMuted, "Puts every key and button back the way the game came. Nothing is written until you save.", 4);
+    }
+
+    // Every button, with its key and its pad button, on the right.
+    const head_y = start_page.kBodyTop + 8;
+    const name_x = kModernCtlX + 26;
+    const key_x = kModernCtlX + 150;
+    const pad_x = kModernCtlX + 300;
+    p.textEx(.eyebrow, name_x, head_y, P.kDim, P.kDim, 3, "BUTTON");
+    p.textEx(.eyebrow, key_x, head_y, P.kDim, P.kDim, 3, "KEYBOARD");
+    p.textEx(.eyebrow, pad_x, head_y, P.kDim, P.kDim, 3, "CONTROLLER");
+    var row = g_ctl_top;
+    while (row < @min(kCtlRows, g_ctl_top + ctlVisible())) : (row += 1) {
+        const r = ctlRowRect(row - g_ctl_top);
+        const picked = row == v.cursor;
+        page.band(r, picked, t);
+        const ty = r.y + (r.h - p.lineHeight(.item)) / 2;
+        if (row == kCtlResetRow) {
+            p.text(.item, name_x, ty, if (picked) P.kGoldHi else P.kGold, "Reset all to defaults");
+            continue;
+        }
+        p.text(.item, name_x, ty, if (picked) P.kCream else P.kMuted, controls.kButtonNames[row]);
+        const vy = r.y + (r.h - p.lineHeight(.strong)) / 2;
+        if (picked and g_ctl_capture != null) {
+            p.text(.strong, key_x, vy, P.kGold, "Waiting\xe2\x80\xa6");
+            continue;
+        }
+        var kb: [8]u8 = undefined;
+        var fbuf: [48]u8 = undefined;
+        p.text(.strong, key_x, vy, if (picked) P.kGoldHi else P.kTeal, p.fit(.strong, controls.keyLabel(&kb, keys.get(row)), pad_x - key_x - 12, &fbuf));
+        var fbuf2: [48]u8 = undefined;
+        p.text(.strong, pad_x, vy, if (picked) P.kGoldHi else P.kTeal, p.fit(.strong, controls.padLabel(pads.get(row)), r.x + r.w - 12 - pad_x, &fbuf2));
+    }
+}
+
+fn drawModernHub(page: *const start_page.Page, v: View) void {
+    const t = pageTime();
+    const names = [_][]const u8{ "Built-in", "ALTTPR.com" };
+    const subs = [_][]const u8{ "Coming soon", "Play a seed from alttpr.com" };
+    for (names, 0..) |name, i| page.card(hubRect(i), name, subs[i], v.cursor == i, i == kHubBuiltIn, t);
+    const p = &page.paint;
+    const line = "Seeds are made on alttpr.com and played here in a SNES emulator.";
+    p.textCentered(.body, start_page.kW / 2, 418, P.kDim, line);
+}
+
+fn modernDetailColor(col: Rgb) ui.Color {
+    if (std.meta.eql(col, kColorSection)) return P.kGold;
+    if (std.meta.eql(col, kColorWarn)) return P.kWarn;
+    if (std.meta.eql(col, kColorTextDim)) return P.kDim;
+    if (std.meta.eql(col, kColorOk)) return P.kOk;
+    if (std.meta.eql(col, kColorValue)) return P.kTeal;
+    return P.kCream;
+}
+
+fn drawModernDetails(page: *const start_page.Page, v: View) void {
+    const p = &page.paint;
+    g_detail_caps = false;
+    defer g_detail_caps = true;
+    var lines: [96]DetailLine = undefined;
+    var bufs: [64][40]u8 = undefined;
+    const all = detailLines(&lines, &bufs);
+    const box = kModernDetailsBox;
+    page.panel(box);
+    const x = box.x + 28;
+    var y = box.y + 12;
+    const top = @min(v.details_top, all.len);
+    const label_x = x + 24;
+    const value_x = x + 300;
+    for (all[top..@min(all.len, top + kDetailsRows)]) |l| {
+        if (l.heading) {
+            page.heading(x, y, box.w - 80, kModernDetailH, l.label);
+        } else {
+            const ty = y + (kModernDetailH - p.lineHeight(.body)) / 2;
+            if (l.value.len == 0) {
+                p.text(.body, label_x, ty, if (std.meta.eql(l.color, kColorValue)) P.kCream else modernDetailColor(l.color), l.label);
+            } else {
+                p.text(.body, label_x, ty, P.kMuted, l.label);
+                var sbuf: [64]u8 = undefined;
+                var fbuf: [80]u8 = undefined;
+                p.text(.strong, value_x, y + (kModernDetailH - p.lineHeight(.strong)) / 2, modernDetailColor(l.color), p.fit(.strong, soft(&sbuf, l.value), box.x + box.w - 40 - value_x, &fbuf));
+            }
+        }
+        y += kModernDetailH;
+    }
+    if (all.len > kDetailsRows) {
+        const nf: f32 = @floatFromInt(all.len);
+        page.scrollbar(box.x + box.w - 16, box.y + 14, box.h - 28, @as(f32, @floatFromInt(top)) / nf, @as(f32, kDetailsRows) / nf);
+    }
 }
 
 /// Title and the rule under it. The lists need the space, so the title stays
@@ -1238,6 +2090,10 @@ const kEmuNote = [_][]const u8{
 };
 
 fn mainEntryRect(i: usize) Rect {
+    if (modernPage()) |page| {
+        var pi = PageItems{};
+        return start_page.entryRect(&page.paint, pageItems(&pi), i);
+    }
     if (i == kMainUpdate) return if (updateShown()) updateRect() else .{ .x = 0, .y = 0, .w = 0, .h = 0 };
     if (i == kMainLaunch) return launchRect();
     if (i == kMainRandomizer) return randoRect();
@@ -1266,12 +2122,25 @@ fn randoRect() Rect {
 
 /// The randomizer page's two big buttons.
 fn hubRect(i: usize) Rect {
+    // Side by side, modern; one over the other, retro.
+    if (g_modern) return .{ .x = 100 + 400 * @as(f32, @floatFromInt(i)), .y = 168, .w = 360, .h = 210 };
     return .{ .x = 100, .y = 120 + 120 * @as(f32, @floatFromInt(i)), .w = kWindowW - 200, .h = 84 };
 }
 
 /// Which row of a list sits under a point, as a row position.
-fn listRowAt(v: View, py: f32) ?usize {
+fn listRowAt(v: View, px: f32, py: f32) ?usize {
     const n = rowCount(v.screen);
+    if (g_modern) {
+        var slot: usize = 0;
+        var pos = v.top;
+        while (pos < n and slot < visibleRows(v.screen)) : ({
+            pos += 1;
+            slot += 1;
+        }) {
+            if (modernRowRect(slot).contains(px, py) and rowSelectable(v.screen, pos)) return pos;
+        }
+        return null;
+    }
     var p = v.top;
     var y: f32 = listStartY(v.screen);
     while (p < n and p < v.top + visibleRows(v.screen)) : (p += 1) {
@@ -1351,10 +2220,15 @@ var g_ach_top: usize = 0;
 
 const kAchRows = achievement_list.kList.len;
 const kAchVisible = 11;
+
+fn achVisible() usize {
+    return if (g_modern) kModernVisible else kAchVisible;
+}
 /// Under the list, what the picked one asks for.
 const kAchAboutY: f32 = kListStartY + kRowH * kAchVisible + 10;
 
 fn achRowRect(slot: usize) Rect {
+    if (g_modern) return modernRowRect(slot);
     return .{ .x = 32, .y = kListStartY + kRowH * @as(f32, @floatFromInt(slot)) - 3, .w = kWindowW - 64, .h = kRowH };
 }
 
@@ -1411,6 +2285,15 @@ var g_ctl_capture_at: u64 = 0;
 const kCtlResetRow = controls.kButtonNames.len;
 const kCtlRows = kCtlResetRow + 1;
 const kCtlVisible = 6;
+
+/// The modern Controls screen has the room for every row.
+fn ctlVisible() usize {
+    return if (g_modern) kCtlRows else kCtlVisible;
+}
+
+const kModernCtlRowsY: f32 = start_page.kBodyTop + 32;
+const kModernCtlRowH: f32 = 26;
+const kModernCtlX: f32 = 440;
 /// The pad drawn three times the size it is in the game's own menu.
 const kCtlArtScale = 3;
 const kCtlArtX: f32 = (kWindowW - pad_art.kWidth * kCtlArtScale) / 2;
@@ -1423,13 +2306,14 @@ const kCtlColPad: f32 = 430;
 const kCtlCaptureMs = 5000;
 
 fn ctlRowRect(slot: usize) Rect {
+    if (g_modern) return .{ .x = kModernCtlX, .y = kModernCtlRowsY + kModernCtlRowH * @as(f32, @floatFromInt(slot)), .w = start_page.kW - 40 - kModernCtlX, .h = kModernCtlRowH - 2 };
     return .{ .x = 32, .y = kCtlRowsY + kRowH * @as(f32, @floatFromInt(slot)) - 3, .w = kWindowW - 64, .h = kRowH };
 }
 
 /// Draws the pad a pixel at a time into a small image, then fills the
 /// renderer a run of same-colored pixels at a time, which is a few hundred
 /// rectangles rather than thousands.
-fn drawPadArt(renderer: *c.SDL_Renderer, lit: ?usize) void {
+fn drawPadArt(renderer: *c.SDL_Renderer, lit: ?usize, art_x: f32, art_y: f32, scale: f32, lit_rgb: Rgb) void {
     const kW = pad_art.kWidth;
     const kH = pad_art.kHeight + pad_art.kShoulderRise;
     const kClear: u32 = 0xff000000;
@@ -1443,10 +2327,10 @@ fn drawPadArt(renderer: *c.SDL_Renderer, lit: ?usize) void {
         }
     };
     var img = Img{};
-    const lit_color = @as(u32, kColorSelect.r) << 16 | @as(u32, kColorSelect.g) << 8 | kColorSelect.b;
+    const lit_color = @as(u32, lit_rgb.r) << 16 | @as(u32, lit_rgb.g) << 8 | lit_rgb.b;
     pad_art.draw(.{ .ctx = &img, .putFn = Img.put }, lit, lit_color);
-    const s: f32 = kCtlArtScale;
-    const top = kCtlArtY - pad_art.kShoulderRise * s;
+    const s = scale;
+    const top = art_y - pad_art.kShoulderRise * s;
     for (0..kH) |y| {
         var x: usize = 0;
         while (x < kW) {
@@ -1455,7 +2339,7 @@ fn drawPadArt(renderer: *c.SDL_Renderer, lit: ?usize) void {
             while (end < kW and img.px[y * kW + end] == col) end += 1;
             if (col != kClear) {
                 const rgb = Rgb{ .r = @truncate(col >> 16), .g = @truncate(col >> 8), .b = @truncate(col) };
-                fillRect(renderer, kCtlArtX + @as(f32, @floatFromInt(x)) * s, top + @as(f32, @floatFromInt(y)) * s, @as(f32, @floatFromInt(end - x)) * s, s, rgb);
+                fillRect(renderer, art_x + @as(f32, @floatFromInt(x)) * s, top + @as(f32, @floatFromInt(y)) * s, @as(f32, @floatFromInt(end - x)) * s, s, rgb);
             }
             x = end;
         }
@@ -1467,7 +2351,7 @@ fn drawPadArt(renderer: *c.SDL_Renderer, lit: ?usize) void {
 fn drawControls(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     const blink = (c.SDL_GetTicks() / 267) % 2 == 0;
     const lit: ?usize = if (v.cursor < 12 and (blink or g_ctl_capture != null)) v.cursor else null;
-    drawPadArt(renderer, lit);
+    drawPadArt(renderer, lit, kCtlArtX, kCtlArtY, kCtlArtScale, kColorSelect);
 
     drawText(renderer, kCtlColKey, kCtlHeadY, kColorSection, "KEYBOARD");
     drawText(renderer, kCtlColPad, kCtlHeadY, kColorSection, "CONTROLLER");
@@ -1618,6 +2502,10 @@ fn upper(buf: []u8, text: []const u8) []const u8 {
 /// there's no value.
 const DetailLine = struct { label: []const u8, value: []const u8 = "", color: Rgb = kColorValue, heading: bool = false };
 
+/// Whether the seed details come out in capitals, the retro menu's way, or
+/// as the seed has them for the modern one's real type.
+var g_detail_caps = true;
+
 fn yesNo(b: bool) []const u8 {
     return if (b) "YES" else "NO";
 }
@@ -1638,7 +2526,7 @@ fn detailLines(out: []DetailLine, bufs: [][40]u8) []DetailLine {
     }.f;
     const up = struct {
         fn f(bs: [][40]u8, k: *usize, text: []const u8) []const u8 {
-            if (k.* >= bs.len) return text;
+            if (!g_detail_caps or k.* >= bs.len) return text;
             const r = upper(&bs[k.*], text);
             k.* += 1;
             return r;
@@ -1719,6 +2607,7 @@ fn detailLines(out: []DetailLine, bufs: [][40]u8) []DetailLine {
 }
 
 const kDetailsRows = 15;
+const kModernDetailH: f32 = 24;
 
 fn detailCount() usize {
     var lines: [96]DetailLine = undefined;
@@ -1857,6 +2746,7 @@ const LineWrap = struct {
 
 /// Where the modal's panel sits, and where its two answers sit inside it.
 fn modalRect() Rect {
+    if (g_modern) return .{ .x = (start_page.kW - 500) / 2, .y = (start_page.kH - 190) / 2 - 10, .w = 500, .h = 190 };
     return .{ .x = 70, .y = 150, .w = kWindowW - 140, .h = 190 };
 }
 
@@ -2437,7 +3327,8 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     }
     defer c.SDL_Quit();
 
-    const window = c.SDL_CreateWindow("The Legend of Zelda: A Link to the Past DX", kWindowW, kWindowH, 0) orelse {
+    g_modern = modernIn(&ini);
+    const window = c.SDL_CreateWindow("The Legend of Zelda: A Link to the Past DX", @intFromFloat(windowW()), @intFromFloat(windowH()), 0) orelse {
         std.debug.print("Failed to create window: {s}\n", .{c.SDL_GetError()});
         return error.SdlWindow;
     };
@@ -2448,6 +3339,12 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
         return error.SdlRenderer;
     };
     defer c.SDL_DestroyRenderer(renderer);
+    g_page = start_page.Page.init(renderer);
+    defer {
+        g_page.?.deinit();
+        g_page = null;
+    }
+    g_modern = modernIn(&ini);
 
     // Any pad can drive the menu, and one plugged in later works too.
     var pads = Pads{};
@@ -2482,6 +3379,9 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     } else if (!assets.playable()) {
         modal = .rom;
         main_cursor = kMainLaunch;
+    } else if (g_modern) {
+        // The modern page opens on Play, the thing it's for.
+        main_cursor = kMainLaunch;
     }
     var running = true;
     var event: c.SDL_Event = undefined;
@@ -2503,7 +3403,10 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
         var hover_y: f32 = 0;
         var hovered = false;
         var clicked = false;
-        var wheel: f32 = 0;
+        // Where things stood before this frame's input, so a change of
+        // screen or question can be noticed at the end of it.
+        const screen_was = screen;
+        const modal_was = modal;
 
         while (c.SDL_PollEvent(&event)) {
             // The Controls screen waiting for a key or button takes the next
@@ -2598,11 +3501,22 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                     if (event.button.button == c.SDL_BUTTON_LEFT) clicked = true;
                     if (event.button.button == c.SDL_BUTTON_RIGHT) back = true;
                 },
-                c.SDL_EVENT_MOUSE_WHEEL => wheel += event.wheel.y,
+                c.SDL_EVENT_MOUSE_BUTTON_UP => if (event.button.button == c.SDL_BUTTON_LEFT) {
+                    g_pointer.dragging = false;
+                },
+                c.SDL_EVENT_MOUSE_WHEEL => {
+                    g_pointer.addWheel(event.wheel.y);
+                    g_pointer.x = event.wheel.mouse_x;
+                    g_pointer.y = event.wheel.mouse_y;
+                },
+                c.SDL_EVENT_WINDOW_MOUSE_LEAVE => g_pointer.over = null,
 
                 // Anything that stops the window seeing releases has to
                 // clear what it thinks is held, or a direction sticks on.
-                c.SDL_EVENT_WINDOW_FOCUS_LOST => held = .{},
+                c.SDL_EVENT_WINDOW_FOCUS_LOST => {
+                    held = .{};
+                    g_pointer.dragging = false;
+                },
 
                 c.SDL_EVENT_KEY_DOWN => {
                     if (held.set(event.key.key, true)) {
@@ -2655,6 +3569,13 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
             }
         }
 
+        if (hovered) {
+            g_pointer.x = hover_x;
+            g_pointer.y = hover_y;
+        }
+        // Whole rows of wheel; trackpads get there a sliver at a time.
+        const wheel = g_pointer.takeWheel();
+
         // Directions come from the current state of every input rather than
         // from key events, so the keyboard and the pads behave alike and a
         // held direction repeats.
@@ -2695,6 +3616,22 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
         // Import MSU-1 comes and goes with the setting; the cursor can't be
         // left on it once it's gone.
         g_msu_on = msuOnIn(&ini);
+        const was_modern = g_modern;
+        g_modern = modernIn(&ini);
+        if (g_modern != was_modern) {
+            // Widescreen one way, 4:3 the other, kept where it was centered.
+            var wx: c_int = 0;
+            var wy: c_int = 0;
+            _ = c.SDL_GetWindowPosition(window, &wx, &wy);
+            const old_w: c_int = @intFromFloat(if (was_modern) start_page.kW else kWindowW);
+            const old_h: c_int = @intFromFloat(if (was_modern) start_page.kH else kWindowH);
+            const new_w: c_int = @intFromFloat(windowW());
+            const new_h: c_int = @intFromFloat(windowH());
+            _ = c.SDL_SetWindowSize(window, new_w, new_h);
+            _ = c.SDL_SetWindowPosition(window, @max(0, wx + @divTrunc(old_w - new_w, 2)), @max(0, wy + @divTrunc(old_h - new_h, 2)));
+            g_back_hover = false;
+            g_pointer.forget();
+        }
         if (!mainShown(main_cursor)) main_cursor = kMainLaunch;
         if (modal == .msu and !g_msu_on) modal = .none;
         if (modal == .update and !updateShown()) modal = .none;
@@ -2708,14 +3645,52 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
             }
         }
 
+        // The modern sub-screens' Back button, at the top right.
+        if (g_modern and modal == .none and screen != .main and g_ctl_capture == null) {
+            const b = start_page.backRect();
+            if (hovered) g_back_hover = b.contains(hover_x, hover_y);
+            if (clicked and b.contains(hover_x, hover_y)) {
+                back = true;
+                clicked = false;
+            }
+        } else g_back_hover = false;
+
+        // A scrollbar taken hold of follows the pointer until let go, and
+        // the cursor comes along to stay in sight.
+        if (modal == .none and g_ctl_capture == null) {
+            if (scrollOf(screen)) |s| {
+                if (clicked and s.track.contains(hover_x, hover_y)) {
+                    g_pointer.dragging = true;
+                    clicked = false;
+                }
+                if (g_pointer.dragging) {
+                    const top = s.topAt(g_pointer.y);
+                    switch (screen) {
+                        .settings, .features, .alttpr => {
+                            const li = listIndex(screen);
+                            list_top[li] = top;
+                            list_cursor[li] = keepInView(screen, list_cursor[li], top, s.shown);
+                        },
+                        .achievements => {
+                            g_ach_top = top;
+                            g_ach_row = std.math.clamp(g_ach_row, top, top + s.shown - 1);
+                        },
+                        .details => g_details_top = top,
+                        else => {},
+                    }
+                    // Dragging isn't pointing at rows.
+                    hovered = false;
+                }
+            } else g_pointer.dragging = false;
+        }
+
         // A question on top of the screen takes the input until answered.
         if (modal != .none) {
             switch (modal) {
                 .quit => {
                     if (hovered) {
-                        for (0..kQuitChoices.len) |i| {
-                            if (modalChoiceRect(i).contains(hover_x, hover_y)) quit_choice = i;
-                        }
+                        const under = choiceUnder(kQuitChoices.len, hover_x, hover_y);
+                        if (g_pointer.enters(under)) quit_choice = under.?;
                     }
                     const step = if (adjust != 0) adjust else move;
                     if (step != 0) quit_choice = 1 - quit_choice;
@@ -2755,9 +3730,8 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 // drop on the window (above) works without it.
                 .msu => {
                     if (hovered) {
-                        for (0..kMsuChoices.len) |i| {
-                            if (modalChoiceRect(i).contains(hover_x, hover_y)) g_msu_choice = i;
-                        }
+                        const under = choiceUnder(kMsuChoices.len, hover_x, hover_y);
+                        if (g_pointer.enters(under)) g_msu_choice = under.?;
                     }
                     const step = if (adjust != 0) adjust else move;
                     if (step != 0) g_msu_choice = 1 - g_msu_choice;
@@ -2776,9 +3750,8 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 .update => switch (updater.phase()) {
                     .available, .failed => |p| {
                         if (hovered) {
-                            for (0..kUpdateChoices.len) |i| {
-                                if (modalChoiceRect(i).contains(hover_x, hover_y)) g_update_choice = i;
-                            }
+                            const under = choiceUnder(kUpdateChoices.len, hover_x, hover_y);
+                            if (g_pointer.enters(under)) g_update_choice = under.?;
                         }
                         const step = if (adjust != 0) adjust else move;
                         if (step != 0) g_update_choice = 1 - g_update_choice;
@@ -2825,9 +3798,11 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
 
             // The pointer drives the same cursor the keys do.
             if (hovered) {
+                var under: ?usize = null;
                 for (0..kMainItems.len) |i| {
-                    if (mainEntryRect(i).contains(hover_x, hover_y)) main_cursor = i;
+                    if (mainShown(i) and mainEntryRect(i).contains(hover_x, hover_y)) under = i;
                 }
+                if (g_pointer.enters(under)) main_cursor = under.?;
             }
             if (clicked) {
                 var over = false;
@@ -2922,15 +3897,22 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                     screen = .main;
                     status = "";
                 }
-                for (0..kCtlVisible) |slot| {
-                    const row = g_ctl_top + slot;
-                    if (row >= kCtlRows) break;
-                    if ((hovered or clicked) and ctlRowRect(slot).contains(hover_x, hover_y)) {
-                        g_ctl_row = row;
-                        if (clicked) confirm = true;
-                    }
+                var under: ?usize = null;
+                for (0..ctlVisible()) |slot| {
+                    if (g_ctl_top + slot >= kCtlRows) break;
+                    if (ctlRowRect(slot).contains(hover_x, hover_y)) under = slot;
                 }
-                if (wheel != 0) move = if (wheel > 0) -1 else 1;
+                if (hovered and g_pointer.enters(under)) g_ctl_row = g_ctl_top + under.?;
+                if (clicked) if (under) |slot| {
+                    g_ctl_row = g_ctl_top + slot;
+                    confirm = true;
+                };
+                if (wheel != 0) {
+                    if (kCtlRows > ctlVisible()) {
+                        g_ctl_top = scrolled(g_ctl_top, -wheel, kCtlRows - ctlVisible());
+                        g_ctl_row = std.math.clamp(g_ctl_row, g_ctl_top, g_ctl_top + ctlVisible() - 1);
+                    } else move = -std.math.sign(wheel);
+                }
                 if (move != 0) {
                     g_ctl_row = @intCast(@mod(@as(i32, @intCast(g_ctl_row)) + move, @as(i32, kCtlRows)));
                     status = "";
@@ -2947,33 +3929,53 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                     }
                 }
                 if (g_ctl_row < g_ctl_top) g_ctl_top = g_ctl_row;
-                if (g_ctl_row >= g_ctl_top + kCtlVisible) g_ctl_top = g_ctl_row + 1 - kCtlVisible;
+                if (g_ctl_row >= g_ctl_top + ctlVisible()) g_ctl_top = g_ctl_row + 1 - ctlVisible();
+                g_ctl_top = @min(g_ctl_top, kCtlRows - ctlVisible());
             }
         } else if (screen == .achievements) {
             if (back) {
                 screen = .main;
                 status = "";
             }
-            for (0..kAchVisible) |slot| {
-                const row = g_ach_top + slot;
-                if (row >= kAchRows) break;
-                if ((hovered or clicked) and achRowRect(slot).contains(hover_x, hover_y)) g_ach_row = row;
+            var under: ?usize = null;
+            for (0..achVisible()) |slot| {
+                if (g_ach_top + slot >= kAchRows) break;
+                if (achRowRect(slot).contains(hover_x, hover_y)) under = slot;
             }
-            if (wheel != 0) move = if (wheel > 0) -1 else 1;
+            if (hovered and g_pointer.enters(under)) g_ach_row = g_ach_top + under.?;
+            if (clicked) if (under) |slot| {
+                g_ach_row = g_ach_top + slot;
+            };
+            if (wheel != 0) {
+                // The wheel moves the page; the pointer, if it's on the
+                // list, picks whatever lands under it.
+                g_ach_top = scrolled(g_ach_top, -wheel, kAchRows -| achVisible());
+                g_ach_row = std.math.clamp(g_ach_row, g_ach_top, g_ach_top + achVisible() - 1);
+                for (0..achVisible()) |slot| {
+                    if (achRowRect(slot).contains(g_pointer.x, g_pointer.y)) {
+                        g_ach_row = g_ach_top + slot;
+                        g_pointer.over = slot;
+                    }
+                }
+            }
             if (move != 0) g_ach_row = @intCast(@mod(@as(i32, @intCast(g_ach_row)) + move, @as(i32, kAchRows)));
             if (g_ach_row < g_ach_top) g_ach_top = g_ach_row;
-            if (g_ach_row >= g_ach_top + kAchVisible) g_ach_top = g_ach_row + 1 - kAchVisible;
+            if (g_ach_row >= g_ach_top + achVisible()) g_ach_top = g_ach_row + 1 - achVisible();
+            g_ach_top = @min(g_ach_top, kAchRows -| achVisible());
         } else if (screen == .hub) {
             if (back) {
                 screen = .main;
                 status = "";
             }
+            var under: ?usize = null;
             for (0..kHubItems.len) |i| {
-                if ((hovered or clicked) and hubRect(i).contains(hover_x, hover_y)) {
-                    g_hub_cursor = i;
-                    if (clicked) confirm = true;
-                }
+                if (hubRect(i).contains(hover_x, hover_y)) under = i;
             }
+            if (hovered and g_pointer.enters(under)) g_hub_cursor = under.?;
+            if (clicked) if (under) |i| {
+                g_hub_cursor = i;
+                confirm = true;
+            };
             const step = if (move != 0) move else adjust;
             if (step != 0) {
                 g_hub_cursor = 1 - g_hub_cursor;
@@ -2992,9 +3994,9 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 screen = .alttpr;
                 status = "";
             }
-            if (wheel != 0) move = if (wheel > 0) -1 else 1;
             const count = detailCount();
             const max_top = count -| kDetailsRows;
+            if (wheel != 0) g_details_top = scrolled(g_details_top, -wheel, max_top);
             if (move < 0) g_details_top -|= 1;
             if (move > 0) g_details_top = @min(g_details_top + 1, max_top);
             if (confirm or clicked) {
@@ -3015,21 +4017,33 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
             const n = rowCount(screen);
             const shown = visibleRows(screen);
 
-            if (hovered) {
-                const v = viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice);
-                if (listRowAt(v, hover_y)) |row| list_cursor[li] = row;
-            }
-            if (clicked) {
-                const v = viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice);
-                if (listRowAt(v, hover_y)) |row| {
-                    list_cursor[li] = row;
-                    confirm = true;
-                }
-            }
-            // The wheel scrolls the selection, which drags the window with it.
-            if (wheel != 0) move = if (wheel > 0) -1 else 1;
+            const v = viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice);
+            const under = listRowAt(v, hover_x, hover_y);
+            // Slots rather than rows, so the list moving isn't the pointer.
+            if (hovered and g_pointer.enters(if (under) |row| row - list_top[li] else null)) list_cursor[li] = under.?;
+            var step_back = false;
+            if (clicked) if (under) |row| {
+                list_cursor[li] = row;
+                confirm = true;
+                // The arrow left of a value steps it back.
+                step_back = onLeftArrow(&ini, screen, row, row - list_top[li], hover_x, hover_y);
+            };
 
-            if (confirm) adjust = 1;
+            // The wheel moves the page, not the cursor; the pointer, if it's
+            // on the list, picks whatever lands under it. A list that fits
+            // has nowhere to scroll, so there it steps the cursor.
+            if (wheel != 0) {
+                if (n > shown) {
+                    list_top[li] = scrolled(list_top[li], -wheel, n - shown);
+                    const after = viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice);
+                    if (listRowAt(after, g_pointer.x, g_pointer.y)) |row| {
+                        list_cursor[li] = row;
+                        g_pointer.over = row - list_top[li];
+                    } else list_cursor[li] = keepInView(screen, list_cursor[li], list_top[li], shown);
+                } else move = -std.math.sign(wheel);
+            }
+
+            if (confirm) adjust = if (step_back) -1 else 1;
 
             if (move != 0) {
                 // Step over the section headings, wrapping at either end.
@@ -3111,6 +4125,8 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
             running = false;
         }
 
+        if (screen != screen_was or modal != modal_was) g_pointer.forget();
+
         drawScreen(renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice));
         c.SDL_Delay(16);
     }
@@ -3131,8 +4147,10 @@ fn scratchName(buf: []u8, base: []const u8, ext: []const u8) ![:0]const u8 {
 }
 
 test {
-    // The MSU-1 importer's own tests, with the start menu that uses it.
+    // The MSU-1 importer's own tests, with the start menu that uses it, and
+    // the modern front page's.
     _ = msu_import;
+    _ = start_page;
 }
 
 test "every setting on the Settings and Features pages has a description that fits its box" {
@@ -3684,7 +4702,7 @@ test "a click on a list row picks that row" {
     var y: f32 = kListStartY;
     var i: usize = 0;
     while (i < kVisibleRows and i < screenRange(.settings).to) : (i += 1) {
-        const hit = listRowAt(v, y + 2);
+        const hit = listRowAt(v, 100, y + 2);
         if (isSection(kSettings[i])) {
             try testing.expect(hit == null);
         } else {
@@ -3694,8 +4712,8 @@ test "a click on a list row picks that row" {
     }
 
     // Above and below the list is nothing at all.
-    try testing.expect(listRowAt(v, kListStartY - 20) == null);
-    try testing.expect(listRowAt(v, kListStartY + kRowH * kVisibleRows + 40) == null);
+    try testing.expect(listRowAt(v, 100, kListStartY - 20) == null);
+    try testing.expect(listRowAt(v, 100, kListStartY + kRowH * kVisibleRows + 40) == null);
 }
 
 test "a setting the file lacks shows its default and is added when changed" {
@@ -3756,4 +4774,86 @@ test "the Randomizer button clears the missing-assets hint and the status line" 
     try testing.expect(launchRect().y + launchRect().h + kRingBelow < state_y);
     try testing.expect(randoRect().y - kRingAbove >= hint_bottom);
     try testing.expect(randoRect().y + randoRect().h + kRingBelow <= footer_y);
+}
+
+test "the modern sub-screens fit their widescreen window" {
+    g_modern = true;
+    defer g_modern = false;
+    const W = start_page.kW;
+    // Lists, achievements and controls stop above the footer.
+    const last = modernRowRect(kModernVisible - 1);
+    try testing.expect(last.y + last.h <= start_page.kBodyBottom);
+    try testing.expect(kModernListX + kModernListW + 16 <= kModernPanel.x);
+    try testing.expect(kModernPanel.x + kModernPanel.w <= W - 16);
+    // All thirteen rows, the twelve buttons and Reset. (Not kCtlRows, which
+    // would drag the controls code and its C into this test binary.)
+    const ctl = ctlRowRect(12);
+    try testing.expect(ctl.y + ctl.h <= start_page.kBodyBottom);
+    try testing.expect(start_page.kBodyTop + 12 + kModernDetailH * kDetailsRows <= start_page.kBodyBottom);
+    // The pad fits beside the rows.
+    try testing.expect(40 + 26 + pad_art.kWidth * 3 <= kModernCtlX - 28);
+    // The two big choices sit side by side, apart.
+    const a = hubRect(0);
+    const b = hubRect(1);
+    try testing.expect(a.x + a.w < b.x and b.x + b.w <= W - 16);
+    try testing.expect(a.y > start_page.kHeaderRule and a.y + a.h < start_page.kFooterY);
+    // Questions sit inside the window, with their answers inside them.
+    const box = modalRect();
+    try testing.expect(box.x >= 0 and box.x + box.w <= W and box.y + box.h <= start_page.kFooterY);
+    try testing.expect(modalChoiceRect(1).x + modalChoiceRect(1).w <= box.x + box.w);
+    // A click on a list row finds it, and one on the panel beside it doesn't.
+    const v = View{ .screen = .settings, .modal = .none, .quit_choice = 0, .cursor = 1, .details_top = 0, .top = 0, .status = "", .dirty = false, .assets = .verified };
+    const r = modernRowRect(1);
+    try testing.expect(listRowAt(v, r.x + 10, r.y + 5) == 1);
+    try testing.expect(listRowAt(v, kModernPanel.x + 10, r.y + 5) == null);
+}
+
+test "the pointer picks a row by moving onto it, not by sitting on it" {
+    var ptr = Pointer{};
+    // Onto row 3: picked. Wiggling on it: the keys keep their choice.
+    try testing.expect(ptr.enters(3));
+    try testing.expect(!ptr.enters(3));
+    try testing.expect(!ptr.enters(3));
+    // Off the list and back on: picked again.
+    try testing.expect(!ptr.enters(null));
+    try testing.expect(ptr.enters(3));
+    try testing.expect(ptr.enters(4));
+    ptr.forget();
+    try testing.expect(ptr.enters(4));
+}
+
+test "the wheel scrolls whole rows and saves the slivers" {
+    var ptr = Pointer{};
+    // A trackpad's little pushes add up to a row.
+    for (0..4) |_| ptr.addWheel(0.3);
+    try testing.expectEqual(@as(i32, 1), ptr.takeWheel());
+    try testing.expectEqual(@as(i32, 0), ptr.takeWheel());
+    // Turning back doesn't have to undo what was left over first.
+    ptr.addWheel(-1.0);
+    try testing.expectEqual(@as(i32, -1), ptr.takeWheel());
+    ptr.addWheel(3.5);
+    try testing.expectEqual(@as(i32, 3), ptr.takeWheel());
+
+    try testing.expectEqual(@as(usize, 0), scrolled(2, -5, 10));
+    try testing.expectEqual(@as(usize, 10), scrolled(8, 5, 10));
+    try testing.expectEqual(@as(usize, 6), scrolled(4, 2, 10));
+}
+
+test "a dragged scrollbar puts the thumb under the pointer" {
+    const s = Scroll{ .track = .{ .x = 0, .y = 100, .w = 20, .h = 200 }, .len = 40, .shown = 10 };
+    try testing.expectEqual(@as(usize, 0), s.topAt(0));
+    try testing.expectEqual(@as(usize, 0), s.topAt(110));
+    try testing.expectEqual(@as(usize, 15), s.topAt(200));
+    try testing.expectEqual(@as(usize, 30), s.topAt(300));
+    try testing.expectEqual(@as(usize, 30), s.topAt(900));
+}
+
+test "capitals soften into sentence case and leave the rest alone" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("In dungeon", soft(&buf, "IN DUNGEON"));
+    try testing.expectEqualStrings("On", soft(&buf, "ON"));
+    try testing.expectEqualStrings("SNES emulator", soft(&buf, "SNES EMULATOR"));
+    try testing.expectEqualStrings("Japanese 1.0 ROM", soft(&buf, "JAPANESE 1.0 ROM"));
+    try testing.expectEqualStrings("Plays the game's MSU pack (MSUPATH)", soft(&buf, "PLAYS THE GAME'S MSU PACK (MSUPATH)"));
+    try testing.expectEqualStrings("Releases", soft(&buf, "Releases"));
 }

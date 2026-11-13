@@ -1,4 +1,5 @@
-//! What the tools window is drawn with: real text in Inter, baked with
+//! What the tools window and the start page are drawn with: real text in
+//! Inter (and Cinzel, for the start page's titles), baked with
 //! stb_truetype at the screen's own pixel density, and shapes with smooth
 //! rounded corners. Everything is laid out in points; `scale` is how many of
 //! the screen's pixels one point is, so a Retina or a 150% Windows screen
@@ -53,6 +54,24 @@ pub const Style = enum {
     heading,
     brand,
 
+    // The start page's.
+    /// Its menu.
+    item,
+    /// The line over its title, and the anniversary's.
+    eyebrow,
+    /// The name under its title.
+    subtitle,
+    title,
+    /// Play.
+    button,
+    /// A sub-screen's name, at its top.
+    headline,
+    // The front page's title, around the name.
+    hero_eyebrow,
+    hero_subtitle,
+    hero_small,
+    hero_chip,
+
     fn size(self: Style) f32 {
         return switch (self) {
             .small => 12.5,
@@ -60,16 +79,30 @@ pub const Style = enum {
             .strong => 14,
             .heading => 24,
             .brand => 16,
+            .item => 16,
+            .eyebrow => 12,
+            .subtitle => 17,
+            .title => 70,
+            .button => 20,
+            .headline => 28,
+            .hero_eyebrow => 15.5,
+            .hero_subtitle => 22,
+            .hero_small => 16,
+            .hero_chip => 18,
         };
     }
 
     fn ttf(self: Style) []const u8 {
         return switch (self) {
-            .small, .body => fonts.regular,
-            .strong, .heading, .brand => fonts.semibold,
+            .small, .body, .hero_small => fonts.regular,
+            .strong, .heading, .brand, .item, .hero_chip => fonts.semibold,
+            .eyebrow, .subtitle, .title, .button, .headline, .hero_eyebrow, .hero_subtitle => fonts.display,
         };
     }
 };
+
+/// What the tools window draws with.
+pub const kToolStyles = std.EnumSet(Style).initMany(&.{ .small, .body, .strong, .heading, .brand });
 const kStyleCount = @typeInfo(Style).@"enum".field_names.len;
 
 /// Laid out as stbtt_packedchar.
@@ -104,6 +137,7 @@ fn glyphIndex(cp: u21) usize {
 /// size, so worked out once a weight.
 var g_kern_regular: [kAsciiCount * kAsciiCount]i16 = undefined;
 var g_kern_semibold: [kAsciiCount * kAsciiCount]i16 = undefined;
+var g_kern_display: [kAsciiCount * kAsciiCount]i16 = undefined;
 var g_kern_ready = false;
 
 const Face = struct {
@@ -123,16 +157,24 @@ const Face = struct {
 pub const Paint = struct {
     r: *c.SDL_Renderer,
     scale: f32 = 0,
+    /// The styles baked, the rest left alone: the tools window has no use
+    /// for a title 54 points tall.
+    styles: std.EnumSet(Style) = kToolStyles,
     faces: [kStyleCount]Face = @splat(.{}),
     /// A smooth white disc, whose quarters make every rounded corner.
     disc_tex: ?*c.SDL_Texture = null,
 
     pub fn init(r: *c.SDL_Renderer, scale: f32) Paint {
-        var p = Paint{ .r = r };
+        return initStyles(r, scale, kToolStyles);
+    }
+
+    pub fn initStyles(r: *c.SDL_Renderer, scale: f32, styles: std.EnumSet(Style)) Paint {
+        var p = Paint{ .r = r, .styles = styles };
         _ = c.SDL_SetRenderDrawBlendMode(r, c.SDL_BLENDMODE_BLEND);
         if (!g_kern_ready) {
             tools_font_kerning(fonts.regular.ptr, 0x20, kAsciiCount, &g_kern_regular);
             tools_font_kerning(fonts.semibold.ptr, 0x20, kAsciiCount, &g_kern_semibold);
+            tools_font_kerning(fonts.display.ptr, 0x20, kAsciiCount, &g_kern_display);
             g_kern_ready = true;
         }
         p.disc_tex = makeDisc(r);
@@ -153,13 +195,19 @@ pub const Paint = struct {
         _ = c.SDL_SetRenderScale(self.r, scale, scale);
         for (std.enums.values(Style), &self.faces) |style, *face| {
             if (face.tex) |t| c.SDL_DestroyTexture(t);
-            face.* = bake(self.r, style, scale);
+            face.* = if (self.styles.contains(style)) bake(self.r, style, scale) else .{};
         }
     }
 
     pub fn lineHeight(self: *const Paint, style: Style) f32 {
         _ = self;
         return @round(style.size() * 1.45);
+    }
+
+    /// As wide as `s` drawn `tracking` points apart, letter to letter.
+    pub fn textWidthTracked(self: *const Paint, style: Style, s: []const u8, tracking: f32) f32 {
+        const n = std.unicode.utf8CountCodepoints(s) catch s.len;
+        return self.textWidth(style, s) + tracking * @as(f32, @floatFromInt(@max(n, 1) - 1));
     }
 
     pub fn textWidth(self: *const Paint, style: Style, s: []const u8) f32 {
@@ -177,12 +225,37 @@ pub const Paint = struct {
 
     /// Draws `s` with its line's top at `y`.
     pub fn text(self: *const Paint, style: Style, x: f32, y: f32, col: Color, s: []const u8) void {
+        self.textEx(style, x, y, col, col, 0, s);
+    }
+
+    /// Where the baseline of a line whose top is at `y` falls.
+    pub fn baseline(self: *const Paint, style: Style, y: f32) f32 {
+        const face = &self.faces[@backingInt(style)];
+        return self.snap(y + (self.lineHeight(style) - (face.ascent - face.descent)) / 2 + face.ascent);
+    }
+
+    /// How tall a capital is, about, above the baseline.
+    pub fn capHeight(self: *const Paint, style: Style) f32 {
+        return self.faces[@backingInt(style)].ascent * 0.72;
+    }
+
+    /// Draws `s` with its line's top at `y`, `tracking` points further apart
+    /// than the font sets it, shading from `top` at the capitals' tops to
+    /// `bottom` at the baseline.
+    pub fn textEx(self: *const Paint, style: Style, x: f32, y: f32, top: Color, bottom: Color, tracking: f32, s: []const u8) void {
         const face = &self.faces[@backingInt(style)];
         const tex = face.tex orelse return;
-        const line = self.lineHeight(style);
-        const baseline = self.snap(y + (line - (face.ascent - face.descent)) / 2 + face.ascent);
+        const base_y = self.baseline(style, y);
+        const cap = face.ascent * 0.72;
         var pen = self.snap(x);
-        const fc = col.f();
+        const ft = top.f();
+        const fb = bottom.f();
+        const shade = struct {
+            fn at(a: c.SDL_FColor, b: c.SDL_FColor, t0: f32) c.SDL_FColor {
+                const t = std.math.clamp(t0, 0, 1);
+                return .{ .r = a.r + (b.r - a.r) * t, .g = a.g + (b.g - a.g) * t, .b = a.b + (b.b - a.b) * t, .a = a.a + (b.a - a.a) * t };
+            }
+        }.at;
 
         var verts: [64 * 4]c.SDL_Vertex = undefined;
         var idx: [64 * 6]c_int = undefined;
@@ -197,17 +270,19 @@ pub const Paint = struct {
             if (cp != ' ') {
                 const x0 = pen + g.xoff / self.scale;
                 const x1 = pen + g.xoff2 / self.scale;
-                const y0 = baseline + g.yoff / self.scale;
-                const y1 = baseline + g.yoff2 / self.scale;
+                const y0 = base_y + g.yoff / self.scale;
+                const y1 = base_y + g.yoff2 / self.scale;
+                const c0 = shade(ft, fb, (y0 - (base_y - cap)) / cap);
+                const c1 = shade(ft, fb, (y1 - (base_y - cap)) / cap);
                 const tu0 = @as(f32, @floatFromInt(g.x0)) / face.atlas_w;
                 const tu1 = @as(f32, @floatFromInt(g.x1)) / face.atlas_w;
                 const tv0 = @as(f32, @floatFromInt(g.y0)) / face.atlas_h;
                 const tv1 = @as(f32, @floatFromInt(g.y1)) / face.atlas_h;
                 const base: c_int = @intCast(n * 4);
-                verts[n * 4 + 0] = .{ .position = .{ .x = x0, .y = y0 }, .color = fc, .tex_coord = .{ .x = tu0, .y = tv0 } };
-                verts[n * 4 + 1] = .{ .position = .{ .x = x1, .y = y0 }, .color = fc, .tex_coord = .{ .x = tu1, .y = tv0 } };
-                verts[n * 4 + 2] = .{ .position = .{ .x = x1, .y = y1 }, .color = fc, .tex_coord = .{ .x = tu1, .y = tv1 } };
-                verts[n * 4 + 3] = .{ .position = .{ .x = x0, .y = y1 }, .color = fc, .tex_coord = .{ .x = tu0, .y = tv1 } };
+                verts[n * 4 + 0] = .{ .position = .{ .x = x0, .y = y0 }, .color = c0, .tex_coord = .{ .x = tu0, .y = tv0 } };
+                verts[n * 4 + 1] = .{ .position = .{ .x = x1, .y = y0 }, .color = c0, .tex_coord = .{ .x = tu1, .y = tv0 } };
+                verts[n * 4 + 2] = .{ .position = .{ .x = x1, .y = y1 }, .color = c1, .tex_coord = .{ .x = tu1, .y = tv1 } };
+                verts[n * 4 + 3] = .{ .position = .{ .x = x0, .y = y1 }, .color = c1, .tex_coord = .{ .x = tu0, .y = tv1 } };
                 for ([_]c_int{ 0, 1, 2, 0, 2, 3 }, 0..) |k, j| idx[n * 6 + j] = base + k;
                 n += 1;
                 if (n == 64) {
@@ -215,7 +290,7 @@ pub const Paint = struct {
                     n = 0;
                 }
             }
-            pen += g.xadvance / self.scale;
+            pen += g.xadvance / self.scale + tracking;
         }
         if (n > 0) _ = c.SDL_RenderGeometry(self.r, tex, &verts, @intCast(n * 4), &idx, @intCast(n * 6));
     }
@@ -381,7 +456,7 @@ fn kernBetween(face: *const Face, prev: ?usize, gi: usize) f32 {
 fn bake(r: *c.SDL_Renderer, style: Style, scale: f32) Face {
     var face = Face{};
     const ttf = style.ttf();
-    face.kern = if (ttf.ptr == fonts.semibold.ptr) &g_kern_semibold else &g_kern_regular;
+    face.kern = if (ttf.ptr == fonts.semibold.ptr) &g_kern_semibold else if (ttf.ptr == fonts.display.ptr) &g_kern_display else &g_kern_regular;
     tools_font_metrics(ttf.ptr, style.size(), &face.ascent, &face.descent, &face.unit);
     const alloc = std.heap.c_allocator;
     var side: usize = 256;
