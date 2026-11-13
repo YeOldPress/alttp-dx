@@ -126,6 +126,9 @@ pub const Imported = struct {
     tracks: usize,
     /// How many of them went in as FLAC.
     flac: usize = 0,
+    /// Whether it looks like a deluxe pack, with tracks of its own for
+    /// areas and doorways.
+    deluxe: bool = false,
 };
 
 /// Words for the start menu's status line.
@@ -232,7 +235,9 @@ pub fn importPack(alloc: std.mem.Allocator, source: [:0]const u8, msu_path: []co
     }
     Progress.report(progress, tracks.items.len, tracks.items.len);
     Status.set(status, .finishing, tracks.items.len);
-    return .{ .tracks = tracks.items.len, .flac = flac };
+    var deluxe = false;
+    for (tracks.items) |t| deluxe = deluxe or looksDeluxe(t.name.number);
+    return .{ .tracks = tracks.items.len, .flac = flac, .deluxe = deluxe };
 }
 
 /// Installs the pack at `source` in the library as a pack called `name`,
@@ -277,6 +282,8 @@ pub fn importNamed(alloc: std.mem.Allocator, source: [:0]const u8, library: []co
     }
     _ = c.SDL_RemovePath(temp_dir.ptr);
     const msu_path = std.fmt.allocPrint(alloc, "{s}/{s}", .{ final_dir, kTrackPrefix }) catch return error.OutOfMemory;
+    // What it looks like it is, which the tools' list can change.
+    _ = setPackDeluxe(msu_path, got.deluxe);
     return .{ .imported = got, .msu_path = msu_path };
 }
 
@@ -439,6 +446,8 @@ pub const Pack = struct {
     /// Whether it's the tracks loose in the library, the way packs were
     /// installed before they had folders.
     loose: bool = false,
+    /// Whether it's a deluxe pack, as its pack.ini says.
+    deluxe: bool = false,
 };
 
 /// Every pack in `library`: one in each folder in it, and the tracks
@@ -458,6 +467,7 @@ pub fn listPacks(arena: std.mem.Allocator, library: []const u8) Error![]Pack {
         pack.name = looseName(g.path);
         pack.path = std.fmt.allocPrint(arena, "{s}/{s}", .{ library, g.path }) catch return error.OutOfMemory;
         pack.loose = true;
+        pack.deluxe = packIsDeluxe(arena, pack.path);
         try packs.append(arena, pack);
     }
 
@@ -471,6 +481,7 @@ pub fn listPacks(arena: std.mem.Allocator, library: []const u8) Error![]Pack {
         var pack = try bestGroup(arena, inner.items) orelse continue;
         pack.name = e.name;
         pack.path = std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_z, pack.path }) catch return error.OutOfMemory;
+        pack.deluxe = packIsDeluxe(arena, pack.path);
         try packs.append(arena, pack);
     }
     return packs.items;
@@ -574,6 +585,60 @@ pub fn kindsLabel(buf: []u8, p: Pack) []const u8 {
         w.print("{s}{s}", .{ name, if (left > 1) ", " else if (left == 1) " and " else "" }) catch {};
     }
     return w.buffered();
+}
+
+// ------------------------------------------------------- a pack's own file
+
+/// What the game knows about a pack beyond its tracks, kept in its folder:
+/// for now, whether it's a deluxe pack. The game reads it at startup, so it
+/// goes wherever the pack does, and switching packs needs nothing else.
+pub const kPackFile = "pack.ini";
+
+/// Seeds from the randomizer number their extra tracks up to here. Only a
+/// deluxe pack has tracks past it (its doorways and areas, up to 114).
+const kLastRandoTrack = 61;
+
+fn looksDeluxe(number: u16) bool {
+    return number > kLastRandoTrack;
+}
+
+fn packFilePath(buf: []u8, msu_path: []const u8) ?[:0]u8 {
+    return std.fmt.bufPrintSentinel(buf, "{s}/{s}", .{ splitMsuPath(msu_path).dir, kPackFile }, 0) catch null;
+}
+
+/// Whether the pack at `msu_path` is a deluxe one, by its pack.ini.
+pub fn packIsDeluxe(alloc: std.mem.Allocator, msu_path: []const u8) bool {
+    var buf: [1100]u8 = undefined;
+    const path = packFilePath(&buf, msu_path) orelse return false;
+    const text = fileio.readWholeFile(alloc, path.ptr) catch return false;
+    defer alloc.free(text);
+    return deluxeIn(text);
+}
+
+fn deluxeIn(text: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#' or line[0] == ';') continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, line[0..eq], " \t"), "Deluxe")) continue;
+        const v = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        return std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true") or std.ascii.eqlIgnoreCase(v, "yes") or std.ascii.eqlIgnoreCase(v, "on");
+    }
+    return false;
+}
+
+/// Writes whether the pack at `msu_path` is a deluxe one. False when the
+/// file couldn't be written.
+pub fn setPackDeluxe(msu_path: []const u8, on: bool) bool {
+    var buf: [1100]u8 = undefined;
+    const path = packFilePath(&buf, msu_path) orelse return false;
+    const text = if (on)
+        "# What the game knows about this MSU pack.\n# Deluxe = 1 gives each area and doorway a track of its own.\nDeluxe = 1\n"
+    else
+        "# What the game knows about this MSU pack.\n# Deluxe = 1 gives each area and doorway a track of its own.\nDeluxe = 0\n";
+    fileio.writeWholeFile(path.ptr, text) catch return false;
+    return true;
 }
 
 // --------------------------------------------------------- tidying, deleting
@@ -1486,4 +1551,38 @@ test "a pack is renamed by its folder, capitals and all, but not onto another" {
     try testing.expectEqual(@as(usize, 2), packs.len);
     try testing.expectEqualStrings("Big Band", packs[0].name);
     try testing.expectEqualStrings("Other", packs[1].name);
+}
+
+test "a pack says whether it's deluxe in its own file" {
+    const lib = ".zig-cache/msu-deluxe-test";
+    defer {
+        for ([_][*:0]const u8{ lib ++ "/Big/alttp_msu-1.pcm", lib ++ "/Big/pack.ini", lib ++ "/Plain/alttp_msu-1.pcm" }) |f| _ = c.SDL_RemovePath(f);
+        for ([_][*:0]const u8{ lib ++ "/Big", lib ++ "/Plain", lib }) |d| _ = c.SDL_RemovePath(d);
+    }
+    for ([_][*:0]const u8{ lib ++ "/Big", lib ++ "/Plain" }) |d| try testing.expect(c.SDL_CreateDirectory(d));
+    try fileio.writeWholeFile(lib ++ "/Big/alttp_msu-1.pcm", "MSU1");
+    try fileio.writeWholeFile(lib ++ "/Plain/alttp_msu-1.pcm", "MSU1");
+
+    try testing.expect(!packIsDeluxe(testing.allocator, lib ++ "/Big/alttp_msu-"));
+    try testing.expect(setPackDeluxe(lib ++ "/Big/alttp_msu-", true));
+    try testing.expect(packIsDeluxe(testing.allocator, lib ++ "/Big/alttp_msu-"));
+    try testing.expect(!packIsDeluxe(testing.allocator, lib ++ "/Plain/alttp_msu-"));
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const packs = try listPacks(arena_state.allocator(), lib);
+    try testing.expect(packs[0].deluxe);
+    try testing.expect(!packs[1].deluxe);
+
+    try testing.expect(setPackDeluxe(lib ++ "/Big/alttp_msu-", false));
+    try testing.expect(!packIsDeluxe(testing.allocator, lib ++ "/Big/alttp_msu-"));
+    try testing.expect(deluxeIn("# hi\n deluxe = yes\r\n"));
+    try testing.expect(!deluxeIn("Deluxe = 0\n"));
+}
+
+test "only a deluxe pack has tracks past the randomizer's" {
+    try testing.expect(!looksDeluxe(34));
+    try testing.expect(!looksDeluxe(61));
+    try testing.expect(looksDeluxe(62));
+    try testing.expect(looksDeluxe(114));
 }

@@ -8,6 +8,9 @@ const util = @import("util.zig");
 const audio = @import("audio.zig");
 const rumble = @import("rumble.zig");
 const menu = @import("menu.zig");
+const msu_import = @import("msu_import.zig");
+/// config.h's kMsuEnabled_MsuDeluxe.
+const kMsuEnabledDeluxe: u8 = 2;
 const updater = @import("updater.zig");
 const tools_cli = @import("tools_cli.zig");
 const settings_menu = @import("settings_menu.zig");
@@ -477,7 +480,7 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
     }
 
     if (std.c.getenv("ENTRANCE") != null) std.debug.print("room 0x{x:0>3}, lights out {d}, lantern {d}, lit torches {d}\n", .{
-        vars.dungeon_room_index.*,          vars.dung_want_lights_out.*,
+        vars.dungeon_room_index.*,            vars.dung_want_lights_out.*,
         vars.hdr_dungeon_dark_with_lantern.*, vars.dung_num_lit_torches.*,
     });
 
@@ -961,6 +964,11 @@ fn portSetup() void {
     if (config.g_config.audio_freq < 11025 or config.g_config.audio_freq > 48000)
         config.g_config.audio_freq = kDefaultFreq;
 
+    // A deluxe pack says so in its own folder, so switching packs needs no
+    // second setting. (An old ini's "deluxe" still counts, for --config.)
+    if (config.g_config.enable_msu != 0) if (config.g_config.msu_path) |p| {
+        if (msu_import.packIsDeluxe(std.heap.c_allocator, std.mem.span(p))) config.g_config.enable_msu |= kMsuEnabledDeluxe;
+    };
     // The MSU player resamples each track to AudioFreq itself, whatever rate
     // the track was made at. ZeldaEnableMsu scales the volume ramp by
     // audio_freq, so it has to run after the rate above is settled.

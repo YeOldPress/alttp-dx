@@ -213,20 +213,19 @@ the file select, and randomizer seeds don't count.
 
 ### MSU-1
 
-Point `MSUPath` in `zelda3.ini` at a pack and set `EnableMSU`:
+Turn on **MSU Audio** under Sound (`EnableMSU = true`), and track `n` plays
+from `<MSUPath><n>`, as `.pcm`, `.flac`, `.ogg` or `.opuz`: the first of those
+there, whichever kind it is. Mono and stereo output both work, at any
+**Audio Frequency**.
 
-| Value | Files | Tracks |
-| --- | --- | --- |
-| `true` | `<MSUPath><n>.pcm`, `.flac` or `.ogg` | plain |
-| `deluxe` | `<MSUPath><n>.pcm`, `.flac` or `.ogg` | deluxe |
-| `opuz` | `<MSUPath><n>.opuz` | plain |
-| `deluxe-opuz` | `<MSUPath><n>.opuz` | deluxe |
+Deluxe packs have a track for each area and doorway rather than each song. A
+pack says it's one in a `pack.ini` beside its tracks (`Deluxe = 1`), which an
+import sets when the pack has deluxe-only tracks and the tools' MSU-1 page
+switches either way. Where a deluxe pack leaves an area out, its ordinary
+track for that song plays. Older inis that said `deluxe`, `opuz` or
+`deluxe-opuz` are turned into `true` (and a `pack.ini`) when the game starts.
 
-Deluxe packs have a track per place rather than per song; only use them with
-a deluxe pack. MSU needs `AudioChannels = 2` and sets the audio rate itself.
-
-Each track can be a different kind, and the game plays the first of `.pcm`,
-`.flac` and `.ogg` it finds. FLAC sounds exactly like the `.pcm` in about half
+FLAC sounds exactly like the `.pcm` in about half
 the space; Ogg Vorbis takes about an eighth, and you won't hear the difference
 either. They can be any sample rate (the game matches them to its own) and
 keep their loop point as a `LOOPSTART` tag, in samples at the track's own

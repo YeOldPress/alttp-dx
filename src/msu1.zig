@@ -32,20 +32,10 @@ extern fn opus_decoder_destroy(st: ?*OpusDecoder) void;
 extern fn opus_decode(st: *OpusDecoder, data: [*]const u8, len: i32, pcm: [*]i16, frame_size: c_int, decode_fec: c_int) c_int;
 extern fn opus_decoder_ctl(st: *OpusDecoder, request: c_int, ...) c_int;
 
-pub const Format = enum {
-    pcm,
-    opuz,
-
-    fn rate(self: Format) u32 {
-        return if (self == .opuz) 48000 else 44100;
-    }
-};
-
 pub const Msu1 = struct {
     /// Track n is at prefix ++ n ++ ".pcm" (or ".opuz").
     prefix: [1024]u8 = undefined,
     prefix_len: usize = 0,
-    format: Format = .pcm,
     /// Tracks above this are reported missing even when a file is there.
     /// A pack made for the normal game numbers its extras its own way, and a
     /// seed would take them for its extended tracks (35 on, one per
@@ -83,10 +73,9 @@ pub const Msu1 = struct {
     frac: f64 = 0,
     cur: [2]i16 = .{ 0, 0 },
 
-    pub fn configure(self: *Msu1, prefix: []const u8, format: Format) void {
+    pub fn configure(self: *Msu1, prefix: []const u8) void {
         self.prefix_len = @min(prefix.len, self.prefix.len - 16);
         @memcpy(self.prefix[0..self.prefix_len], prefix[0..self.prefix_len]);
-        self.format = format;
     }
 
     /// Whether any of the first few tracks is there, to warn when MSUPath
@@ -103,10 +92,9 @@ pub const Msu1 = struct {
         return false;
     }
 
-    /// Where track `n` is: the .opuz for an Opuz pack, otherwise the first
-    /// of .pcm, .flac and .ogg that's there (or the .pcm, when none is).
+    /// Where track `n` is: the first of .pcm, .flac, .ogg and .opuz that's
+    /// there (or the .pcm, when none is).
     pub fn trackPath(self: *Msu1, out: []u8, n: u16) ?[*:0]const u8 {
-        if (self.format == .opuz) return self.pathWith(out, n, "opuz");
         for (msu_codec.kTrackExts) |ext| {
             const p = self.pathWith(out, n, ext) orelse return null;
             if (fopen(p, "rb")) |f| {
@@ -159,10 +147,11 @@ pub const Msu1 = struct {
             self.missing = false;
             return;
         }
-        self.rate = self.format.rate();
         if (std.mem.eql(u8, header[0..4], "MSU1")) {
             self.loop_point = std.mem.readInt(u32, header[4..8], .little);
+            self.rate = 44100;
         } else if (std.mem.eql(u8, header[0..4], "OPUZ")) {
+            self.rate = 48000;
             self.opus = opus_decoder_create(48000, 2, null) orelse {
                 _ = fclose(f);
                 return;
@@ -335,7 +324,7 @@ pub const Msu1 = struct {
 test "tracks past the limit are missing even when their file is there" {
     var m = Msu1{};
     defer m.deinit();
-    m.configure("/nonexistent/should-not-be-opened-", .pcm);
+    m.configure("/nonexistent/should-not-be-opened-");
     m.max_track = 34;
     m.track = 35;
     m.load();
@@ -344,7 +333,7 @@ test "tracks past the limit are missing even when their file is there" {
 
 test "the chip identifies itself and reports a missing track" {
     var m = Msu1{};
-    m.configure("/nonexistent/track-", .pcm);
+    m.configure("/nonexistent/track-");
     try std.testing.expectEqual(@as(?u8, 'S'), m.read(0x2002));
     try std.testing.expectEqual(@as(?u8, '1'), m.read(0x2007));
     _ = m.write(0x2004, 5);
@@ -354,13 +343,17 @@ test "the chip identifies itself and reports a missing track" {
     try std.testing.expect(m.read(0x2000).? & 0x10 == 0);
 }
 
-test "tracks are named the way the MSU settings say" {
+test "a track is whichever kind of file is there" {
+    const fileio = @import("fileio.zig");
+    const path = ".zig-cache/msu1-kinds-test-12.opuz";
+    defer _ = fileio.remove(path);
+    try fileio.writeWholeFile(path, "OPUZ");
     var m = Msu1{};
     var buf: [64]u8 = undefined;
-    m.configure("msu/alttp_msu-", .opuz);
-    try std.testing.expectEqualStrings("msu/alttp_msu-12.opuz", std.mem.span(m.trackPath(&buf, 12).?));
-    m.configure("msu/alttp_msu-", .pcm);
-    try std.testing.expectEqualStrings("msu/alttp_msu-3.pcm", std.mem.span(m.trackPath(&buf, 3).?));
+    m.configure(".zig-cache/msu1-kinds-test-");
+    try std.testing.expectEqualStrings(path, std.mem.span(m.trackPath(&buf, 12).?));
+    // Nothing there: the .pcm, the name most packs use, for saying so.
+    try std.testing.expectEqualStrings(".zig-cache/msu1-kinds-test-3.pcm", std.mem.span(m.trackPath(&buf, 3).?));
 }
 
 test "a FLAC track plays, and repeats from its loop point" {
@@ -378,7 +371,7 @@ test "a FLAC track plays, and repeats from its loop point" {
 
     var m = Msu1{};
     defer m.deinit();
-    m.configure(".zig-cache/msu1-flac-test-", .pcm);
+    m.configure(".zig-cache/msu1-flac-test-");
     var buf: [64]u8 = undefined;
     try std.testing.expectEqualStrings(path, std.mem.span(m.trackPath(&buf, 7).?));
     _ = m.write(0x2004, 7);

@@ -194,8 +194,8 @@ pub const kSettings = [_]Setting{
     } } },
     .{ .section = "Sound", .key = "AudioSamples", .label = "Audio Buffer", .kind = .{ .choice = .{ .values = &.{ "512", "1024", "2048", "4096" } } } },
     .{ .section = "Sound", .key = "EnableMSU", .label = "MSU Audio", .kind = .{ .choice = .{
-        .values = &.{ "false", "true", "deluxe", "opuz", "deluxe-opuz" },
-        .labels = &.{ "Off", "On", "Deluxe", "Opuz", "Deluxe Opuz" },
+        .values = &.{ "false", "true" },
+        .labels = &.{ "Off", "On" },
     } } },
     .{ .section = "Sound", .key = "MSUVolume", .label = "MSU Volume", .kind = .{ .number = .{ .min = 0, .max = 100, .step = 5, .suffix = "%" } } },
     .{ .section = "Sound", .key = "ResumeMSU", .label = "Resume MSU", .kind = .toggle },
@@ -747,7 +747,7 @@ pub fn describe(s: Setting) []const u8 {
         .{ "AudioFreq", "The rate the game mixes its sound at. Higher is clearer. MSU tracks are matched to it." },
         .{ "AudioChannels", "Mono or stereo sound." },
         .{ "AudioSamples", "The sound buffer's size. Smaller means less delay before you hear things, larger helps if the sound crackles." },
-        .{ "EnableMSU", "Play an MSU music pack instead of the SNES music. Tracks can be .pcm, FLAC or Ogg Vorbis. Deluxe packs give each area its own track, and Opuz packs are their own compressed kind." },
+        .{ "EnableMSU", "Play an MSU music pack instead of the SNES music. Tracks can be .pcm, FLAC, Ogg Vorbis or Opuz. A deluxe pack, with a track for each area, says so itself. The tools list shows which packs are." },
         .{ "MSUVolume", "How loud MSU music plays." },
         .{ "MSUPath", "Which MSU pack plays. Import MSU-1 puts each pack in a folder of its own under msu, and left or right here switches between them." },
         .{ "ResumeMSU", "Pick an overworld area's MSU track up where it left off when you come back to it." },
@@ -1070,19 +1070,36 @@ fn msuOnIn(ini: *const Ini) bool {
 /// of its own, and MSUPath follows it if that's what it pointed at. Runs
 /// whether or not the start menu shows, since the game reads MSUPath too.
 pub fn tidyMsu(alloc: std.mem.Allocator) void {
-    const moved = msu_import.moveLoosePack(alloc, msu_import.kLibrary) orelse return;
-    defer {
-        alloc.free(moved.from);
-        alloc.free(moved.to);
-    }
-    std.debug.print("Moved the MSU pack in {s} to {s}\n", .{ moved.from, moved.to });
+    const moved = msu_import.moveLoosePack(alloc, msu_import.kLibrary);
+    defer if (moved) |m| {
+        alloc.free(m.from);
+        alloc.free(m.to);
+    };
+    if (moved) |m| std.debug.print("Moved the MSU pack in {s} to {s}\n", .{ m.from, m.to });
     var ini = Ini.load(alloc, "zelda3.ini") catch return;
     defer ini.deinit();
-    const i = settingIndex("Sound", "MSUPath") orelse return;
-    const cur = std.mem.trim(u8, ini.values[i] orelse "", " \t");
-    if (cur.len != 0 and !tools_ops.samePath(cur, moved.from)) return;
-    ini.set(i, moved.to) catch return;
-    ini.save("zelda3.ini") catch {};
+    var changed = false;
+    const pi = settingIndex("Sound", "MSUPath") orelse return;
+    if (moved) |m| {
+        const cur = std.mem.trim(u8, ini.values[pi] orelse "", " \t");
+        if (cur.len == 0 or tools_ops.samePath(cur, m.from)) {
+            ini.set(pi, m.to) catch return;
+            changed = true;
+        }
+    }
+    // EnableMSU used to say deluxe, and opuz. A file says what it is now,
+    // and a pack whether it's deluxe, so those become plain on, and the
+    // pack playing remembers being deluxe in its own folder.
+    if (settingIndex("Sound", "EnableMSU")) |ei| {
+        const v = std.mem.trim(u8, ini.values[ei] orelse "", " \t");
+        const deluxe = std.ascii.eqlIgnoreCase(v, "deluxe") or std.ascii.eqlIgnoreCase(v, "deluxe-opuz");
+        if (deluxe or std.ascii.eqlIgnoreCase(v, "opuz")) {
+            if (deluxe) _ = msu_import.setPackDeluxe(msuPathIn(&ini), true);
+            ini.set(ei, "true") catch return;
+            changed = true;
+        }
+    }
+    if (changed) ini.save("zelda3.ini") catch {};
 }
 
 /// Where MSU tracks go, as the ini has it.

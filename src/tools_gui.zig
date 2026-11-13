@@ -1510,7 +1510,7 @@ fn packRow(ui: *Ui, alloc: std.mem.Allocator, st: *State, r: Rect, p: msu_import
     }
     var kinds_buf: [48]u8 = undefined;
     var detail_buf: [128]u8 = undefined;
-    const detail = std.fmt.bufPrint(&detail_buf, "{d} track{s}  \u{00b7}  {s}  \u{00b7}  {d} MB", .{ p.tracks, if (p.tracks == 1) "" else "s", msu_import.kindsLabel(&kinds_buf, p), p.bytes / (1024 * 1024) }) catch "";
+    const detail = std.fmt.bufPrint(&detail_buf, "{d} track{s}  \u{00b7}  {s}  \u{00b7}  {d} MB{s}", .{ p.tracks, if (p.tracks == 1) "" else "s", msu_import.kindsLabel(&kinds_buf, p), p.bytes / (1024 * 1024), if (p.deluxe) "  \u{00b7}  Deluxe: a track for each area" else "" }) catch "";
     ui.p.text(.small, r.x + 16, r.y + 26, kTextDim, detail);
 
     // Right to left: Delete, Show, then Use for any but the one playing.
@@ -1529,6 +1529,15 @@ fn packRow(ui: *Ui, alloc: std.mem.Allocator, st: *State, r: Rect, p: msu_import
         if (g_window) |w| _ = c.SDL_StartTextInput(w);
     }
     if (pillLeft(ui, &right, r.y + 8, "Show", true, .plain)) reveal(msu_import.splitPath(p.path));
+    // Lit when it's on. The game reads it when it starts.
+    if (pillLeft(ui, &right, r.y + 8, if (p.deluxe) "\u{2713} Deluxe" else "Deluxe", !busy, if (p.deluxe) .main else .plain)) {
+        if (msu_import.setPackDeluxe(p.path, !p.deluxe)) {
+            g_logger.ok("{s} is {s}a deluxe pack now. The game picks that up when it starts.", .{ p.name, if (p.deluxe) "not " else "" });
+        } else {
+            g_logger.err("Couldn't write {s}'s pack.ini.", .{p.name});
+        }
+        st.refreshPacks(alloc);
+    }
     if (!playing and pillLeft(ui, &right, r.y + 8, "Use", !busy, .main)) {
         st.setMsuPath(alloc, p.path);
         st.msu_changed = true;

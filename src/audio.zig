@@ -467,11 +467,12 @@ fn MsuPlayer_OpenPrepared(mp: *MsuPlayer, p: *Prepared, resume_from_snapshot: bo
     }
 }
 
-/// Opens track `n` of the pack: the .opuz for an Opuz pack, otherwise the
-/// first of .pcm, .flac and .ogg that's there. `fname` is left naming it, or
+/// Opens track `n` of the pack: the first of .pcm, .flac, .ogg and .opuz
+/// that's there. `fname` is left naming it, or
 /// the .pcm (the one most packs use) when there's none, for messages.
 fn openTrackFile(mp: *const MsuPlayer, fname: *[256]u8, n: u8) ?*FILE {
-    const exts: []const []const u8 = if (mp.enabled & kMsuEnabled_Opuz != 0) &.{"opuz"} else &msu_codec.kTrackExts;
+    _ = mp;
+    const exts = &msu_codec.kTrackExts;
     const prefix = if (config.g_config.msu_path) |p| p else @as([*:0]const u8, "");
     for (exts) |ext| {
         _ = snprintf(fname, fname.len, "%s%d.%.*s", prefix, @as(c_int, n), @as(c_int, @intCast(ext.len)), ext.ptr);

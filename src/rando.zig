@@ -67,20 +67,12 @@ pub fn start(alloc: std.mem.Allocator, path: [:0]const u8, mode: tracker.Mode) !
 /// the normal game numbers its own extras from 35, so without the limit its
 /// track 35 would play in Eastern Palace.
 fn startMsu() void {
-    const Format = @import("msu1.zig").Format;
     const kLastNormalTrack = 34;
     if (!config.g_rando_msu) return;
     const path = config.g_config.msu_path orelse return;
-    // The pack's own format, whichever EnableMSU says, or either.
-    const kOpuz = 4;
-    const first: Format = if (config.g_config.enable_msu & kOpuz != 0) .opuz else .pcm;
-    found: {
-        for ([_]Format{ first, if (first == .pcm) .opuz else .pcm }) |format| {
-            g_msu.configure(std.mem.span(path), format);
-            if (g_msu.hasTracks()) break :found;
-        }
-        return;
-    }
+    // Each track is whichever kind of file is there.
+    g_msu.configure(std.mem.span(path));
+    if (!g_msu.hasTracks()) return;
     g_msu.max_track = kLastNormalTrack;
     g_have_msu = true;
     snes_pkg.snes.g_io_hooks = .{ .ctx = &g_msu, .read = msuRead, .write = msuWrite };

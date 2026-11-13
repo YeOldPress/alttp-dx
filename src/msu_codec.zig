@@ -7,10 +7,10 @@
 //! same as a .pcm whose loop point is 0.
 const std = @import("std");
 
-/// The formats the game looks for when MSU is set to plain tracks, best
-/// first: a pack with a track as .pcm and as .flac plays the .pcm. Opuz
-/// packs have a setting of their own.
-pub const kTrackExts = [_][]const u8{ "pcm", "flac", "ogg" };
+/// The kinds of file a track can be, in the order they're looked for: a
+/// pack with a track as .pcm and as .flac plays the .pcm. Each file says
+/// what it is in its first bytes, so a pack can mix them.
+pub const kTrackExts = [_][]const u8{ "pcm", "flac", "ogg", "opuz" };
 
 pub const Kind = enum { flac, ogg };
 
