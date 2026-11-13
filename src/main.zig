@@ -9,6 +9,8 @@ const audio = @import("audio.zig");
 const rumble = @import("rumble.zig");
 const menu = @import("menu.zig");
 const updater = @import("updater.zig");
+const tools_cli = @import("tools_cli.zig");
+const tools_gui = @import("tools_gui.zig");
 const settings_menu = @import("settings_menu.zig");
 const title_dx = @import("title_dx.zig");
 const achievements = @import("achievements.zig");
@@ -986,6 +988,19 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
     // A randomizer seed to play in the emulator instead of the port.
     var rando_rom: ?[:0]const u8 = null;
 
+    // `zelda3 tools [command]` is the asset tools. A command runs where it
+    // was typed and exits; no command opens their window, which closes into
+    // the start menu like the menu's own Tools entry does.
+    var open_tools = false;
+    if (argc >= 1 and strcmp(argv[0], "tools") == 0) {
+        const args = alloc.alloc([:0]const u8, @intCast(argc - 1)) catch return 1;
+        defer alloc.free(args);
+        for (args, 0..) |*a, i| a.* = std.mem.span(argv[i + 1]);
+        if (!tools_cli.wantsWindow(args)) return tools_cli.command(alloc, args);
+        open_tools = true;
+        argc = 0;
+    }
+
     // `--seed-info <rom>` prints what a randomizer seed says about itself.
     if (argc == 2 and strcmp(argv[0], "--seed-info") == 0) {
         const data = @import("fileio.zig").readWholeFile(alloc, argv[1]) catch return 1;
@@ -1100,16 +1115,47 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         // translation's are this version's, and go straight in. Comparing
         // against a ROM (zelda3 <rom>) is a developer tool and goes straight in.
         // A seed always gets its options screen first.
-        if (rando_rom != null or (argc == 0 and (!menu.checkAssets(alloc).playable() or menu.wantsStartMenu(alloc)))) {
-            const outcome = menu.run(alloc, rando_rom) catch |err| {
-                std.debug.print("The start menu failed: {s}\n", .{@errorName(err)});
-                return 1;
-            };
-            switch (outcome) {
-                .quit => return 0,
-                .randomizer => rando_rom = menu.g_randomizer_rom,
-                // Backed out of the seed and chose the normal game instead.
-                .play => rando_rom = null,
+        if (open_tools or rando_rom != null or (argc == 0 and (!menu.checkAssets(alloc).playable() or menu.wantsStartMenu(alloc)))) {
+            // The menu and the tools hand over to each other until one of
+            // them starts something or quits.
+            var in_tools = open_tools;
+            var seed = rando_rom;
+            screens: while (true) {
+                if (in_tools) {
+                    const outcome = tools_gui.run(alloc) catch |err| {
+                        std.debug.print("The tools failed: {s}\n", .{@errorName(err)});
+                        return 1;
+                    };
+                    switch (outcome) {
+                        .quit => return 0,
+                        .play => {
+                            rando_rom = null;
+                            break :screens;
+                        },
+                        .menu => {
+                            menu.g_from_tools = true;
+                            in_tools = false;
+                        },
+                    }
+                    continue;
+                }
+                const outcome = menu.run(alloc, seed) catch |err| {
+                    std.debug.print("The start menu failed: {s}\n", .{@errorName(err)});
+                    return 1;
+                };
+                // A seed opens its page the first time round, not every time.
+                seed = null;
+                switch (outcome) {
+                    .quit => return 0,
+                    .randomizer => rando_rom = menu.g_randomizer_rom,
+                    // Backed out of the seed and chose the normal game instead.
+                    .play => rando_rom = null,
+                    .tools => {
+                        in_tools = true;
+                        continue;
+                    },
+                }
+                break;
             }
         }
     }

@@ -211,7 +211,7 @@ test "a bank's stream is copied into memory block by block" {
     try std.testing.expectEqual(@as(u8, 0xcc), mem[0xffff]);
 }
 
-/// For `zelda3-tools music-wav ASSETS SONG OUT.wav`, undocumented: `seconds`
+/// For `zelda3 tools music-wav ASSETS SONG OUT.wav`, undocumented: `seconds`
 /// of a song as a WAV, to hear the player without a window.
 pub fn writeWav(alloc: std.mem.Allocator, assets_path: [:0]const u8, number: u8, out: [:0]const u8, seconds: u32) !void {
     const p = try Player.init(alloc, assets_path);

@@ -12,8 +12,9 @@
 //! and settings live elsewhere or are left alone, so they come through it.
 //! Downloads are checked against the size and SHA-256 GitHub gives for them.
 //!
-//! The tools are released beside the game as downloads of their own, and
-//! update themselves the same way: `product` says which one this is.
+//! The asset tools used to be a download of their own, zelda3-tools; they're
+//! in the game now, and come with it. Old releases still list their files,
+//! which the game leaves alone.
 //!
 //! A build without a version, which is any build nobody ran through the
 //! release workflow, never offers to replace itself.
@@ -33,8 +34,7 @@ pub const commit = build_info.commit;
 const kApi = "https://api.github.com/repos/YeOldPress/alttp-dx";
 const kUserAgent = "alttp-dx-updater";
 
-/// What's being kept up to date: the game, or the tools. Each only ever
-/// replaces itself.
+/// What's being kept up to date, and what its download's files are called.
 pub const Product = struct {
     /// What every file of its download starts with.
     prefix: []const u8,
@@ -45,10 +45,8 @@ pub const Product = struct {
 };
 
 pub const game = Product{ .prefix = "alttp-dx-", .bundle = "ALTTP-DX.app", .exe = "zelda3" };
-pub const tools = Product{ .prefix = "zelda3-tools-", .bundle = "zelda3-tools.app", .exe = "zelda3-tools" };
 
-/// Which one this is: the game, unless the tools say so before anything
-/// else here runs.
+/// The one this is.
 pub var product: *const Product = &game;
 
 pub const Channel = enum {
@@ -333,7 +331,7 @@ fn describe(err: Failure) []const u8 {
     return switch (err) {
         error.Network => "COULD NOT REACH GITHUB",
         error.NoAsset => "NO DOWNLOAD FOR THIS SYSTEM",
-        error.WriteFailed => if (product == &tools) "CAN'T REPLACE THE TOOLS HERE" else "CAN'T REPLACE THE GAME HERE",
+        error.WriteFailed => "CAN'T REPLACE THE GAME HERE",
         error.Corrupt => "DOWNLOAD CAME OUT DAMAGED",
         error.Unpack => "COULD NOT UNPACK THE UPDATE",
         error.Cancelled => "CANCELLED",
@@ -903,10 +901,8 @@ test "the game's own download is picked out of a release's files" {
     try testing.expectEqualStrings("game-mac", pickAsset(&assets, game.prefix, "-macos-arm64.zip").?.browser_download_url);
     try testing.expectEqualStrings("game-win", pickAsset(&assets, game.prefix, "-windows-x86_64.zip").?.browser_download_url);
     try testing.expectEqualStrings("game-linux", pickAsset(&assets, game.prefix, "-x86_64.AppImage").?.browser_download_url);
+    // An old release's separate tools download is never mistaken for it.
     try testing.expectEqual(@as(?AssetJson, null), pickAsset(assets[0..1], game.prefix, "-macos-arm64.zip"));
-    // And the tools take theirs, and only theirs.
-    try testing.expectEqualStrings("tools-mac", pickAsset(&assets, tools.prefix, "-macos-arm64.zip").?.browser_download_url);
-    try testing.expectEqual(@as(?AssetJson, null), pickAsset(&assets, tools.prefix, "-x86_64.AppImage"));
 }
 
 test "a release reads out of GitHub's answer, digest and all" {

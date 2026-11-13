@@ -1,5 +1,6 @@
-//! zelda3-tools: everything to do with the game's assets that isn't playing
-//! it. Run with no arguments for the GUI, or with a command for the terminal.
+//! `zelda3 tools`: everything to do with the game's assets that isn't
+//! playing it, from the terminal. With no command it opens the tools window,
+//! which main.zig sees to, since that goes through the start menu.
 const std = @import("std");
 const ops = @import("tools_ops.zig");
 const gui = @import("tools_gui.zig");
@@ -8,9 +9,10 @@ const fileio = @import("fileio.zig");
 const updater = @import("updater.zig");
 
 const kUsage =
-    \\zelda3-tools: build and check the assets for zelda3.
+    \\zelda3 tools: build and check the assets for zelda3.
     \\
-    \\Run with no arguments to open the window. Commands:
+    \\Run with no command to open the window, as the start menu's Tools
+    \\entry does. Commands:
     \\
     \\  build [--rom ROM] [--out FILE] [--from DIR [--sprites-from-png]]
     \\        [--languages L1,L2 [--lang-dir DIR]]
@@ -36,14 +38,11 @@ const kUsage =
     \\  rom-info ROM      Say which release a ROM is
     \\  check-msu PACK    Look over an MSU-1 pack, a folder or a .zip, for
     \\                    missing tracks and files that won't play
-    \\  version           Say which version these tools are
-    \\  check-update [releases|nightly]
-    \\                    Ask GitHub whether newer tools are out
-    \\  update [releases|nightly]
-    \\                    Replace these tools with the newest, as the
-    \\                    window's Update button does
+    \\  version           Say which version this is
     \\  gui               Open the window
     \\  help              This
+    \\
+    \\Updates are the game's: zelda3 --check-update and zelda3 --update.
     \\
     \\For working on the game itself:
     \\
@@ -55,41 +54,37 @@ const kUsage =
     \\
 ;
 
-pub fn main(init: std.process.Init) !void {
-    const alloc = std.heap.c_allocator;
-    // These are the tools, and they update themselves, not the game.
-    updater.product = &updater.tools;
-    g_io = init.io;
-    var it = try init.minimal.args.iterateAllocator(alloc);
-    defer it.deinit();
-    _ = it.next();
-
-    var args: std.ArrayList([:0]const u8) = .empty;
-    defer args.deinit(alloc);
-    while (it.next()) |a| try args.append(alloc, try alloc.dupeSentinel(u8, a, 0));
-
-    if (args.items.len == 0) return gui.run(alloc);
+/// Runs `zelda3 tools <args>`, and says what to exit with.
+pub fn command(alloc: std.mem.Allocator, args: []const [:0]const u8) u8 {
     // Asking for help isn't a mistake, so it isn't an error either.
-    if (std.mem.eql(u8, args.items[0], "help") or std.mem.eql(u8, args.items[0], "--help") or std.mem.eql(u8, args.items[0], "-h")) {
+    if (args.len == 0 or std.mem.eql(u8, args[0], "help") or std.mem.eql(u8, args[0], "--help") or std.mem.eql(u8, args[0], "-h")) {
         std.debug.print("{s}", .{kUsage});
-        return;
+        return 0;
     }
-    const ok = runCommand(alloc, args.items) catch |e| switch (e) {
+    const ok = runCommand(alloc, args) catch |e| switch (e) {
         error.Usage => {
             std.debug.print("{s}", .{kUsage});
-            std.process.exit(2);
+            return 2;
         },
-        else => return e,
+        else => {
+            std.debug.print("error: {s}\n", .{@errorName(e)});
+            return 1;
+        },
     };
-    if (!ok) std.process.exit(1);
+    return if (ok) 0 else 1;
 }
 
-var g_io: std.Io = undefined;
+/// Whether `zelda3 tools <args>` means the window rather than a command.
+pub fn wantsWindow(args: []const [:0]const u8) bool {
+    return args.len == 0 or (args.len == 1 and std.mem.eql(u8, args[0], "gui"));
+}
 
 /// Runs `f` with a writer to stdout, flushed after.
 fn toStdout(f: anytype, args: anytype) !void {
+    var threaded: std.Io.Threaded = .init(std.heap.c_allocator, .{});
+    defer threaded.deinit();
     var buf: [4096]u8 = undefined;
-    var w = std.Io.File.stdout().writerStreaming(g_io, &buf);
+    var w = std.Io.File.stdout().writerStreaming(threaded.io(), &buf);
     try @call(.auto, f, args ++ .{&w.interface});
     try w.interface.flush();
 }
@@ -194,14 +189,8 @@ fn runCommand(alloc: std.mem.Allocator, args: []const [:0]const u8) !bool {
         return ops.verifyAssets(alloc, log, positional(rest, 0) orelse "zelda3_assets.dat");
     }
     if (std.mem.eql(u8, cmd, "version") or std.mem.eql(u8, cmd, "--version")) {
-        std.debug.print("zelda3-tools {s} {s}\n", .{ updater.version, updater.commit });
+        std.debug.print("ALTTP-DX {s} {s}\n", .{ updater.version, updater.commit });
         return true;
-    }
-    if (std.mem.eql(u8, cmd, "check-update")) {
-        return updater.checkFromCommandLine(updater.Channel.fromName(positional(rest, 0) orelse ""), null);
-    }
-    if (std.mem.eql(u8, cmd, "update")) {
-        return updater.updateFromCommandLine(updater.Channel.fromName(positional(rest, 0) orelse ""));
     }
     if (std.mem.eql(u8, cmd, "check-msu")) {
         return ops.checkMsuPack(alloc, log, positional(rest, 0) orelse return error.Usage);
@@ -255,10 +244,6 @@ fn runCommand(alloc: std.mem.Allocator, args: []const [:0]const u8) !bool {
         const page = positional(rest, 1);
         const lines = if (rest.len > 2) rest[2..] else &[_][:0]const u8{};
         try gui.screenshot(alloc, path, page, lines);
-        return true;
-    }
-    if (std.mem.eql(u8, cmd, "gui")) {
-        try gui.run(alloc);
         return true;
     }
     return error.Usage;

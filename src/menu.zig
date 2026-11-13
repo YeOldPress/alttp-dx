@@ -986,18 +986,20 @@ fn onLeftArrow(ini: *const Ini, screen: Screen, pos: usize, slot: usize, px: f32
     return (Rect{ .x = right - vw - 30, .y = r.y, .w = 28, .h = r.h }).contains(px, py);
 }
 
-const kMainItems = [_][]const u8{ "Settings", "Features", "Controls", "Achievements", "Save Settings", "Build Assets", "Import MSU-1", "Play", "Randomizer", "Update" };
+const kMainItems = [_][]const u8{ "Settings", "Features", "Controls", "Achievements", "Save Settings", "Build Assets", "Tools", "Import MSU-1", "Play", "Randomizer", "Update" };
 const kMainControls = 2;
 const kMainAchievements = 3;
 const kMainSave = 4;
 const kMainBuild = 5;
+/// The asset tools' window: modding, translations, the music and pictures.
+pub const kMainTools = 6;
 /// Only there while MSU audio is on: there's no pack to want otherwise.
-const kMainImport = 6;
-const kMainLaunch = 7;
-const kMainRandomizer = 8;
+const kMainImport = 7;
+const kMainLaunch = 8;
+const kMainRandomizer = 9;
 /// Only there when there's a newer version, in the title's third line. Last,
 /// so down from Randomizer wraps through it to the top.
-const kMainUpdate = 9;
+const kMainUpdate = 10;
 
 /// Whether MSU audio is on in the ini, which brings Import MSU-1 onto the
 /// main page. Set from the ini every frame, so it follows the setting.
@@ -2058,11 +2060,11 @@ const Rect = kit.Rect;
 // Randomizer button under that.
 const kLaunchY: f32 = 242;
 
-/// Where the entries above Play go: six of them, or seven a little closer
+/// Where the entries above Play go: seven of them, or eight a little closer
 /// together when Import MSU-1 is there, ending in the same place.
 const EntryLayout = struct { y: f32, gap: f32, pad: f32 };
 fn entryLayout() EntryLayout {
-    return if (g_msu_on) .{ .y = 106, .gap = 18, .pad = 1 } else .{ .y = 106, .gap = 22, .pad = 2 };
+    return if (g_msu_on) .{ .y = 106, .gap = 16, .pad = 0 } else .{ .y = 106, .gap = 18, .pad = 1 };
 }
 
 /// An entry's place among the ones showing.
@@ -3234,7 +3236,10 @@ pub fn settingIndex(section: []const u8, key: []const u8) ?usize {
     return null;
 }
 
-pub const Outcome = enum { play, quit, randomizer };
+pub const Outcome = enum { play, quit, randomizer, tools };
+
+/// Set on the way back from the tools, so the menu opens where it was left.
+pub var g_from_tools = false;
 
 /// The seed dropped on the menu, when the outcome is .randomizer.
 pub var g_randomizer_rom: [:0]const u8 = "";
@@ -3370,6 +3375,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     var dirty = false;
     var launch = false;
     var randomizer = false;
+    var tools = false;
     var status: []const u8 = "";
     var assets = checkAssets(alloc);
     if (seed != null and loadSeed(seed.?)) {
@@ -3379,13 +3385,19 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     } else if (!assets.playable()) {
         modal = .rom;
         main_cursor = kMainLaunch;
+    } else if (g_from_tools) {
+        // Back from the tools: on Tools, where it was left.
+        main_cursor = kMainTools;
     } else if (g_modern) {
         // The modern page opens on Play, the thing it's for.
         main_cursor = kMainLaunch;
     }
+    // Back from the tools, the update check's already been made.
+    const returning = g_from_tools;
+    g_from_tools = false;
     var running = true;
     var event: c.SDL_Event = undefined;
-    if (updatesOnIn(&ini)) updater.check(updateChannelIn(&ini));
+    if (!returning and updatesOnIn(&ini)) updater.check(updateChannelIn(&ini));
 
     while (running) {
         const now = c.SDL_GetTicks();
@@ -3865,6 +3877,13 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         g_update_choice = 0;
                         status = "";
                     },
+                    kMainTools => {
+                        // The menu starts over from the file when it comes
+                        // back, so what's been changed has to be in it.
+                        if (dirty) ini.save("zelda3.ini") catch {};
+                        tools = true;
+                        running = false;
+                    },
                     else => {
                         ini.save("zelda3.ini") catch |err| {
                             std.debug.print("Could not write zelda3.ini: {s}\n", .{@errorName(err)});
@@ -4132,6 +4151,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     }
 
     if (randomizer) return .randomizer;
+    if (tools) return .tools;
     return if (launch) .play else .quit;
 }
 
@@ -4665,7 +4685,7 @@ test "clickable areas line up with what is drawn" {
             try testing.expect(r.y >= 36 + kRowH * 3 + 8 and r.y + r.h <= kWindowH - 16);
         }
         // And the last entry's highlight clears Play's ring.
-        const last: usize = if (msu) kMainImport else kMainBuild;
+        const last: usize = if (msu) kMainImport else kMainTools;
         try testing.expect(mainEntryRect(last).y + entryLayout().gap - 2 <= kLaunchY - kRingAbove);
     }
 }

@@ -25,23 +25,25 @@ with the extras a modern re-release would have.
   and Continue, and optional gameplay tweaks and bug fixes
 - **Randomizer:** play [alttpr.com](https://alttpr.com) seeds with an item
   tracker that auto updates. 
-- **Modding and languages** with `zelda3-tools`
+- **Modding and languages:** the tools are built in, under **Tools** on the
+  start menu
 
 You bring your own US ROM. No game data ships here, and once the assets are
 built the ROM isn't needed again.
 
 ## Download
 
-[Releases](https://github.com/YeOldPress/alttp-dx/releases) have the game and
-the tools for each platform, with everything they need inside:
+[Releases](https://github.com/YeOldPress/alttp-dx/releases) have the game for
+each platform, with everything it needs inside, the tools included:
 
-| | Game | Tools |
-| --- | --- | --- |
-| macOS 11+, Apple Silicon | `alttp-dx-*-macos-arm64.zip` | `zelda3-tools-*-macos-arm64.zip` |
-| Linux x86_64, glibc 2.35+ | `alttp-dx-*-x86_64.AppImage` | `zelda3-tools-*-x86_64.AppImage` |
-| Windows x86_64 | `alttp-dx-*-windows-x86_64.zip` | `zelda3-tools-*-windows-x86_64.zip` |
+| | Download |
+| --- | --- |
+| macOS 11+, Apple Silicon | `alttp-dx-*-macos-arm64.zip` |
+| Linux x86_64, glibc 2.35+ | `alttp-dx-*-x86_64.AppImage` |
+| Windows x86_64 | `alttp-dx-*-windows-x86_64.zip` |
 
-The game is all you need to play. The **Nightly** release is the latest work
+Up to v1.8 the tools were a download of their own, `zelda3-tools`; from v1.9
+they're in the game, and that one can go. The **Nightly** release is the latest work
 in progress, rebuilt overnight whenever something's changed; the numbered
 releases are the ones to play.
 
@@ -69,8 +71,7 @@ GitHub publishes, puts it in place and restarts:
 Your saves and settings carry over. Under **General**, **Check For Updates**
 turns this off, and **Update Channel** picks **Releases** or **Nightly**. The
 start menu's bottom-right corner says which version you're on, and a build
-you made yourself never offers to update. The tools are still a download of
-their own. From a terminal, `--version` prints the version,
+you made yourself never offers to update. From a terminal, `--version` prints the version,
 `--check-update releases` asks without changing anything, and
 `--update releases` (or `nightly`) does the whole thing.
 
@@ -238,15 +239,17 @@ with an item tracker beside the game, over it, or in its own window.
 [The randomizer guide](docs/randomizer.md) has the rest: the seed page, MSU-1
 for seeds, the tracker and its options.
 
-## zelda3-tools
+## Tools
 
 Everything to do with the assets besides playing: building them, exporting the
 maps, text, graphics and music to edit, building them back (by itself, each
-time you save a change, if you like), then starting the game to try it. It
-shows the exported pictures and checks `.zspr` Link sprites, plays the game's
-music, looks over MSU-1 packs before you import them, and adds languages from
-translated ROMs. Run it for a window, which a mouse, the keys or a pad all
-drive, or with a command:
+time you save a change, if you like), then playing to try it. They show the
+exported pictures and check `.zspr` Link sprites, play the game's music, look
+over MSU-1 packs before you import them, and add languages from translated
+ROMs. **Tools** on the start menu opens their window, which a mouse, the keys
+or a pad all drive; **Start Menu** in its corner goes back, and **Play** goes
+straight into the game. From a terminal, `zelda3 tools` opens the window too,
+and a command does the job without one:
 
 <table>
   <tr>
@@ -256,13 +259,16 @@ drive, or with a command:
 </table>
 
 ```sh
-zelda3-tools export --rom zelda3.sfc --out my_mod
-zelda3-tools build --from my_mod
-zelda3-tools extract-dialogue --rom german.sfc --out langs
-zelda3-tools build --languages de,fr --lang-dir langs
-zelda3-tools check-msu my_pack.zip
-zelda3-tools help
+zelda3 tools export --rom zelda3.sfc --out my_mod
+zelda3 tools build --from my_mod
+zelda3 tools extract-dialogue --rom german.sfc --out langs
+zelda3 tools build --languages de,fr --lang-dir langs
+zelda3 tools check-msu my_pack.zip
+zelda3 tools help
 ```
+
+On a Mac, `zelda3` is `ALTTP-DX.app/Contents/MacOS/zelda3`; on Linux, the
+AppImage takes the same commands.
 
 Set `Language = de` (or whichever) in `zelda3.ini` to play in a language you've
 added. Only the US ROM builds the asset file; its SHA-256 is
@@ -282,7 +288,7 @@ brew install sdl3              # macOS
 git clone https://github.com/YeOldPress/alttp-dx
 cd alttp-dx
 zig build run                      # build and start the game
-zig build tools                    # build and open zelda3-tools
+zig build tools                    # build and open the tools window
 zig build assets                   # build the asset file, no window
 zig build test                     # the tests
 zig build -Doptimize=ReleaseSafe   # a faster build

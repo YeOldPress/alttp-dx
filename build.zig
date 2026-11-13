@@ -262,37 +262,19 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
-    // zelda3-tools: the asset tools, with a window and a command line. It
-    // needs the asset builder and SDL, not the game.
-    const tools = b.addExecutable(.{
-        .name = "zelda3-tools",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tools_main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    tools.root_module.addIncludePath(b.path("."));
-    tools.root_module.addImport("sdl_c", sdl_c_mod);
-    tools.root_module.addOptions("build_info", build_info);
-    tools.root_module.addImport("default_ini", default_ini);
-    tools.root_module.addImport("snes", snes_dsp_mod);
-    tools.root_module.addImport("tools_fonts", tools_fonts);
-    tools.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
-    addSdlIncludes(b, tools.root_module);
-    linkSdlLibs(b, tools.root_module);
-    tools.headerpad_max_install_names = target.result.os.tag == .macos;
-    b.installArtifact(tools);
-
-    const tools_run = b.addRunArtifact(tools);
+    // The asset tools live in the game: its start menu's Tools entry, and
+    // `zelda3 tools <command>` for the terminal.
+    const tools_run = b.addRunArtifact(exe);
     tools_run.step.dependOn(b.getInstallStep());
+    tools_run.addArg("tools");
     tools_run.addPassthruArgs();
-    b.step("tools", "Build and run zelda3-tools").dependOn(&tools_run.step);
+    b.step("tools", "Run zelda3 tools (the window, or a command after --)").dependOn(&tools_run.step);
 
+    // Their tests get a run of their own, rooted at the command line, with
+    // just the sound chip standing in for the console.
     const tools_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tools_main.zig"),
+            .root_source_file = b.path("src/tools_cli.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,

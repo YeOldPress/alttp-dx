@@ -40,7 +40,7 @@ jobs:
     - name: Test
       run: zig build test
     - name: Check the tools start
-      run: ./zig-out/bin/zelda3-tools help
+      run: ./zig-out/bin/zelda3 tools help
 
   build-windows:
     name: on Windows
@@ -72,5 +72,5 @@ jobs:
     - name: Check the tools start
       shell: pwsh
       run: |
-        zig-out\bin\zelda3-tools.exe help
+        zig-out\bin\zelda3.exe tools help
         if ($LASTEXITCODE -ne 0) { exit 1 }

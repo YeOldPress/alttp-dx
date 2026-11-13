@@ -1,4 +1,4 @@
-//! What zelda3-tools can do, independent of how it was asked: the GUI and the
+//! What the tools can do, independent of how it was asked: the GUI and the
 //! command line both come here. Each operation reports progress and results
 //! through a Log rather than printing, so the GUI can show them in its panel
 //! and the command line can pass them straight to the terminal.

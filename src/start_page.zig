@@ -176,6 +176,14 @@ pub const Page = struct {
         };
     }
 
+    /// The same night for another window, the tools': at its pixel density,
+    /// with its own text styles baked as well as the sub-screens'.
+    pub fn initFor(r: *c.SDL_Renderer, scale: f32, styles: std.EnumSet(ui.Style)) Page {
+        var all = styles;
+        all.setUnion(std.EnumSet(ui.Style).initMany(&.{ .small, .body, .strong, .item, .eyebrow, .subtitle, .button, .headline }));
+        return .{ .paint = Paint.initStyles(r, scale, all), .glow = makeGlow(r) };
+    }
+
     pub fn deinit(self: *Page) void {
         self.paint.deinit();
         if (self.glow) |t| c.SDL_DestroyTexture(t);
@@ -239,24 +247,28 @@ pub const Page = struct {
     /// each twinkling in its own time. Worked out from the time alone, so
     /// there's nothing to keep.
     fn motes(self: *const Page, t: f32, strength: f32) void {
-        const span = kH + 40;
+        self.motesIn(t, strength, kW, kH);
+    }
+
+    fn motesIn(self: *const Page, t: f32, strength: f32, w: f32, h: f32) void {
+        const span = h + 40;
         var i: u32 = 0;
         while (i < 64) : (i += 1) {
-            const h = hash(i);
-            const rx = unit(h, 0);
-            const ry = unit(h, 1);
-            const speed = 6 + unit(h, 2) * 12;
-            const sway = 4 + unit(h, 3) * 12;
-            const freq = 0.15 + unit(h, 4) * 0.35;
-            const phase = unit(h, 5) * std.math.tau;
-            const size = 0.7 + unit(h, 6) * 1.6;
-            const teal = unit(h, 7) < 0.22;
-            const y = kH + 20 - @mod(t * speed + ry * span, span);
-            const x = rx * kW + @sin(t * freq + phase) * sway;
-            const tw = 0.5 + 0.5 * @sin(t * (0.8 + unit(h, 2)) + phase * 3);
+            const hs = hash(i);
+            const rx = unit(hs, 0);
+            const ry = unit(hs, 1);
+            const speed = 6 + unit(hs, 2) * 12;
+            const sway = 4 + unit(hs, 3) * 12;
+            const freq = 0.15 + unit(hs, 4) * 0.35;
+            const phase = unit(hs, 5) * std.math.tau;
+            const size = 0.7 + unit(hs, 6) * 1.6;
+            const teal = unit(hs, 7) < 0.22;
+            const y = h + 20 - @mod(t * speed + ry * span, span);
+            const x = rx * w + @sin(t * freq + phase) * sway;
+            const tw = 0.5 + 0.5 * @sin(t * (0.8 + unit(hs, 2)) + phase * 3);
             // Fading in off the bottom and out toward the top.
-            const fade = smooth(kH + 20, kH - 40, y) * smooth(-10, 90, y);
-            const a = tw * fade * strength;
+            const edge = smooth(h + 20, h - 40, y) * smooth(-10, 90, y);
+            const a = tw * edge * strength;
             if (a <= 0.01) continue;
             const col = if (teal) kTeal else Color.hex(0xffd98a);
             self.glowAt(x, y, size * 6, col.alpha(@intFromFloat(55 * a)));
@@ -453,6 +465,43 @@ pub const Page = struct {
         gradient(p.r, .{ .x = 40, .y = kHeaderRule, .w = (kW - 80) / 2, .h = 1 }, rule.alpha(10), rule.alpha(90), .horizontal);
         gradient(p.r, .{ .x = kW / 2, .y = kHeaderRule, .w = (kW - 80) / 2, .h = 1 }, rule.alpha(90), rule.alpha(10), .horizontal);
         diamond(p.r, kW / 2, kHeaderRule + 0.5, 3.5, kGold);
+    }
+
+    /// The sub-screens' night, for a window of any size: the sky, its two
+    /// lights, and motes at `strength`.
+    pub fn night(self: *const Page, t: f32, w: f32, h: f32, strength: f32) void {
+        const p = &self.paint;
+        _ = c.SDL_SetRenderDrawBlendMode(p.r, c.SDL_BLENDMODE_BLEND);
+        gradient(p.r, .{ .x = 0, .y = 0, .w = w, .h = h }, kSkyTop, kSkyBottom, .vertical);
+        self.glowAt(150, 40, 340, Color.hex(0x2a7c86).alpha(40));
+        self.glowAt(w - 80, h + 40, 380, Color.hex(0x7a5a2a).alpha(30));
+        self.motesIn(t, strength, w, h);
+    }
+
+    /// The Triforce `h` tall with its top at (cx, top), breathing light.
+    pub fn crest(self: *const Page, cx: f32, top: f32, h: f32, t: f32) void {
+        const breath = 0.75 + 0.25 * @sin(t * 1.3);
+        self.glowAt(cx, top + h / 2 + 1, h * 1.3, kGold.alpha(@intFromFloat(46 * breath)));
+        triforce(self.paint.r, cx, top, h, h / 26);
+    }
+
+    /// The gold rule under a header, brightest in the middle where a
+    /// diamond sits on it.
+    pub fn goldRule(self: *const Page, x: f32, y: f32, w: f32) void {
+        const r = self.paint.r;
+        gradient(r, .{ .x = x, .y = y, .w = w / 2, .h = 1 }, kGold.alpha(10), kGold.alpha(90), .horizontal);
+        gradient(r, .{ .x = x + w / 2, .y = y, .w = w / 2, .h = 1 }, kGold.alpha(90), kGold.alpha(10), .horizontal);
+        diamond(r, x + w / 2, y + 0.5, 3.5, kGold);
+    }
+
+    /// A line fading from `a` to `b`, along or down.
+    pub fn fade(self: *const Page, rect: kit.Rect, a: Color, b: Color, across: bool) void {
+        gradient(self.paint.r, .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = rect.h }, a, b, if (across) .horizontal else .vertical);
+    }
+
+    /// The front page's Play, anywhere.
+    pub fn playButton(self: *const Page, box: kit.Rect, label: []const u8, picked: bool, t: f32) void {
+        self.play(box, label, picked, t);
     }
 
     /// The band of light under a picked row, with its gold edge and diamond,
