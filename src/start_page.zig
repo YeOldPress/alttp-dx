@@ -66,8 +66,23 @@ pub const Dialog = struct {
     choices: []const []const u8 = &.{},
     choice_rects: []const kit.Rect = &.{},
     picked: usize = 0,
-    /// A bar, 0 to 1, for a download.
+    /// A bar, 0 to 1, for a download, and how far down the box it goes.
     progress: ?f32 = null,
+    progress_y: f32 = 92,
+    /// A box of text being typed, under the title, with the lines below it.
+    field: ?[]const u8 = null,
+    /// Whether the field's caret shows this frame, for a blink.
+    caret: bool = false,
+    /// A box to tick, under the field.
+    check: ?Check = null,
+};
+
+pub const Check = struct {
+    rect: kit.Rect,
+    label: []const u8,
+    on: bool,
+    /// Picked with the keys or a pad, so A or Space ticks it.
+    focused: bool = false,
 };
 
 // ------------------------------------------------------------------ colors
@@ -693,6 +708,31 @@ pub const Page = struct {
 
         p.textEx(.subtitle, cx - p.textWidthTracked(.subtitle, d.title, 2) / 2, box.y + 22, kGoldHi, kGold, 2, d.title);
         var y = box.y + 56;
+        if (d.field) |text| {
+            const fr = ui.Rect{ .x = box.x + 50, .y = box.y + 54, .w = box.w - 100, .h = 34 };
+            p.box(fr, 8, 1, kGold.alpha(150), Color.hex(0x08121a));
+            var fit_buf: [256]u8 = undefined;
+            const shown = p.fit(.item, text, fr.w - 28, &fit_buf);
+            const ty = fr.y + (fr.h - p.lineHeight(.item)) / 2;
+            p.text(.item, fr.x + 14, ty, kCream, shown);
+            if (d.caret) {
+                const cx_ = fr.x + 14 + p.textWidth(.item, shown) + 2;
+                p.fillRound(.{ .x = cx_, .y = ty + 1, .w = 2, .h = p.lineHeight(.item) - 2 }, 1, kGoldHi);
+            }
+            y = fr.y + fr.h + 10;
+        }
+        if (d.check) |ck| {
+            const r = ui.Rect{ .x = ck.rect.x, .y = ck.rect.y, .w = ck.rect.w, .h = ck.rect.h };
+            if (ck.focused) p.box(r, r.h / 2, 1, kGold.alpha(160), Color.hex(0x13222a));
+            const size: f32 = 16;
+            const label_w = p.textWidth(.body, ck.label);
+            const x0 = r.x + (r.w - size - 10 - label_w) / 2;
+            const tick = ui.Rect{ .x = x0, .y = r.y + (r.h - size) / 2, .w = size, .h = size };
+            p.box(tick, 4, 1.5, if (ck.on) kGold else kChipLine, if (ck.on) Color.hex(0xe9c46c) else kChip);
+            if (ck.on) p.textCentered(.item, tick.x + size / 2, tick.y + (size - p.lineHeight(.item)) / 2, Color.hex(0x2a1a04), "\u{2713}");
+            p.text(.body, tick.x + size + 10, r.y + (r.h - p.lineHeight(.body)) / 2, if (ck.on or ck.focused) kCream else kMuted, ck.label);
+            y = r.y + r.h + 8;
+        }
         for (d.lines) |line| {
             const col = switch (line.tone) {
                 .plain => kCream,
@@ -705,7 +745,7 @@ pub const Page = struct {
         }
 
         if (d.progress) |frac| {
-            const bar = ui.Rect{ .x = box.x + 50, .y = box.y + 92, .w = box.w - 100, .h = 10 };
+            const bar = ui.Rect{ .x = box.x + 50, .y = box.y + d.progress_y, .w = box.w - 100, .h = 10 };
             p.fillRound(bar, 5, Color.hex(0x1a2a32));
             if (frac > 0) p.fillRound(.{ .x = bar.x, .y = bar.y, .w = @max(bar.w * frac, 10), .h = bar.h }, 5, kTeal);
         }

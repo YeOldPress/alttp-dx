@@ -38,6 +38,10 @@ const kUsage =
     \\  rom-info ROM      Say which release a ROM is
     \\  check-msu PACK    Look over an MSU-1 pack, a folder or a .zip, for
     \\                    missing tracks and files that won't play
+    \\  shrink-msu [MSUPATH]
+    \\                    Turn installed MSU packs' .pcm tracks into FLAC:
+    \\                    the same sound in about half the space (default:
+    \\                    every pack, in msu/ and at zelda3.ini's MSUPath)
     \\  version           Say which version this is
     \\  gui               Open the window
     \\  help              This
@@ -194,6 +198,10 @@ fn runCommand(alloc: std.mem.Allocator, args: []const [:0]const u8) !bool {
     }
     if (std.mem.eql(u8, cmd, "check-msu")) {
         return ops.checkMsuPack(alloc, log, positional(rest, 0) orelse return error.Usage);
+    }
+    if (std.mem.eql(u8, cmd, "shrink-msu")) {
+        if (positional(rest, 0)) |one| return ops.shrinkMsu(alloc, log, &.{one});
+        return ops.shrinkAllMsu(alloc, log, ops.iniMsuPath(alloc));
     }
     if (std.mem.eql(u8, cmd, "rom-info")) {
         return ops.romInfo(alloc, log, positional(rest, 0) orelse return error.Usage);

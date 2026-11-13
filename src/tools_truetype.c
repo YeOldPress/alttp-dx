@@ -3,7 +3,7 @@
 // glyphs these bake into a texture and draws from that.
 #define STB_TRUETYPE_IMPLEMENTATION
 #define STBTT_STATIC
-#include "third_party/stb/stb_truetype.h"
+#include "../third_party/stb/stb_truetype.h"
 
 // Laid out as stbtt_packedchar, which the Zig side mirrors.
 typedef stbtt_packedchar ToolsGlyph;

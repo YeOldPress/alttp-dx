@@ -1108,6 +1108,8 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         menu.enterDataDirectory();
         // An update finishes here: the files it set aside go.
         updater.cleanUp();
+        // An MSU pack from before packs had folders gets one.
+        menu.tidyMsu(alloc);
         // The start menu shows when zelda3.ini asks for it, and always when
         // the assets are missing or from another version, since stale assets
         // misbehave in ways that look like game bugs. A mod's or a

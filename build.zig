@@ -7,6 +7,8 @@ var sdl_lib: ?[]const u8 = null;
 // they move out of this list and are referenced from zelda_zig.zig instead.
 const c_sources = [_][]const u8{
     "third_party/opus-1.3.1-stripped/opus_decoder_amalgam.c",
+    // FLAC and Ogg Vorbis MSU tracks: dr_flac and stb_vorbis behind a shim.
+    "src/msu_codecs.c",
 };
 
 const c_flags = [_][]const u8{
@@ -209,6 +211,8 @@ pub fn build(b: *std.Build) void {
     menu_tests.root_module.addImport("default_ini", default_ini);
     menu_tests.root_module.addImport("tools_fonts", tools_fonts);
     menu_tests.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
+    // The tools convert MSU packs to FLAC and check the result decodes.
+    menu_tests.root_module.addCSourceFile(.{ .file = b.path("src/msu_codecs.c"), .flags = &c_flags });
     menu_tests.root_module.addOptions("build_info", build_info);
     menu_tests.root_module.addImport("sdl_c", sdl_c_mod);
     addSdlIncludes(b, menu_tests.root_module);

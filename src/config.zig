@@ -980,7 +980,7 @@ fn handleGraphics(key: [*:0]const u8, value: [*:0]u8) bool {
         return true;
     } else if (util.StringEqualsNoCase(key, "CrtFilter")) {
         const preset = crt.Preset.fromName(std.mem.span(value)) orelse return false;
-        g_config.crt_filter = @intFromEnum(preset);
+        g_config.crt_filter = @backingInt(preset);
         return true;
     } else if (util.StringEqualsNoCase(key, "CrtCurvature")) {
         g_config.crt_curvature = @intCast(std.math.clamp(atoi(value), 0, 100));
@@ -1126,7 +1126,8 @@ fn handleGeneral(key: [*:0]const u8, value: [*:0]u8) bool {
         g_config.rumble = @intCast(std.math.clamp(atoi(value), 0, 100));
         return true;
     } else if (util.StringEqualsNoCase(key, "Language")) {
-        g_config.language = value;
+        // us is the game's own text, which needs no looking up.
+        g_config.language = if (util.StringEqualsNoCase(value, "us") or value[0] == 0) null else value;
         return true;
     } else if (util.StringEqualsNoCase(key, "Tracker")) {
         g_tracker = std.mem.span(value);

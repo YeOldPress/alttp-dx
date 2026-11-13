@@ -14,8 +14,10 @@ const std = @import("std");
 const builtin = @import("builtin");
 const fileio = @import("fileio.zig");
 const msu_import = @import("msu_import.zig");
+const tools_ops = @import("tools_ops.zig");
 const updater = @import("updater.zig");
 const start_logo = @import("start_logo.zig");
+const langs = @import("asset_languages.zig");
 const rom_mod = @import("rom.zig");
 const asset_all = @import("asset_all.zig");
 const c = @import("sdl.zig").c;
@@ -136,6 +138,10 @@ pub const kSettings = [_]Setting{
     .{ .section = "General", .key = "WidescreenCamera", .label = "Widescreen Camera", .kind = .toggle },
     .{ .section = "General", .key = "DisableFrameDelay", .label = "Disable Frame Delay", .kind = .toggle },
     .{ .section = "General", .key = "Rumble", .label = "Rumble", .kind = .{ .number = .{ .min = 0, .max = 100, .step = 10, .suffix = "%" } } },
+    .{ .section = "General", .key = "Language", .label = "Language", .kind = .{ .choice = .{
+        .values = &.{ "us", "de", "fr", "fr-c", "en", "es", "pl", "pt", "redux", "nl", "sv" },
+        .labels = &.{ "English", "German", "French", "French (CA)", "English (EU)", "Spanish", "Polish", "Portuguese", "Redux", "Dutch", "Swedish" },
+    } } },
 
     .{ .section = kSectionMark, .key = "", .label = "GRAPHICS", .kind = .text },
     .{ .section = "Graphics", .key = "Fullscreen", .label = "Fullscreen", .kind = .{ .choice = .{
@@ -194,7 +200,7 @@ pub const kSettings = [_]Setting{
     .{ .section = "Sound", .key = "MSUVolume", .label = "MSU Volume", .kind = .{ .number = .{ .min = 0, .max = 100, .step = 5, .suffix = "%" } } },
     .{ .section = "Sound", .key = "ResumeMSU", .label = "Resume MSU", .kind = .toggle },
     .{ .section = "Sound", .key = "MSUFinishCues", .label = "Finish MSU Cues", .kind = .toggle },
-    .{ .section = "Sound", .key = "MSUPath", .label = "MSU Path", .kind = .text },
+    .{ .section = "Sound", .key = "MSUPath", .label = "MSU Pack", .kind = .text },
 
     .{ .section = kSectionMark, .key = "", .label = "FEATURES", .kind = .text },
     .{ .section = "Features", .key = "ItemSwitchLR", .label = "Switch Items With L/R", .kind = .toggle },
@@ -595,6 +601,32 @@ fn isUpdateSetting(s: Setting) bool {
         (std.mem.eql(u8, s.key, "CheckForUpdates") or std.mem.eql(u8, s.key, "UpdateChannel"));
 }
 
+/// MSUPath: text in the ini, but the start menu steps it through the packs
+/// that are installed.
+pub fn isMsuPack(s: Setting) bool {
+    return std.mem.eql(u8, s.section, "Sound") and std.mem.eql(u8, s.key, "MSUPath");
+}
+
+/// A setting with nothing to step through here: text that's edited in the
+/// ini, and buttons.
+fn isFixed(s: Setting) bool {
+    return (s.kind == .text and !isMsuPack(s)) or s.kind == .action;
+}
+
+/// The installed pack after (or before) the one `current` names, by MSUPath.
+fn nextPack(arena: std.mem.Allocator, current: []const u8, dir: i32) ?[]const u8 {
+    const packs = msu_import.listPacks(arena, msu_import.kLibrary) catch return null;
+    if (packs.len == 0) return null;
+    const cur = std.mem.trim(u8, current, " \t");
+    var at: ?usize = null;
+    for (packs, 0..) |p, i| {
+        if (tools_ops.samePath(p.path, cur)) at = i;
+    }
+    const n: i32 = @intCast(packs.len);
+    const next: i32 = if (at) |i| @mod(@as(i32, @intCast(i)) + dir, n) else if (dir > 0) 0 else n - 1;
+    return packs[@intCast(next)].path;
+}
+
 fn isLogoSetting(s: Setting) bool {
     return std.mem.eql(u8, s.section, "General") and std.mem.eql(u8, s.key, "StartBanner");
 }
@@ -615,7 +647,10 @@ pub fn displayValue(buf: []u8, s: Setting, value: []const u8) []const u8 {
                 return std.fmt.bufPrint(buf, "ON - {s}", .{start_logo.note()}) catch "ON";
             return if (on) "ON" else "OFF";
         },
-        .text => return if (v.len == 0) "(none)" else v,
+        .text => {
+            if (v.len == 0) return "(none)";
+            return if (isMsuPack(s)) msu_import.packLabel(v) else v;
+        },
         .action => return "",
         .choice => |opts| return opts.labelFor(v),
         else => {},
@@ -680,6 +715,7 @@ pub fn describe(s: Setting) []const u8 {
         .{ "WidescreenHud", "In widescreen, move the magic meter, item and counters to the left edge and the hearts to the right, instead of leaving them in the middle. Does nothing at 4 by 3." },
         .{ "WidescreenCamera", "In widescreen, keep the camera far enough from an area's edge that the whole wide picture shows the area, instead of stopping where a 4 by 3 screen would and showing black past it. Does nothing at 4 by 3." },
         .{ "DisableFrameDelay", "Skip the wait the game does between frames. Only worth it on a display running at exactly 60 hertz." },
+        .{ "Language", "The language the game's text is in. Anything but English has to be built into the assets first, on the Languages page in Tools. One that isn't there plays in English. Takes effect the next time the game starts." },
         .{ "Rumble", "How hard the controller shakes when Link is hurt, bombs go off, bosses fall and the screen shakes. 0 turns it off." },
         .{ "Tracker", "Where the item tracker goes when playing a randomizer seed. Beside the game, over it, in its own window, or nowhere. T switches while playing." },
         .{ "Fullscreen", "Windowed, fullscreen at the desktop's resolution, or fullscreen with a change of display mode." },
@@ -711,9 +747,9 @@ pub fn describe(s: Setting) []const u8 {
         .{ "AudioFreq", "The rate the game mixes its sound at. Higher is clearer. MSU audio sets its own." },
         .{ "AudioChannels", "Mono or stereo sound." },
         .{ "AudioSamples", "The sound buffer's size. Smaller means less delay before you hear things, larger helps if the sound crackles." },
-        .{ "EnableMSU", "Play an MSU music pack instead of the SNES music. Deluxe packs give each area its own track, and Opuz packs are compressed." },
+        .{ "EnableMSU", "Play an MSU music pack instead of the SNES music. Tracks can be .pcm, FLAC or Ogg Vorbis. Deluxe packs give each area its own track, and Opuz packs are their own compressed kind." },
         .{ "MSUVolume", "How loud MSU music plays." },
-        .{ "MSUPath", "Where the MSU pack's files are and how their names begin. The track number and the file type go on the end. Set it in zelda3.ini." },
+        .{ "MSUPath", "Which MSU pack plays. Import MSU-1 puts each pack in a folder of its own under msu, and left or right here switches between them." },
         .{ "ResumeMSU", "Pick an overworld area's MSU track up where it left off when you come back to it." },
         .{ "MSUFinishCues", "Let short MSU music cues, like the mirror warp, play to their end before the next track starts." },
         .{ "ItemSwitchLR", "Switch items with L and R, and reorder the inventory with Y and a direction. Hold L or R on an item to put it on that button." },
@@ -750,6 +786,10 @@ const Modal = enum {
     info,
     /// Where an MSU-1 pack comes from: dropped on the window, or picked.
     msu,
+    /// What to call the pack just dropped or picked, before it goes in.
+    msu_name,
+    /// The pack going in: which track, how far, and a way to stop.
+    msu_progress,
     /// A newer version: whether to install it, then how that's going.
     update,
 };
@@ -992,7 +1032,7 @@ fn onLeftArrow(ini: *const Ini, screen: Screen, pos: usize, slot: usize, px: f32
     const at = rowAt(screen, pos);
     if (at >= kSettings.len) return false;
     const st = kSettings[at];
-    if (isSection(st) or st.kind == .text or st.kind == .action) return false;
+    if (isSection(st) or isFixed(st)) return false;
     var b = ValueBufs{};
     const vw = page.paint.textWidth(.strong, modernValue(&page.paint, st, ini.values[at] orelse "(missing)", &b));
     const r = modernRowRect(slot);
@@ -1023,6 +1063,26 @@ fn msuOnIn(ini: *const Ini) bool {
     const i = settingIndex("Sound", "EnableMSU") orelse return false;
     const v = std.mem.trim(u8, ini.values[i] orelse "", " \t");
     return v.len != 0 and !std.mem.eql(u8, v, "0") and !std.ascii.eqlIgnoreCase(v, "false");
+}
+
+/// Packs used to be installed loose in msu/, before there could be more
+/// than one. Once at startup, a pack still loose there moves into a folder
+/// of its own, and MSUPath follows it if that's what it pointed at. Runs
+/// whether or not the start menu shows, since the game reads MSUPath too.
+pub fn tidyMsu(alloc: std.mem.Allocator) void {
+    const moved = msu_import.moveLoosePack(alloc, msu_import.kLibrary) orelse return;
+    defer {
+        alloc.free(moved.from);
+        alloc.free(moved.to);
+    }
+    std.debug.print("Moved the MSU pack in {s} to {s}\n", .{ moved.from, moved.to });
+    var ini = Ini.load(alloc, "zelda3.ini") catch return;
+    defer ini.deinit();
+    const i = settingIndex("Sound", "MSUPath") orelse return;
+    const cur = std.mem.trim(u8, ini.values[i] orelse "", " \t");
+    if (cur.len != 0 and !tools_ops.samePath(cur, moved.from)) return;
+    ini.set(i, moved.to) catch return;
+    ini.save("zelda3.ini") catch {};
 }
 
 /// Where MSU tracks go, as the ini has it.
@@ -1187,31 +1247,200 @@ fn looksLikeMsuPack(path: [:0]const u8) bool {
 /// What the status line says while a pack goes in and once it has.
 var g_msu_status_buf: [64]u8 = undefined;
 
-/// Redraws the menu as each track goes in, so the window doesn't sit
-/// frozen through a pack that can run to a gigabyte or two.
-const MsuProgress = struct {
-    renderer: *c.SDL_Renderer,
-    ini: *const Ini,
-    view: View,
+/// The pack waiting to be named before it goes in, and the name so far.
+var g_msu_src: ?[:0]u8 = null;
+var g_msu_name: [64]u8 = undefined;
+var g_msu_name_len: usize = 0;
+/// Which of the naming dialog's buttons is picked: Import, or Cancel.
+var g_msu_name_choice: usize = 0;
+const kMsuNameChoices = [_][]const u8{ "Import", "Cancel" };
+/// Whether the pack's .pcm tracks go in as FLAC (ticked unless unticked),
+/// how many .pcm tracks it has (none, and there's no box to tick), and
+/// whether the keys or a pad have the box picked rather than the name.
+var g_msu_flac = true;
+var g_msu_pcm: usize = 0;
+var g_msu_on_check = false;
 
-    fn update(ctx: *anyopaque, done: usize, total: usize) void {
-        const self: *MsuProgress = @ptrCast(@alignCast(ctx));
-        c.SDL_PumpEvents();
-        self.view.status = std.fmt.bufPrint(&g_msu_status_buf, "IMPORTING TRACK {d} OF {d}", .{ @min(done + 1, total), total }) catch "IMPORTING";
-        drawScreen(self.renderer, self.ini, self.view);
+/// The question up as of the last frame drawn, for the boxes that change
+/// size with it.
+var g_modal_now: Modal = .none;
+
+/// The naming dialog's FLAC box.
+fn msuCheckRect() Rect {
+    const box = modalRect();
+    if (g_modern) return .{ .x = box.x + 70, .y = box.y + 98, .w = box.w - 140, .h = 28 };
+    return .{ .x = box.x + 60, .y = box.y + 22 + kRowH * 3, .w = box.w - 120, .h = kRowH + 4 };
+}
+
+fn toggleMsuFlac() void {
+    g_msu_flac = !g_msu_flac;
+}
+const kMsuStopChoices = [_][]const u8{"Stop"};
+
+/// The progress dialog's one button, in the middle.
+fn msuStopRect() Rect {
+    const r = modalChoiceRect(0);
+    const box = modalRect();
+    return .{ .x = box.x + (box.w - r.w) / 2, .y = r.y, .w = r.w, .h = r.h };
+}
+
+fn msuName() []const u8 {
+    return g_msu_name[0..g_msu_name_len];
+}
+
+/// Puts the naming question up for the pack at `source`, with the name of
+/// its folder or zip to start from.
+fn askMsuName(window: *c.SDL_Window, source: []const u8) void {
+    const copy = std.heap.c_allocator.dupeSentinel(u8, source, 0) catch return;
+    if (g_msu_src) |old| std.heap.c_allocator.free(old);
+    g_msu_src = copy;
+    var buf: [64]u8 = undefined;
+    const name = msu_import.packName(&buf, source);
+    @memcpy(g_msu_name[0..name.len], name);
+    g_msu_name_len = name.len;
+    g_msu_name_choice = 0;
+    g_msu_flac = true;
+    g_msu_on_check = false;
+    g_msu_pcm = msu_import.pcmTracksIn(std.heap.c_allocator, copy);
+    _ = c.SDL_StartTextInput(window);
+}
+
+fn dropMsuName(window: *c.SDL_Window) void {
+    if (g_msu_src) |src| std.heap.c_allocator.free(src);
+    g_msu_src = null;
+    _ = c.SDL_StopTextInput(window);
+}
+
+/// Typed (or pasted) text onto the end of the name, as much as fits whole.
+fn msuNameType(text: []const u8) void {
+    var i: usize = 0;
+    while (i < text.len) {
+        const n = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
+        if (i + n > text.len) break;
+        const ch = text[i..][0..n];
+        i += n;
+        if (n == 1 and (ch[0] < 0x20 or ch[0] == 0x7f)) continue;
+        if (g_msu_name_len + n > g_msu_name.len) break;
+        @memcpy(g_msu_name[g_msu_name_len..][0..n], ch);
+        g_msu_name_len += n;
+    }
+}
+
+/// Takes the last character off the name, however many bytes it is.
+fn msuNameBackspace() void {
+    while (g_msu_name_len > 0) {
+        g_msu_name_len -= 1;
+        if (g_msu_name[g_msu_name_len] & 0xc0 != 0x80) break;
+    }
+}
+
+/// A pack going in, on a thread of its own so the window keeps drawing and
+/// can say how far it's got.
+const MsuJob = struct {
+    source: [:0]u8,
+    name: []u8,
+    flac: bool,
+    status: msu_import.Status = .{},
+    finished: std.atomic.Value(bool) = .init(false),
+    thread: ?std.Thread = null,
+    // Set by the thread before `finished`.
+    err: ?msu_import.Error = null,
+    imported: msu_import.Imported = .{ .tracks = 0 },
+    msu_path: ?[]u8 = null,
+
+    fn run(self: *MsuJob) void {
+        if (msu_import.importNamed(std.heap.c_allocator, self.source, msu_import.kLibrary, self.name, .{ .flac = self.flac, .status = &self.status })) |got| {
+            self.imported = got.imported;
+            self.msu_path = got.msu_path;
+        } else |err| {
+            self.err = err;
+        }
+        self.finished.store(true, .release);
+    }
+
+    fn destroy(self: *MsuJob) void {
+        const a = std.heap.c_allocator;
+        a.free(self.source);
+        a.free(self.name);
+        if (self.msu_path) |p| a.free(p);
+        a.destroy(self);
     }
 };
+var g_msu_job: ?*MsuJob = null;
+/// Whether the pointer's over Stop, which lights it up.
+var g_msu_stop_hover = false;
 
-/// Installs the pack at `path` where the ini's MSUPath says, and says how
-/// that went.
-fn importMsu(alloc: std.mem.Allocator, renderer: *c.SDL_Renderer, ini: *const Ini, view: View, path: [:0]const u8) []const u8 {
-    var shown = view;
-    shown.status = "READING MSU-1 PACK...";
-    drawScreen(renderer, ini, shown);
-    var ctx = MsuProgress{ .renderer = renderer, .ini = ini, .view = view };
-    const n = msu_import.importPack(alloc, path, msuPathIn(ini), .{ .ctx = &ctx, .f = MsuProgress.update }) catch |err|
-        return msu_import.describe(err);
-    return std.fmt.bufPrint(&g_msu_status_buf, "IMPORTED {d} MSU-1 TRACKS", .{n}) catch "IMPORTED";
+/// Starts the named pack going in. False when it couldn't.
+fn startMsuImport() bool {
+    const a = std.heap.c_allocator;
+    const src = g_msu_src orelse return false;
+    const job = a.create(MsuJob) catch return false;
+    const name = a.dupe(u8, if (std.mem.trim(u8, msuName(), " ").len == 0) "Pack" else msuName()) catch {
+        a.destroy(job);
+        return false;
+    };
+    job.* = .{ .source = src, .name = name, .flac = g_msu_flac and g_msu_pcm != 0 };
+    g_msu_src = null;
+    job.thread = std.Thread.spawn(.{}, MsuJob.run, .{job}) catch {
+        job.destroy();
+        return false;
+    };
+    g_msu_job = job;
+    return true;
+}
+
+/// Once the pack's in (or isn't): makes it the one that plays, and says
+/// how it went. Null while it's still going.
+fn finishMsuImport(ini: *Ini, dirty: *bool) ?[]const u8 {
+    const job = g_msu_job orelse return null;
+    if (!job.finished.load(.acquire)) return null;
+    if (job.thread) |t| t.join();
+    g_msu_job = null;
+    defer job.destroy();
+    if (job.err) |err| return msu_import.describe(err);
+    // The pack just brought in is the one to hear, from now on.
+    if (settingIndex("Sound", "MSUPath")) |mi| {
+        if (ini.set(mi, job.msu_path.?)) |_| {
+            if (ini.save("zelda3.ini")) |_| {
+                dirty.* = false;
+            } else |_| {
+                dirty.* = true;
+            }
+        } else |_| {}
+    }
+    const got = job.imported;
+    if (got.flac != 0)
+        return std.fmt.bufPrint(&g_msu_status_buf, "IMPORTED {d} MSU-1 TRACKS AS FLAC", .{got.tracks}) catch "IMPORTED";
+    return std.fmt.bufPrint(&g_msu_status_buf, "IMPORTED {d} MSU-1 TRACKS", .{got.tracks}) catch "IMPORTED";
+}
+
+/// Leaving the menu with a pack half in: stop it, and wait for it to.
+fn stopMsuImport() void {
+    const job = g_msu_job orelse return;
+    job.status.cancel.store(true, .release);
+    if (job.thread) |t| t.join();
+    g_msu_job = null;
+    job.destroy();
+}
+
+/// What the progress dialog says it's doing, and how far along it is.
+fn msuProgressText(buf: []u8) struct { doing: []const u8, frac: f32 } {
+    const job = g_msu_job orelse return .{ .doing = "", .frac = 1 };
+    const st = &job.status;
+    const track = st.track.load(.acquire);
+    const tracks = st.tracks.load(.acquire);
+    const total = st.total.load(.acquire);
+    const frac: f32 = if (total == 0) 0 else @min(1, @as(f32, @floatFromInt(st.done.load(.acquire))) / @as(f32, @floatFromInt(total)));
+    const pct: u32 = @intFromFloat(frac * 100);
+    const doing = if (st.cancel.load(.acquire))
+        "Stopping after this track..."
+    else switch (st.phase.load(.acquire)) {
+        .reading => "Reading the pack...",
+        .copying => std.fmt.bufPrint(buf, "Copying track {d} of {d}  \u{00b7}  {d}%", .{ track, tracks, pct }) catch "",
+        .shrinking => std.fmt.bufPrint(buf, "Turning track {d} of {d} into FLAC  \u{00b7}  {d}%", .{ track, tracks, pct }) catch "",
+        .finishing => "Putting it in place...",
+    };
+    return .{ .doing = doing, .frac = frac };
 }
 
 /// The randomizer page's two choices. Only one exists yet.
@@ -1377,7 +1606,34 @@ pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const 
     if (std.c.getenv("UPDATE")) |u| {
         updater.pretend(std.meta.stringToEnum(updater.Phase, std.mem.span(u)) orelse .available, "V1.8");
     }
-    const modal: Modal = if (std.c.getenv("INFO") != null) .info else if (std.c.getenv("MSU_IMPORT") != null) .msu else if (std.c.getenv("UPDATE_MODAL") != null) .update else .none;
+    var modal: Modal = if (std.c.getenv("INFO") != null) .info else if (std.c.getenv("MSU_IMPORT") != null) .msu else if (std.c.getenv("UPDATE_MODAL") != null) .update else .none;
+    // MSU_NAME="Some Pack" has the naming question up; MSU_PROGRESS=n has a
+    // pack n percent of the way in, at track 12 of 34.
+    if (std.c.getenv("MSU_NAME")) |n| {
+        const name = std.mem.span(n);
+        const len = @min(name.len, g_msu_name.len);
+        @memcpy(g_msu_name[0..len], name[0..len]);
+        g_msu_name_len = len;
+        modal = .msu_name;
+        // MSU_PCM=n says the pack has n .pcm tracks, MSU_FLAC=0 unticks the
+        // box, MSU_CHECK=1 has it picked.
+        g_msu_pcm = if (std.c.getenv("MSU_PCM")) |t| std.fmt.parseInt(usize, std.mem.span(t), 10) catch 34 else 34;
+        g_msu_flac = std.c.getenv("MSU_FLAC") == null;
+        g_msu_on_check = std.c.getenv("MSU_CHECK") != null;
+    }
+    var fake_job: MsuJob = undefined;
+    if (std.c.getenv("MSU_PROGRESS")) |t| {
+        const pct = std.fmt.parseInt(u64, std.mem.span(t), 10) catch 40;
+        fake_job = .{ .source = undefined, .name = @constCast("Zelda Remix"), .flac = true };
+        fake_job.status.phase.store(.shrinking, .release);
+        fake_job.status.track.store(12, .release);
+        fake_job.status.tracks.store(34, .release);
+        fake_job.status.total.store(100, .release);
+        fake_job.status.done.store(pct, .release);
+        g_msu_job = &fake_job;
+        modal = .msu_progress;
+    }
+    defer g_msu_job = null;
     g_msu_on = msuOnIn(&ini);
     if (screen == .achievements) {
         g_ach_unlocked = achievement_list.Unlocked.load(alloc);
@@ -1394,6 +1650,7 @@ pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const 
 }
 
 fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
+    g_modal_now = v.modal;
     if (modernPage()) |page| {
         drawModern(page, ini, v);
         _ = c.SDL_RenderPresent(renderer);
@@ -1490,11 +1747,46 @@ fn drawModernModal(page: *const start_page.Page, v: View) void {
                 };
             }
         },
+        .msu_name => {
+            d.title = "Name this pack";
+            d.field = msuName();
+            d.caret = !g_msu_on_check and @mod(c.SDL_GetTicks(), 1000) < 600;
+            if (g_msu_pcm != 0) d.check = .{
+                .rect = msuCheckRect(),
+                .label = "Store as FLAC: the same sound in half the space",
+                .on = g_msu_flac,
+                .focused = g_msu_on_check,
+            };
+            lines[0] = if (msu_import.packExists(msuName()))
+                .{ .text = "You have a pack called that. This replaces it.", .tone = .warn }
+            else if (g_msu_pcm == 0)
+                .{ .text = "Its tracks are already compressed, so they go in as they are." }
+            else
+                .{ .text = "Type to change the name. It goes beside your other packs." };
+            d.lines = lines[0..1];
+            d.choices = &kMsuNameChoices;
+            d.choice_rects = &rects;
+            d.picked = g_msu_name_choice;
+        },
+        .msu_progress => {
+            d.title = "Importing";
+            const pr = msuProgressText(&buf2);
+            const name = if (g_msu_job) |j| j.name else "";
+            lines[0] = .{ .text = name, .tone = .accent };
+            lines[1] = .{ .text = pr.doing };
+            d.lines = lines[0..2];
+            d.progress = pr.frac;
+            d.progress_y = 108;
+            rects[0] = msuStopRect();
+            d.choices = &kMsuStopChoices;
+            d.choice_rects = rects[0..1];
+            d.picked = if (g_msu_stop_hover) 0 else 1;
+        },
         .msu => {
             d.title = "Import an MSU-1 pack";
             d.lines = &.{
                 L{ .text = "Drop a folder or .zip here, or browse for one" },
-                L{ .text = "Replaces the pack you have", .tone = .warn },
+                L{ .text = "Kept beside your other packs, and played from now on" },
             };
             d.choices = &kMsuChoices;
             d.choice_rects = &rects;
@@ -1552,6 +1844,11 @@ fn pageHints(v: View, out: *[5]start_page.Hint) []const start_page.Hint {
         .rom => &.{ .{ .key = "Drop", .action = "A file on the window" }, cancel },
         .info => &.{.{ .key = "A / B", .action = "Close" }},
         .msu => &.{ choose, .{ .key = "A / Enter", .action = "Browse" }, cancel },
+        .msu_name => if (g_msu_pcm != 0)
+            &.{ .{ .key = "Type", .action = "Name it" }, .{ .key = "\xe2\x86\x93 Space", .action = "FLAC on/off" }, .{ .key = "Enter / A", .action = "Import" }, cancel }
+        else
+            &.{ .{ .key = "Type", .action = "Name it" }, .{ .key = "Enter / A", .action = "Import" }, cancel },
+        .msu_progress => &.{.{ .key = "B / Esc", .action = "Stop" }},
         .update => switch (updater.phase()) {
             .downloading => &.{cancel},
             .installing, .ready => &.{},
@@ -1723,7 +2020,7 @@ fn drawModernList(page: *const start_page.Page, ini: *const Ini, v: View) void {
             const value = modernValue(p, st, ini.values[at] orelse "(missing)", &vb);
             const right = r.x + r.w - 20;
             const vw = p.textWidth(.strong, value);
-            const fixed = st.kind == .text or st.kind == .action;
+            const fixed = isFixed(st);
             const col = if (fixed) P.kDim else if (picked) P.kGoldHi else P.kTeal;
             p.text(.strong, right - vw, r.y + (r.h - p.lineHeight(.strong)) / 2, col, value);
             if (picked and !fixed) page.chevrons(right - vw - 14, right + 12, r.y + r.h / 2, P.kGold);
@@ -2705,7 +3002,7 @@ fn drawList(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
             drawText(renderer, 56, y, if (selected) kColorSelect else kColorText, s.label);
             var vbuf: [64]u8 = undefined;
             const shown = displayValue(&vbuf, s, ini.values[at] orelse "(missing)");
-            const dim = s.kind == .text;
+            const dim = isFixed(s);
             drawText(renderer, 400, y, if (dim) kColorTextDim else kColorValue, shown);
         }
         y += kRowH;
@@ -2775,8 +3072,13 @@ const LineWrap = struct {
 
 /// Where the modal's panel sits, and where its two answers sit inside it.
 fn modalRect() Rect {
-    if (g_modern) return .{ .x = (start_page.kW - 500) / 2, .y = (start_page.kH - 190) / 2 - 10, .w = 500, .h = 190 };
-    return .{ .x = 70, .y = 150, .w = kWindowW - 140, .h = 190 };
+    // Naming a pack has its FLAC box too.
+    const tall = g_modal_now == .msu_name;
+    if (g_modern) {
+        const h: f32 = if (tall) 226 else 190;
+        return .{ .x = (start_page.kW - 500) / 2, .y = (start_page.kH - h) / 2 - 10, .w = 500, .h = h };
+    }
+    return if (tall) .{ .x = 70, .y = 130, .w = kWindowW - 140, .h = 230 } else .{ .x = 70, .y = 150, .w = kWindowW - 140, .h = 190 };
 }
 
 fn modalChoiceRect(i: usize) Rect {
@@ -2827,7 +3129,7 @@ fn drawModal(renderer: *c.SDL_Renderer, v: View) void {
             drawTextCentered(renderer, cx, box.y + 22, kColorSelect, "IMPORT AN MSU-1 PACK", kScale);
             drawTextCentered(renderer, cx, box.y + 22 + kRowH, kColorTextDim, "DROP A FOLDER OR .ZIP HERE,", kScale);
             drawTextCentered(renderer, cx, box.y + 22 + kRowH * 2, kColorTextDim, "OR BROWSE FOR ONE", kScale);
-            drawTextCentered(renderer, cx, box.y + 22 + kRowH * 3, kColorWarn, "REPLACES THE PACK YOU HAVE", 1);
+            drawTextCentered(renderer, cx, box.y + 22 + kRowH * 3, kColorTextDim, "KEPT BESIDE YOUR OTHER PACKS", 1);
             for (kMsuChoices, 0..) |label, i| {
                 const r = modalChoiceRect(i);
                 const selected = i == g_msu_choice;
@@ -2835,6 +3137,40 @@ fn drawModal(renderer: *c.SDL_Renderer, v: View) void {
                 outlineRound(renderer, r.x, r.y, r.w, r.h, 8, if (selected) 2 else 1, if (selected) kColorSelect else kColorLine);
                 drawTextCentered(renderer, r.x + r.w / 2, r.y + 8, if (selected) kColorSelect else kColorText, label, kScale);
             }
+        },
+        .msu_name => {
+            drawTextCentered(renderer, cx, box.y + 22, kColorSelect, "NAME THIS PACK", kScale);
+            var nb: [80]u8 = undefined;
+            const blink = !g_msu_on_check and @mod(c.SDL_GetTicks(), 1000) < 600;
+            const shown = std.fmt.bufPrint(&nb, "{s}{s}", .{ msuName(), if (blink) "_" else " " }) catch msuName();
+            drawTextCentered(renderer, cx, box.y + 22 + kRowH * 1.5, kColorValue, shown, kScale);
+            if (g_msu_pcm != 0) {
+                const r = msuCheckRect();
+                if (g_msu_on_check) drawRowHighlight(renderer, r.x, r.y - 2, r.w, r.h);
+                const label = if (g_msu_flac) "[X] STORE AS FLAC" else "[ ] STORE AS FLAC";
+                drawTextCentered(renderer, cx, r.y + 2, if (g_msu_on_check) kColorSelect else kColorText, label, kScale);
+            }
+            if (msu_import.packExists(msuName()))
+                drawTextCentered(renderer, cx, box.y + 30 + kRowH * 4, kColorWarn, "REPLACES THE PACK CALLED THAT", 1);
+            for (kMsuNameChoices, 0..) |label, i| {
+                const r = modalChoiceRect(i);
+                const selected = i == g_msu_name_choice;
+                fillRound(renderer, r.x, r.y, r.w, r.h, 8, if (selected) kColorRowHi else kColorPanel);
+                outlineRound(renderer, r.x, r.y, r.w, r.h, 8, if (selected) 2 else 1, if (selected) kColorSelect else kColorLine);
+                drawTextCentered(renderer, r.x + r.w / 2, r.y + 8, if (selected) kColorSelect else kColorText, label, kScale);
+            }
+        },
+        .msu_progress => {
+            drawTextCentered(renderer, cx, box.y + 22, kColorSelect, "IMPORTING", kScale);
+            var pb: [96]u8 = undefined;
+            const pr = msuProgressText(&pb);
+            drawTextCentered(renderer, cx, box.y + 22 + kRowH * 1.5, kColorValue, if (g_msu_job) |j| j.name else "", kScale);
+            drawTextCentered(renderer, cx, box.y + 22 + kRowH * 3, kColorTextDim, pr.doing, 1);
+            const bar_x = box.x + 40;
+            const bar_w = box.w - 80;
+            const bar_y = box.y + 22 + kRowH * 4.5;
+            outlineRound(renderer, bar_x - 2, bar_y - 2, bar_w + 4, 14, 5, 1, kColorLine);
+            if (pr.frac > 0) fillRound(renderer, bar_x, bar_y, @max(bar_w * pr.frac, 8), 10, 4, kColorSelect);
         },
         .update => drawUpdateModal(renderer),
         .info, .none => {},
@@ -2911,6 +3247,11 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
                 drawText(renderer, 40, footer_y, kColorTextDim, "LEFT/RIGHT CHOOSE");
                 drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "A/ENTER BROWSE   B/ESC CANCEL");
             },
+            .msu_name => {
+                drawText(renderer, 40, footer_y, kColorTextDim, if (g_msu_pcm != 0) "TYPE A NAME   DOWN+SPACE FLAC" else "TYPE A NAME FOR IT");
+                drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "ENTER IMPORT   ESC CANCEL");
+            },
+            .msu_progress => drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "B/ESC STOP"),
             .update => switch (updater.phase()) {
                 .downloading => drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "B/ESC CANCEL"),
                 .installing, .ready => {},
@@ -3291,7 +3632,7 @@ fn resizeCentered(window: *c.SDL_Window, w: c_int, h: c_int) void {
 /// The tools, in this window rather than one of their own: it grows to
 /// their size and can be resized while they're up, then goes back to the
 /// menu's, as it was.
-fn runTools(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_Renderer) tools_gui.Outcome {
+fn runTools(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_Renderer, msu_path: []const u8) tools_gui.Exit {
     // Windows sizes a window in pixels and says how big its points are on
     // the side; a Mac or Wayland sizes it in points already, and says 1.
     const content = c.SDL_GetDisplayContentScale(c.SDL_GetDisplayForWindow(window));
@@ -3301,7 +3642,8 @@ fn runTools(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_Re
     _ = c.SDL_SetWindowMinimumSize(window, @intFromFloat(tools_gui.kMinW * k), @intFromFloat(tools_gui.kMinH * k));
     _ = c.SDL_SetWindowResizable(window, true);
 
-    const outcome = tools_gui.runIn(alloc, window, renderer);
+    // They start from the ROM the menu has, found or dropped on it.
+    const outcome = tools_gui.runIn(alloc, window, renderer, .{ .rom = if (g_rom_path) |p| p else null, .msu_path = msu_path });
 
     // Out of fullscreen or maximized first, or the size won't take.
     _ = c.SDL_RestoreWindow(window);
@@ -3482,9 +3824,14 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     // has already been and gone, so it's kept for the next one; a flag
     // made fresh each frame forgot it, and the entry never saved.
     var save_queued = false;
+    // A pack still going in when the menu closes is stopped first.
+    defer stopMsuImport();
     while (running) {
         const now = c.SDL_GetTicks();
         var confirm = false;
+        // Enter while naming a pack, which imports whatever's picked; A on a
+        // pad ticks the FLAC box when that's picked.
+        var name_enter = false;
         var start = false;
         var back = false;
         var save = save_queued;
@@ -3533,6 +3880,38 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                     else => {},
                 }
             }
+            // Naming a pack takes the keyboard for typing. Enter and Esc
+            // still answer, and a pad or the mouse work as ever.
+            if (modal == .msu_name) switch (event.type) {
+                c.SDL_EVENT_TEXT_INPUT => {
+                    // With the FLAC box picked, Space ticks it rather than
+                    // typing.
+                    if (!g_msu_on_check) msuNameType(std.mem.span(event.text.text));
+                    continue;
+                },
+                c.SDL_EVENT_KEY_DOWN => {
+                    const mods = event.key.mod;
+                    switch (event.key.key) {
+                        c.SDLK_BACKSPACE => if (!g_msu_on_check) msuNameBackspace(),
+                        c.SDLK_RETURN, c.SDLK_KP_ENTER => name_enter = true,
+                        c.SDLK_UP, c.SDLK_DOWN => if (g_msu_pcm != 0) {
+                            g_msu_on_check = !g_msu_on_check;
+                        },
+                        c.SDLK_SPACE => if (g_msu_on_check) toggleMsuFlac(),
+                        c.SDLK_ESCAPE => back = true,
+                        c.SDLK_TAB => g_msu_name_choice = 1 - g_msu_name_choice,
+                        c.SDLK_V => if (mods & (c.SDL_KMOD_CTRL | c.SDL_KMOD_GUI) != 0) {
+                            if (c.SDL_GetClipboardText()) |clip| {
+                                defer c.SDL_free(clip);
+                                msuNameType(std.mem.span(clip));
+                            }
+                        },
+                        else => {},
+                    }
+                    continue;
+                },
+                else => {},
+            };
             switch (event.type) {
                 c.SDL_EVENT_QUIT => running = false,
                 c.SDL_EVENT_GAMEPAD_ADDED => pads.open(event.gdevice.which),
@@ -3561,14 +3940,17 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                             // The main menu's drops are for the port's assets.
                             handled = true;
                             status = "SEEDS GO ON THE RANDOMIZER PAGE";
-                        } else if (modal == .msu or looksLikeMsuPack(span)) {
+                        } else if (modal == .msu or modal == .msu_name or modal == .msu_progress or looksLikeMsuPack(span)) {
                             // A folder or a zip is an MSU-1 pack, not a ROM.
                             handled = true;
                             if (!g_msu_on) {
                                 status = "TURN ON MSU AUDIO TO IMPORT A PACK";
+                            } else if (g_msu_job != null) {
+                                status = "ONE PACK AT A TIME";
                             } else {
-                                status = importMsu(alloc, renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice), span);
-                                if (std.mem.startsWith(u8, status, "IMPORTED")) modal = .none;
+                                askMsuName(window, span);
+                                modal = .msu_name;
+                                status = "";
                             }
                         }
                     }
@@ -3735,14 +4117,20 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
         if (g_page) |*pg| pg.paint.setScale(pixelDensity(window));
         if (!mainShown(main_cursor)) main_cursor = kMainLaunch;
         if (modal == .msu and !g_msu_on) modal = .none;
+        // The pack going in, once it's in.
+        if (finishMsuImport(&ini, &dirty)) |said| {
+            status = said;
+            if (modal == .msu_progress) modal = .none;
+        }
         if (modal == .update and !updateShown()) modal = .none;
 
         // A folder or zip picked in the system's own dialog.
         if (takeMsuPick()) |path| {
             defer std.heap.c_allocator.free(path);
-            if (g_msu_on) {
-                status = importMsu(alloc, renderer, &ini, viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice), path);
-                if (std.mem.startsWith(u8, status, "IMPORTED")) modal = .none;
+            if (g_msu_on and g_msu_job == null) {
+                askMsuName(window, path);
+                modal = .msu_name;
+                status = "";
             }
         }
 
@@ -3826,6 +4214,52 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 // Anything that means "done" puts it away.
                 .info => if (confirm or back or info or clicked) {
                     modal = .none;
+                },
+                // A name for the pack, then in it goes.
+                .msu_name => {
+                    if (hovered) {
+                        const under = choiceUnder(kMsuNameChoices.len, hover_x, hover_y);
+                        if (g_pointer.enters(under)) g_msu_name_choice = under.?;
+                    }
+                    if (adjust != 0) g_msu_name_choice = 1 - g_msu_name_choice;
+                    if (move != 0 and g_msu_pcm != 0) g_msu_on_check = !g_msu_on_check;
+                    if (clicked and g_msu_pcm != 0 and msuCheckRect().contains(hover_x, hover_y)) {
+                        toggleMsuFlac();
+                        clicked = false;
+                    }
+                    if (confirm and g_msu_on_check) {
+                        toggleMsuFlac();
+                        confirm = false;
+                    }
+                    if (name_enter) confirm = true;
+                    var over_choice = false;
+                    if (clicked) {
+                        for (0..kMsuNameChoices.len) |i| {
+                            if (modalChoiceRect(i).contains(hover_x, hover_y)) {
+                                g_msu_name_choice = i;
+                                over_choice = true;
+                            }
+                        }
+                    }
+                    if (back or ((confirm or over_choice) and g_msu_name_choice == 1)) {
+                        dropMsuName(window);
+                        modal = .none;
+                    } else if (confirm or over_choice) {
+                        _ = c.SDL_StopTextInput(window);
+                        if (startMsuImport()) {
+                            modal = .msu_progress;
+                        } else {
+                            dropMsuName(window);
+                            modal = .none;
+                            status = "COULD NOT START THE IMPORT";
+                        }
+                    }
+                },
+                // Nothing to do but watch, or stop it.
+                .msu_progress => {
+                    if (hovered) g_msu_stop_hover = msuStopRect().contains(hover_x, hover_y);
+                    const stop = back or (clicked and msuStopRect().contains(hover_x, hover_y));
+                    if (stop) if (g_msu_job) |job| job.status.cancel.store(true, .release);
                 },
                 // Folder or Zip File opens the system's picker for one; a
                 // drop on the window (above) works without it.
@@ -3967,7 +4401,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         status = "";
                     },
                     kMainTools => {
-                        const outcome = runTools(alloc, window, renderer);
+                        const exit = runTools(alloc, window, renderer, msuPathIn(&ini));
                         // What was held when they opened was let go in them.
                         held = .{};
                         vrepeat = .{};
@@ -3976,7 +4410,51 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         // They may well have built some.
                         assets = checkAssets(alloc);
                         status = "";
-                        switch (outcome) {
+                        // Play in the language a build just put in.
+                        if (exit.language) |lang| {
+                            if (settingIndex("General", "Language")) |li| {
+                                ini.set(li, langs.get(lang).code) catch {};
+                                dirty = true;
+                            }
+                        }
+                        // The installed pack Use picked in the tools (or the
+                        // one left playing after a delete).
+                        if (exit.msu_path) |path| {
+                            defer std.heap.c_allocator.free(path);
+                            if (settingIndex("Sound", "MSUPath")) |mi| {
+                                if (ini.set(mi, path)) |_| {
+                                    if (ini.save("zelda3.ini")) |_| {
+                                        dirty = false;
+                                    } else |_| {
+                                        dirty = true;
+                                    }
+                                } else |_| {}
+                            }
+                        }
+                        // The pack the tools just checked: MSU on if it
+                        // wasn't, kept, and the pack brought in.
+                        if (exit.msu_pack) |pack| import: {
+                            defer std.heap.c_allocator.free(pack);
+                            // Quitting outright isn't the time for it.
+                            if (exit.to == .quit) break :import;
+                            if (!msuOnIn(&ini)) {
+                                if (settingIndex("Sound", "EnableMSU")) |mi| {
+                                    ini.set(mi, "true") catch {};
+                                    dirty = true;
+                                }
+                            }
+                            g_msu_on = msuOnIn(&ini);
+                            if (dirty) {
+                                if (ini.save("zelda3.ini")) |_| {
+                                    dirty = false;
+                                } else |_| {}
+                            }
+                            if (exit.to == .menu and g_msu_job == null) {
+                                askMsuName(window, pack);
+                                modal = .msu_name;
+                            }
+                        }
+                        switch (exit.to) {
                             .menu => {},
                             .quit => running = false,
                             // As Play here does: keep the settings, and go
@@ -4209,6 +4687,16 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 try applyCrtDefaults(&ini);
                 dirty = true;
                 status = "CRT SETTINGS RESET";
+            } else if (adjust != 0 and at < kSettings.len and isMsuPack(kSettings[at])) {
+                var arena_state = std.heap.ArenaAllocator.init(alloc);
+                defer arena_state.deinit();
+                if (nextPack(arena_state.allocator(), ini.values[at] orelse "", adjust)) |next| {
+                    try ini.set(at, next);
+                    dirty = true;
+                    status = "";
+                } else {
+                    status = "IMPORT MSU-1 ADDS PACKS TO PICK FROM";
+                }
             } else if (adjust != 0 and at < kSettings.len) {
                 var buf: [64]u8 = undefined;
                 const cur = ini.values[at] orelse "";
@@ -4278,6 +4766,7 @@ test {
     _ = msu_import;
     _ = start_page;
     _ = start_logo;
+    _ = tools_gui;
 }
 
 test "every setting on the Settings and Features pages has a description that fits its box" {

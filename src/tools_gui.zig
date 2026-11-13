@@ -13,6 +13,7 @@
 const std = @import("std");
 const c = @import("sdl.zig").c;
 const ops = @import("tools_ops.zig");
+const msu_import = @import("msu_import.zig");
 const kit = @import("menu_kit.zig");
 const draw = @import("tools_draw.zig");
 const start_page = @import("start_page.zig");
@@ -24,6 +25,7 @@ const music = @import("tools_music.zig");
 const pictures = @import("tools_pictures.zig");
 const game = @import("tools_game.zig");
 const rom_mod = @import("rom.zig");
+const langs = @import("asset_languages.zig");
 const Language = rom_mod.Language;
 
 const Rect = draw.Rect;
@@ -100,6 +102,114 @@ fn logWrite(ctx: *anyopaque, level: ops.Log.Level, text: []const u8) void {
     g_log[g_log_count] = line;
     g_log_count += 1;
     g_log_scroll = 0;
+    // A job's first failure and first success are what its card says.
+    if (g_job_running.load(.acquire)) {
+        if (level == .err and g_first_err.len == 0) g_first_err.set(text);
+        if (level == .ok and g_first_ok.len == 0) g_first_ok.set(text);
+    }
+}
+
+/// A line kept whole, for the card.
+const Kept = struct {
+    text: [400]u8 = undefined,
+    len: usize = 0,
+
+    fn set(self: *Kept, s: []const u8) void {
+        self.len = @min(s.len, self.text.len);
+        @memcpy(self.text[0..self.len], s[0..self.len]);
+    }
+
+    fn get(self: *const Kept) []const u8 {
+        return self.text[0..self.len];
+    }
+};
+
+/// What the last job came to: whether it worked, how long it took, and the
+/// line that says so. Shown on its page until the next job, with what to
+/// do next. Under the log's lock, since the job's thread writes it.
+const Done = struct {
+    job: Job,
+    ok: bool,
+    ms: u64,
+    line: Kept = .{},
+    /// The language a build just put in, to offer playing in it.
+    language: ?Language = null,
+};
+
+var g_done: ?Done = null;
+var g_first_err: Kept = .{};
+var g_first_ok: Kept = .{};
+/// When the job running started, which page started it, and the language
+/// it builds in, if it does.
+var g_job_started: u64 = 0;
+var g_job_screen: Screen = .assets;
+var g_job_language: ?Language = null;
+/// When Copy Log was last pressed, to say so for a moment.
+var g_copied_at: u64 = 0;
+
+/// Every line of the log onto the clipboard, to paste into a bug report or
+/// a message asking for help.
+fn copyLog() void {
+    const alloc = std.heap.c_allocator;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(alloc);
+    c.SDL_LockMutex(g_log_lock);
+    for (g_log[0..g_log_count]) |*line| {
+        const tag = switch (line.level) {
+            .info => "",
+            .ok => "OK: ",
+            .err => "ERROR: ",
+        };
+        text.print(alloc, "{s}{s}\n", .{ tag, line.text[0..line.len] }) catch break;
+    }
+    c.SDL_UnlockMutex(g_log_lock);
+    text.append(alloc, 0) catch return;
+    if (c.SDL_SetClipboardText(text.items[0 .. text.items.len - 1 :0].ptr)) g_copied_at = c.SDL_GetTicks();
+}
+
+// ------------------------------------------------------------ the file manager
+
+/// Opens the folder `path` is, or is in, in Finder, Explorer or whatever the
+/// desktop uses.
+fn reveal(path: []const u8) void {
+    var z_buf: [4096]u8 = undefined;
+    const z = std.fmt.bufPrintSentinel(&z_buf, "{s}", .{path}, 0) catch return;
+    var target: []const u8 = if (fileio.isDir(z.ptr)) path else std.fs.path.dirname(path) orelse ".";
+    var abs_buf: [4096]u8 = undefined;
+    if (!std.fs.path.isAbsolute(target)) {
+        var cwd_buf: [4096]u8 = undefined;
+        const cwd = fileio.workingDirectory(&cwd_buf) catch return;
+        target = std.fmt.bufPrint(&abs_buf, "{s}{s}{s}", .{ cwd, std.fs.path.sep_str, target }) catch return;
+    }
+    var url_buf: [3 * 4096 + 16]u8 = undefined;
+    const url = fileUrl(&url_buf, target) orelse return;
+    if (!c.SDL_OpenURL(url.ptr)) g_logger.err("Couldn't open {s}: {s}", .{ target, std.mem.span(c.SDL_GetError()) });
+}
+
+/// A path as a file:// address, with anything a URL can't hold as it is,
+/// spaces included, written as %XX.
+fn fileUrl(buf: []u8, path: []const u8) ?[:0]const u8 {
+    var w = std.Io.Writer.fixed(buf);
+    w.writeAll("file://") catch return null;
+    // A Windows path starts with its drive, which goes after a slash.
+    if (path.len == 0 or (path[0] != '/' and path[0] != '\\')) w.writeByte('/') catch return null;
+    for (path) |ch| {
+        if (ch == '\\') {
+            w.writeByte('/') catch return null;
+        } else if (std.ascii.isAlphanumeric(ch) or std.mem.indexOfScalar(u8, "-._~/:", ch) != null) {
+            w.writeByte(ch) catch return null;
+        } else {
+            w.print("%{X:0>2}", .{ch}) catch return null;
+        }
+    }
+    w.writeByte(0) catch return null;
+    return buf[0 .. w.end - 1 :0];
+}
+
+test "a path becomes a file address the system can open" {
+    var buf: [256]u8 = undefined;
+    try std.testing.expectEqualStrings("file:///Volumes/MacOS%20Spare/zelda3_files", fileUrl(&buf, "/Volumes/MacOS Spare/zelda3_files").?);
+    try std.testing.expectEqualStrings("file:///C:/Games/Zelda%20%231", fileUrl(&buf, "C:\\Games\\Zelda #1").?);
 }
 
 fn clearLog() void {
@@ -198,7 +308,7 @@ const Screen = enum {
             .modding => "Export the game's text, maps and pictures to a folder, edit them, then build them back in.",
             .graphics => "Look through the pictures in your work folder, or preview a custom Link sprite.",
             .music => "Listen to the game's songs, played by its own sound driver.",
-            .msu => "Check a CD-quality MSU-1 music pack for missing or broken tracks before you use it.",
+            .msu => "Check a CD-quality MSU-1 music pack before you use it, and shrink the ones you have.",
             .languages => "Take the text out of a translated ROM, like German, French or Redux, and build it into the game.",
             .extras => "Small tools for digging into the game.",
         };
@@ -208,11 +318,35 @@ const Screen = enum {
 const AssetState = enum { missing, standard, custom, old };
 
 /// A question over the window, which takes the keys until it's answered.
-const Modal = enum { none, leave };
+const Modal = enum { none, leave, delete_pack, rename_pack };
 
 /// Where the window goes when it closes: back to the start menu, into the
 /// game, or out altogether.
 pub const Outcome = enum { menu, play, quit };
+
+/// How the window closed, and anything it asks the start menu to do on the
+/// way: play in the language a build just put in, or import the MSU-1 pack
+/// just checked.
+pub const Exit = struct {
+    to: Outcome,
+    language: ?Language = null,
+    /// The caller frees it, with the C allocator.
+    msu_pack: ?[:0]u8 = null,
+    /// The installed pack picked to play (MSUPath), when Use or a delete
+    /// changed it. The caller frees it, with the C allocator.
+    msu_path: ?[:0]u8 = null,
+};
+
+/// What the start menu knows that the tools can start from.
+pub const Options = struct {
+    /// The ROM the menu found or was given.
+    rom: ?[]const u8 = null,
+    /// Pick up where the last visit left off, from zelda3_tools.ini. Off
+    /// for screenshots, which want the same thing every time.
+    remember: bool = true,
+    /// MSUPath from the menu's ini: where the installed pack is.
+    msu_path: ?[]const u8 = null,
+};
 
 const State = struct {
     screen: Screen = .assets,
@@ -237,6 +371,26 @@ const State = struct {
     leave: ?Outcome = null,
     /// Told to wait for the job, then go.
     waiting: bool = false,
+    /// What to tell the start menu on the way out.
+    exit_language: ?Language = null,
+    exit_msu: ?[:0]u8 = null,
+
+    /// Where the installed MSU pack is (MSUPath), and how many of its tracks
+    /// are still .pcm, counted now and then rather than every frame.
+    msu_path: []const u8 = "",
+    msu_path_own: std.ArrayList(u8) = .empty,
+    /// Whether Use (or deleting the one that played) changed it.
+    msu_changed: bool = false,
+    /// The installed packs, looked at now and then rather than every frame.
+    packs: []msu_import.Pack = &.{},
+    packs_arena: ?std.heap.ArenaAllocator = null,
+    packs_page: usize = 0,
+    msu_age: u32 = 0,
+    /// The pack Delete or Rename was pressed on, while that's asked about.
+    delete_at: usize = 0,
+    /// The new name being typed for it.
+    rename: [64]u8 = undefined,
+    rename_len: usize = 0,
 
     /// Rebuilding when the work folder changes: on or off, the folder's
     /// stamp as of the last build or look, and when it was last looked at.
@@ -252,6 +406,36 @@ const State = struct {
     /// can say every frame without reading it every frame.
     rom_seen: std.ArrayList(u8) = .empty,
     rom_kind: RomKind = .unreadable,
+
+    fn deinit(self: *State, alloc: std.mem.Allocator) void {
+        for (&self.paths) |*p| p.deinit(alloc);
+        self.rom_seen.deinit(alloc);
+        self.msu_path_own.deinit(alloc);
+        if (self.packs_arena) |*a| a.deinit();
+    }
+
+    fn setMsuPath(self: *State, alloc: std.mem.Allocator, path: []const u8) void {
+        var copy: std.ArrayList(u8) = .empty;
+        copy.appendSlice(alloc, path) catch return;
+        self.msu_path_own.deinit(alloc);
+        self.msu_path_own = copy;
+        self.msu_path = copy.items;
+    }
+
+    /// Looks at what's installed again.
+    fn refreshPacks(self: *State, alloc: std.mem.Allocator) void {
+        if (self.packs_arena) |*a| a.deinit();
+        self.packs_arena = std.heap.ArenaAllocator.init(alloc);
+        self.packs = msu_import.listPacks(self.packs_arena.?.allocator(), msu_import.kLibrary) catch &.{};
+        self.msu_age = 0;
+    }
+
+    fn playingPack(self: *const State) ?usize {
+        for (self.packs, 0..) |p, i| {
+            if (ops.samePath(p.path, self.msu_path)) return i;
+        }
+        return null;
+    }
 
     /// The ticked translations the folder has files for.
     fn extra(self: *State) ops.Extra {
@@ -324,7 +508,8 @@ const State = struct {
         }
         self.screen = screen;
         self.assets_age = 0;
-        clearLog();
+        // A job's lines stay while it runs, wherever it's watched from.
+        if (!jobRunning()) clearLog();
     }
 
     /// The asset file's state, looked at again every couple of seconds.
@@ -376,6 +561,7 @@ const Job = enum {
     build_from_files,
     extract_dialogue,
     check_msu,
+    shrink_msu,
     input_log,
     text_dict,
 
@@ -387,8 +573,22 @@ const Job = enum {
             .build_from_files => "Building from your files",
             .extract_dialogue => "Extracting the dialogue",
             .check_msu => "Checking the pack",
+            .shrink_msu => "Shrinking the installed packs",
             .input_log => "Reading the input log",
             .text_dict => "Searching for a dictionary",
+        };
+    }
+
+    /// What to try when it fails, under what went wrong.
+    fn hint(self: Job) []const u8 {
+        return switch (self) {
+            .build => "Check it's the US ROM, and that no other program has the asset file open.",
+            .build_from_files => "Usually a slip in an edited file. The Activity below names the file and line.",
+            .export_files, .extract_dialogue => "Check the work folder is somewhere you can save to.",
+            .check_msu => "Fix or replace the tracks it names, then check it again.",
+            .shrink_msu => "Any track that didn't convert is still its .pcm, untouched. Check there's room on the disk.",
+            .input_log => "Pick a snapshot the game saved, from its saves folder.",
+            .text_dict => "Pick the dialogue.txt that Export wrote.",
         };
     }
 
@@ -407,6 +607,7 @@ const JobArgs = struct {
     languages: [kLangCount]Language = undefined,
     language_count: usize = 0,
     sprites_from_png: bool,
+    msu_path: [:0]u8,
 
     fn get(self: *const JobArgs, field: Field) [:0]u8 {
         return self.paths[@backingInt(field)];
@@ -414,6 +615,7 @@ const JobArgs = struct {
 
     fn free(self: *JobArgs, alloc: std.mem.Allocator) void {
         for (self.paths) |p| alloc.free(p);
+        alloc.free(self.msu_path);
         alloc.destroy(self);
     }
 };
@@ -433,7 +635,15 @@ fn startJob(alloc: std.mem.Allocator, st: *State, job: Job) void {
         return;
     };
     if (g_log_count != 0) logWrite(&g_log_dummy, .info, "");
+    c.SDL_LockMutex(g_log_lock);
+    g_done = null;
+    g_first_err = .{};
+    g_first_ok = .{};
+    c.SDL_UnlockMutex(g_log_lock);
     g_job = job;
+    g_job_started = c.SDL_GetTicks();
+    g_job_screen = st.screen;
+    g_job_language = if (job == .build and args.language_count != 0) args.languages[0] else null;
     g_job_running.store(true, .release);
     const t = std.Thread.spawn(.{}, jobThread, .{ alloc, args }) catch {
         g_job_running.store(false, .release);
@@ -447,34 +657,46 @@ fn startJob(alloc: std.mem.Allocator, st: *State, job: Job) void {
 fn makeJobArgs(alloc: std.mem.Allocator, st: *State, job: Job) !*JobArgs {
     const args = try alloc.create(JobArgs);
     errdefer alloc.destroy(args);
-    args.* = .{ .job = job, .paths = undefined, .sprites_from_png = st.sprites_from_png };
+    args.* = .{ .job = job, .paths = undefined, .sprites_from_png = st.sprites_from_png, .msu_path = try alloc.dupeSentinel(u8, st.msu_path, 0) };
+    errdefer alloc.free(args.msu_path);
     var made: usize = 0;
     errdefer for (args.paths[0..made]) |p| alloc.free(p);
     for (&args.paths, 0..) |*p, i| {
         p.* = try alloc.dupeSentinel(u8, st.paths[i].items, 0);
         made += 1;
     }
-    const langs = st.extra().languages;
-    @memcpy(args.languages[0..langs.len], langs);
-    args.language_count = langs.len;
+    const picked_langs = st.extra().languages;
+    @memcpy(args.languages[0..picked_langs.len], picked_langs);
+    args.language_count = picked_langs.len;
     return args;
 }
 
 fn jobThread(alloc: std.mem.Allocator, a: *JobArgs) void {
-    defer {
-        a.free(alloc);
-        g_job_running.store(false, .release);
-    }
     const extra = ops.Extra{ .languages = a.languages[0..a.language_count], .dir = a.get(.folder) };
-    switch (a.job) {
-        .build => _ = ops.buildAssets(alloc, g_logger, a.get(.rom), a.get(.out), extra),
-        .export_files => _ = ops.exportFiles(alloc, g_logger, a.get(.rom), a.get(.folder)),
-        .build_from_files => _ = ops.buildFromFiles(alloc, g_logger, a.get(.rom), a.get(.folder), a.get(.out), .{ .sprites_from_png = a.sprites_from_png }, extra),
-        .extract_dialogue => _ = ops.extractDialogue(alloc, g_logger, a.get(.lang_rom), a.get(.folder), null),
-        .check_msu => _ = ops.checkMsuPack(alloc, g_logger, a.get(.msu)),
-        .input_log => _ = ops.saveInputLog(alloc, g_logger, a.get(.snapshot)),
-        .text_dict => _ = ops.saveTextDict(alloc, g_logger, a.get(.dialogue)),
-    }
+    const ok = switch (a.job) {
+        .build => ops.buildAssets(alloc, g_logger, a.get(.rom), a.get(.out), extra),
+        .export_files => ops.exportFiles(alloc, g_logger, a.get(.rom), a.get(.folder)),
+        .build_from_files => ops.buildFromFiles(alloc, g_logger, a.get(.rom), a.get(.folder), a.get(.out), .{ .sprites_from_png = a.sprites_from_png }, extra),
+        .extract_dialogue => ops.extractDialogue(alloc, g_logger, a.get(.lang_rom), a.get(.folder), null),
+        .check_msu => ops.checkMsuPack(alloc, g_logger, a.get(.msu)),
+        .shrink_msu => ops.shrinkAllMsu(alloc, g_logger, a.msu_path),
+        .input_log => ops.saveInputLog(alloc, g_logger, a.get(.snapshot)),
+        .text_dict => ops.saveTextDict(alloc, g_logger, a.get(.dialogue)),
+    };
+    finishJob(a.job, ok);
+    a.free(alloc);
+    g_job_running.store(false, .release);
+}
+
+/// Says how the job went, for its card: in the job's first success line, or
+/// its first failure.
+fn finishJob(job: Job, ok: bool) void {
+    c.SDL_LockMutex(g_log_lock);
+    defer c.SDL_UnlockMutex(g_log_lock);
+    var d = Done{ .job = job, .ok = ok, .ms = c.SDL_GetTicks() -| g_job_started, .language = if (ok) g_job_language else null };
+    const said = if (ok) g_first_ok.get() else g_first_err.get();
+    d.line.set(if (said.len != 0) said else if (ok) "Finished." else "It stopped without saying why. The Activity below may tell.");
+    g_done = d;
 }
 
 // -------------------------------------------------------------- immediate UI
@@ -607,16 +829,30 @@ const Ui = struct {
 
     /// A file or folder to work with: its label, then a box with the path
     /// in it and Browse at its end. Clicking any of it browses. `tag` is a
-    /// word on how it stands, at the box's right.
-    fn field(self: *Ui, x: f32, y: f32, w: f32, label: []const u8, path: []const u8, placeholder: []const u8, tag: ?Tag) bool {
+    /// word on how it stands, at the box's right. With `show`, a Show
+    /// button in the box opens where the path is in the file manager.
+    fn field(self: *Ui, x: f32, y: f32, w: f32, label: []const u8, path: []const u8, placeholder: []const u8, tag: ?Tag, show: bool) FieldHit {
         self.p.text(.strong, x, y, kText, label);
         const row = Rect{ .x = x, .y = y + 24, .w = w, .h = kFieldH };
         const hit = self.item(row, true);
         if (hit.ring) self.ring(row, kRadius, kBg);
         const box = Rect{ .x = row.x, .y = row.y, .w = row.w - kBrowseW - 8, .h = row.h };
-        self.p.box(box, kRadius, 1, if (hit.lit) kAccent.alpha(150) else kBorder, kSurface);
+        const show_w = self.p.textWidth(.small, "Show") + 24;
+        const show_rect = Rect{ .x = box.x + box.w - 8 - show_w, .y = box.y + 8, .w = show_w, .h = box.h - 16 };
+        // Over Show, the rest of the row isn't what a click would do.
+        const over_show = show and show_rect.contains(self.mouse_x, self.mouse_y) and !self.keys;
+        const lit = hit.lit and !over_show;
+        self.p.box(box, kRadius, 1, if (lit) kAccent.alpha(150) else kBorder, kSurface);
 
         var right = box.x + box.w - 12;
+        var show_hit = kNoHit;
+        if (show) {
+            show_hit = self.item(show_rect, true);
+            if (show_hit.ring) self.ring(show_rect, show_rect.h / 2, kSurface);
+            self.p.box(show_rect, show_rect.h / 2, 1, if (show_hit.lit) kAccent else kBorder, if (show_hit.lit) kSurfaceHi else kSurface);
+            self.p.textCentered(.small, show_rect.x + show_rect.w / 2, show_rect.y + (show_rect.h - self.p.lineHeight(.small)) / 2, if (show_hit.lit) kAccentHi else kTextDim, "Show");
+            right = show_rect.x - 12;
+        }
         if (tag) |t| {
             const tw = self.p.textWidth(.small, t.text);
             self.p.text(.small, right - tw, box.y + 11, t.color, t.text);
@@ -625,9 +861,11 @@ const Ui = struct {
         self.pathText(.{ .x = box.x + 14, .y = box.y + 10, .w = right - box.x - 14, .h = 20 }, path, placeholder);
 
         const browse = Rect{ .x = row.x + row.w - kBrowseW, .y = row.y, .w = kBrowseW, .h = row.h };
-        self.p.box(browse, browse.h / 2, 1, if (hit.lit) kAccent else kBorder, if (hit.lit) kSurfaceHi else kSurface);
-        self.p.textCentered(.strong, browse.x + browse.w / 2, browse.y + 10, if (hit.lit) kAccentHi else kText, "Browse\u{2026}");
-        return hit.pressed;
+        self.p.box(browse, browse.h / 2, 1, if (lit) kAccent else kBorder, if (lit) kSurfaceHi else kSurface);
+        self.p.textCentered(.strong, browse.x + browse.w / 2, browse.y + 10, if (lit) kAccentHi else kText, "Browse\u{2026}");
+        if (show_hit.pressed) return .show;
+        if (hit.pressed and !(self.clicked and show and show_rect.contains(self.mouse_x, self.mouse_y))) return .browse;
+        return .none;
     }
 
     /// A path the way people think of one: the file's name, then which
@@ -722,6 +960,19 @@ const Ui = struct {
 };
 
 const Action = struct { label: []const u8, enabled: bool, main: bool = true };
+const FieldHit = enum { none, browse, show };
+
+/// A path field for one of the window's paths: Browse opens the system's
+/// picker for it, and Show, there once the path is, opens where it is.
+fn pathField(ui: *Ui, window: ?*c.SDL_Window, st: *State, x: f32, y: f32, w: f32, label: []const u8, f: Field, placeholder: []const u8, tag: ?Tag) void {
+    const path = st.get(f);
+    const show = path.len != 0 and Must.either.satisfiedBy(path);
+    switch (ui.field(x, y, w, label, path, placeholder, tag, show)) {
+        .browse => openDialog(window, f),
+        .show => reveal(path),
+        .none => {},
+    }
+}
 const Tag = struct { text: []const u8, color: Color };
 
 /// A rectangle as the start menu's pieces take one.
@@ -792,6 +1043,8 @@ fn folderTag(path: []const u8) ?Tag {
 /// Under the buttons: the next thing to do, in a sentence, so a grayed-out
 /// button is never a mystery. While a job runs, what it's doing.
 fn statusLine(ui: *Ui, x: f32, y: f32, say: []const u8) void {
+    // On the job's own page its card says all this, bigger.
+    if (jobRunning() and g_drawing == g_job_screen) return;
     if (jobRunning()) {
         // Three dots, brightening in turn.
         const t: f32 = @floatFromInt(c.SDL_GetTicks() % 900);
@@ -800,8 +1053,9 @@ fn statusLine(ui: *Ui, x: f32, y: f32, say: []const u8) void {
             const a: u8 = if (phase < 1) 255 else 90;
             ui.p.disc(x + 4 + @as(f32, @floatFromInt(i)) * 10, y + 10, 3, kAccent.alpha(a));
         }
-        var buf: [64]u8 = undefined;
-        ui.p.text(.body, x + 34, y, kAccentHi, std.fmt.bufPrint(&buf, "{s}\u{2026}", .{g_job.doing()}) catch "");
+        var buf: [96]u8 = undefined;
+        const secs = (c.SDL_GetTicks() -| g_job_started) / 1000;
+        ui.p.text(.body, x + 34, y, kAccentHi, std.fmt.bufPrint(&buf, "{s}\u{2026}  {d}s", .{ g_job.doing(), secs }) catch "");
         return;
     }
     ui.p.text(.body, x, y, kTextDim, say);
@@ -844,9 +1098,9 @@ const Page = struct { x: f32, w: f32, bottom: f32 };
 /// Each page returns how far down it drew, for the activity under it.
 fn drawAssets(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window, pg: Page) f32 {
     var y: f32 = kPageTop;
-    if (ui.field(pg.x, y, pg.w, "Your ROM", st.get(.rom), "Drop a .sfc on the window, or Browse", romTag(st))) openDialog(window, .rom);
+    pathField(ui, window, st, pg.x, y, pg.w, "Your ROM", .rom, "Drop a .sfc on the window, or Browse", romTag(st));
     y += kFieldStep;
-    if (ui.field(pg.x, y, pg.w, "Save assets to", st.get(.out), "zelda3_assets.dat", null)) openDialog(window, .out);
+    pathField(ui, window, st, pg.x, y, pg.w, "Save assets to", .out, "zelda3_assets.dat", null);
     y += kFieldStep + 4;
 
     const ready = !jobRunning() and romStep(st) == null and st.get(.out).len != 0;
@@ -864,11 +1118,11 @@ fn buttonsWidth(ui: *const Ui, labels: []const []const u8) f32 {
 
 fn drawModding(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window, pg: Page) f32 {
     var y: f32 = kPageTop;
-    if (ui.field(pg.x, y, pg.w, "Your ROM", st.get(.rom), "Drop a .sfc on the window, or Browse", romTag(st))) openDialog(window, .rom);
+    pathField(ui, window, st, pg.x, y, pg.w, "Your ROM", .rom, "Drop a .sfc on the window, or Browse", romTag(st));
     y += kFieldStep;
-    if (ui.field(pg.x, y, pg.w, "Work folder", st.get(.folder), "Where the files go to be edited", folderTag(st.get(.folder)))) openDialog(window, .folder);
+    pathField(ui, window, st, pg.x, y, pg.w, "Work folder", .folder, "Where the files go to be edited", folderTag(st.get(.folder)));
     y += kFieldStep;
-    if (ui.field(pg.x, y, pg.w, "Save assets to", st.get(.out), "zelda3_assets.dat", null)) openDialog(window, .out);
+    pathField(ui, window, st, pg.x, y, pg.w, "Save assets to", .out, "zelda3_assets.dat", null);
     y += kFieldStep - 6;
     if (ui.check(pg.x, y, "Build sprite sheets from PNGs too", st.sprites_from_png, true)) st.sprites_from_png = !st.sprites_from_png;
     if (ui.check(pg.x + pg.w / 2, y, "Rebuild when a file is saved", st.watch, true)) setWatch(st, !st.watch);
@@ -1014,7 +1268,7 @@ fn drawGraphics(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_W
 
     var y: f32 = kPageTop;
     const half = (pg.w - 16) / 2;
-    if (ui.field(pg.x, y, half, "Link sprite", st.get(.zspr), "A .zspr file", mustTag(st.get(.zspr), .file))) openDialog(window, .zspr);
+    pathField(ui, window, st, pg.x, y, half, "Link sprite", .zspr, "A .zspr file", mustTag(st.get(.zspr), .file));
     const n = g.count(st);
     var buf: [96]u8 = undefined;
     const value = if (n == 0) "Nothing to show yet" else std.fmt.bufPrint(&buf, "{s}  ({d} of {d})", .{ std.fs.path.basename(g.path(st, g.index)), g.index + 1, n }) catch "";
@@ -1033,6 +1287,11 @@ fn drawGraphics(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_W
     ui.night.panel(kr(box));
     if (n != 0) {
         if (g.tex) |tex| drawPicture(ui.p.r, tex, g.w, g.h, box.inset(16));
+    } else if (!Must.folder.satisfiedBy(st.get(.folder))) {
+        // Nothing to look at until there's an export: the way to one.
+        const label = "Go to Mod the Game";
+        const bw = buttonsWidth(ui, &.{label});
+        if (ui.buttons(box.x + (box.w - bw) / 2, box.y + box.h / 2 - kButtonH / 2, &.{.{ .label = label, .enabled = true }}) != null) st.open(.modding);
     }
     return pg.bottom;
 }
@@ -1141,6 +1400,13 @@ fn drawMusic(ui: *Ui, alloc: std.mem.Allocator, st: *State, pg: Page) f32 {
 
     const playing = if (t.player) |p| p.playing else null;
     const label = if (playing != null) "\u{25a0}  Stop" else "\u{25b6}  Play";
+    if (songs.len == 0 and !st.canPlay()) {
+        // No songs without assets to take them from: the way to some.
+        const go = "Go to Build Assets";
+        if (ui.buttons(pg.x, y, &.{.{ .label = go, .enabled = true }}) != null) st.open(.assets);
+        statusLine(ui, pg.x + buttonsWidth(ui, &.{go}) + 20, y + 9, if (t.problem.len != 0) t.problem else "The music comes out of the assets.");
+        return y + kButtonH;
+    }
     if (ui.buttons(pg.x, y, &.{.{ .label = label, .enabled = songs.len != 0 }}) != null) {
         if (playing != null) {
             t.player.?.stop();
@@ -1159,14 +1425,159 @@ fn drawMusic(ui: *Ui, alloc: std.mem.Allocator, st: *State, pg: Page) f32 {
     return y + kButtonH;
 }
 
+/// How many packs the MSU-1 page lists at once; Previous and Next page
+/// through the rest.
+const kPackRows = 4;
+const kPackRowH: f32 = 50;
+
 fn drawMsu(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window, pg: Page) f32 {
     var y: f32 = kPageTop;
-    if (ui.field(pg.x, y, pg.w, "MSU-1 pack", st.get(.msu), "A pack's folder or .zip", mustTag(st.get(.msu), .either))) openDialog(window, .msu);
+    if (st.packs_arena == null or st.msu_age > 90) st.refreshPacks(alloc);
+    st.msu_age += 1;
+
+    // The packs that are installed, which one plays, and what to do with
+    // each.
+    var total: u64 = 0;
+    var pcm: usize = 0;
+    for (st.packs) |p| {
+        total += p.bytes;
+        pcm += p.pcm;
+    }
+    ui.p.text(.strong, pg.x, y, kText, "Installed packs");
+    var sum_buf: [96]u8 = undefined;
+    if (st.packs.len != 0) {
+        const sum = std.fmt.bufPrint(&sum_buf, "{d} pack{s}, {d} MB", .{ st.packs.len, if (st.packs.len == 1) "" else "s", total / (1024 * 1024) }) catch "";
+        ui.p.text(.small, pg.x + pg.w - ui.p.textWidth(.small, sum), y + 3, kTextDim, sum);
+    }
+    y += 30;
+    const playing = st.playingPack();
+    if (st.packs.len == 0) {
+        ui.p.text(.body, pg.x, y + 4, kTextDim, "None yet. Import MSU-1 on the start menu brings one in, or check one below.");
+        y += 34;
+    } else {
+        const pages = (st.packs.len + kPackRows - 1) / kPackRows;
+        if (st.packs_page >= pages) st.packs_page = pages - 1;
+        const first = st.packs_page * kPackRows;
+        for (st.packs[first..@min(first + kPackRows, st.packs.len)], first..) |p, i| {
+            packRow(ui, alloc, st, .{ .x = pg.x, .y = y, .w = pg.w, .h = kPackRowH - 6 }, p, i, playing == i);
+            y += kPackRowH;
+        }
+        if (pages > 1) {
+            var page_buf: [48]u8 = undefined;
+            const which = std.fmt.bufPrint(&page_buf, "{d}-{d} of {d}", .{ first + 1, @min(first + kPackRows, st.packs.len), st.packs.len }) catch "";
+            ui.p.text(.small, pg.x, y + 6, kTextDim, which);
+            var px = pg.x + ui.p.textWidth(.small, which) + 16;
+            if (smallPill(ui, &px, y, "Previous", st.packs_page > 0, false)) st.packs_page -= 1;
+            if (smallPill(ui, &px, y, "Next", st.packs_page + 1 < pages, false)) st.packs_page += 1;
+            y += 34;
+        }
+    }
+    y += 8;
+    const shrink = "Shrink to FLAC";
+    if (ui.buttons(pg.x, y, &.{.{ .label = shrink, .enabled = !jobRunning() and pcm != 0 }}) != null) startJob(alloc, st, .shrink_msu);
+    var say_buf: [128]u8 = undefined;
+    statusLine(ui, pg.x + buttonsWidth(ui, &.{shrink}) + 20, y + 9, if (pcm != 0)
+        std.fmt.bufPrint(&say_buf, "{d} .pcm track{s} to go. FLAC sounds exactly the same in about half the space.", .{ pcm, if (pcm == 1) "" else "s" }) catch ""
+    else if (st.packs.len != 0)
+        "Every pack is as small as it gets."
+    else
+        "Nothing to shrink yet.");
+    y += kButtonH + 30;
+
+    // A pack to look over before it goes in.
+    pathField(ui, window, st, pg.x, y, pg.w, "Check a pack before you import it", .msu, "A pack's folder or .zip", mustTag(st.get(.msu), .either));
     y += kFieldStep + 4;
     const pack_ok = st.get(.msu).len != 0 and Must.either.satisfiedBy(st.get(.msu));
     if (ui.buttons(pg.x, y, &.{.{ .label = "Check Pack", .enabled = !jobRunning() and pack_ok }}) != null) startJob(alloc, st, .check_msu);
     statusLine(ui, pg.x + buttonsWidth(ui, &.{"Check Pack"}) + 20, y + 9, if (pack_ok) "Ready to look it over." else "Pick a pack's folder or .zip, or drop it on the window.");
     return y + kButtonH;
+}
+
+/// One installed pack: its name, what's in it, whether it's the one that
+/// plays, and Use, Show and Delete.
+fn packRow(ui: *Ui, alloc: std.mem.Allocator, st: *State, r: Rect, p: msu_import.Pack, i: usize, playing: bool) void {
+    ui.p.box(r, 10, 1, if (playing) kAccent.alpha(150) else kBorder, kSurface);
+    const name_y = r.y + 6;
+    var name_buf: [96]u8 = undefined;
+    const name = ui.p.fit(.strong, p.name, r.w * 0.45, &name_buf);
+    ui.p.text(.strong, r.x + 16, name_y, kText, name);
+    if (playing) {
+        const bx = r.x + 16 + ui.p.textWidth(.strong, name) + 10;
+        const bw = ui.p.textWidth(.small, "Playing") + 16;
+        const badge = Rect{ .x = bx, .y = name_y + 1, .w = bw, .h = 18 };
+        ui.p.fillRound(badge, 9, kTeal.alpha(40));
+        ui.p.textCentered(.small, badge.x + bw / 2, badge.y + (badge.h - ui.p.lineHeight(.small)) / 2, kTeal, "Playing");
+    }
+    var kinds_buf: [48]u8 = undefined;
+    var detail_buf: [128]u8 = undefined;
+    const detail = std.fmt.bufPrint(&detail_buf, "{d} track{s}  \u{00b7}  {s}  \u{00b7}  {d} MB", .{ p.tracks, if (p.tracks == 1) "" else "s", msu_import.kindsLabel(&kinds_buf, p), p.bytes / (1024 * 1024) }) catch "";
+    ui.p.text(.small, r.x + 16, r.y + 26, kTextDim, detail);
+
+    // Right to left: Delete, Show, then Use for any but the one playing.
+    var right = r.x + r.w - 12;
+    const busy = jobRunning();
+    if (pillLeft(ui, &right, r.y + 8, "Delete", !busy, .danger)) {
+        st.delete_at = i;
+        st.openModal(ui, .delete_pack, 1);
+    }
+    if (pillLeft(ui, &right, r.y + 8, "Rename", !busy, .plain)) {
+        st.delete_at = i;
+        const n = @min(p.name.len, st.rename.len);
+        @memcpy(st.rename[0..n], p.name[0..n]);
+        st.rename_len = n;
+        st.openModal(ui, .rename_pack, 0);
+        if (g_window) |w| _ = c.SDL_StartTextInput(w);
+    }
+    if (pillLeft(ui, &right, r.y + 8, "Show", true, .plain)) reveal(msu_import.splitPath(p.path));
+    if (!playing and pillLeft(ui, &right, r.y + 8, "Use", !busy, .main)) {
+        st.setMsuPath(alloc, p.path);
+        st.msu_changed = true;
+        g_logger.ok("{s} plays from now on.", .{p.name});
+    }
+}
+
+const PillKind = enum { plain, main, danger };
+
+/// A small pill button ending at `right.*`, which moves left past it.
+fn pillLeft(ui: *Ui, right: *f32, y: f32, label: []const u8, enabled: bool, kind: PillKind) bool {
+    const w = ui.p.textWidth(.small, label) + 26;
+    right.* -= w;
+    const rect = Rect{ .x = right.*, .y = y, .w = w, .h = 28 };
+    right.* -= 8;
+    return pill(ui, rect, label, enabled, kind);
+}
+
+/// A small pill button starting at `x.*`, which moves right past it.
+fn smallPill(ui: *Ui, x: *f32, y: f32, label: []const u8, enabled: bool, main: bool) bool {
+    const w = ui.p.textWidth(.small, label) + 26;
+    const rect = Rect{ .x = x.*, .y = y, .w = w, .h = 26 };
+    x.* += w + 8;
+    return pill(ui, rect, label, enabled, if (main) .main else .plain);
+}
+
+fn pill(ui: *Ui, rect: Rect, label: []const u8, enabled: bool, kind: PillKind) bool {
+    const hit = ui.item(rect, enabled);
+    if (hit.ring) ui.ring(rect, rect.h / 2, kBg);
+    const ty = rect.y + (rect.h - ui.p.lineHeight(.small)) / 2;
+    const cx = rect.x + rect.w / 2;
+    if (!enabled) {
+        ui.p.box(rect, rect.h / 2, 1, kBorder.alpha(140), kSurface);
+        ui.p.textCentered(.small, cx, ty, kTextFaint, label);
+    } else switch (kind) {
+        .main => {
+            ui.p.box(rect, rect.h / 2, 1, kAccentHi, if (hit.lit) kButtonHi else kButton);
+            ui.p.textCentered(.small, cx, ty, kOnAccent, label);
+        },
+        .danger => {
+            ui.p.box(rect, rect.h / 2, 1, if (hit.lit) kWarn else kBorder, if (hit.lit) kSurfaceHi else kSurface);
+            ui.p.textCentered(.small, cx, ty, if (hit.lit) kWarn else kTextDim, label);
+        },
+        .plain => {
+            ui.p.box(rect, rect.h / 2, 1, if (hit.lit) kAccent else kBorder, if (hit.lit) kSurfaceHi else kSurface);
+            ui.p.textCentered(.small, cx, ty, if (hit.lit) kAccentHi else kTextDim, label);
+        },
+    }
+    return hit.pressed;
 }
 
 // --------------------------------------------------------------- languages
@@ -1192,11 +1603,11 @@ fn drawLanguages(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_
     st.available_age += 1;
 
     var y: f32 = kPageTop;
-    if (ui.field(pg.x, y, pg.w, "Translated ROM", st.get(.lang_rom), "A German, French, Redux\u{2026} ROM", mustTag(st.get(.lang_rom), .file))) openDialog(window, .lang_rom);
+    pathField(ui, window, st, pg.x, y, pg.w, "Translated ROM", .lang_rom, "A German, French, Redux\u{2026} ROM", mustTag(st.get(.lang_rom), .file));
     y += kFieldStep;
-    if (ui.field(pg.x, y, pg.w, "Work folder", st.get(.folder), "Where the extracted text goes", folderTag(st.get(.folder)))) openDialog(window, .folder);
+    pathField(ui, window, st, pg.x, y, pg.w, "Work folder", .folder, "Where the extracted text goes", folderTag(st.get(.folder)));
     y += kFieldStep;
-    if (ui.field(pg.x, y, pg.w, "Your US ROM", st.get(.rom), "The build needs it too", romTag(st))) openDialog(window, .rom);
+    pathField(ui, window, st, pg.x, y, pg.w, "Your US ROM", .rom, "The build needs it too", romTag(st));
     y += kFieldStep - 4;
 
     // Only the languages the folder has text for, which are the ones there
@@ -1257,13 +1668,13 @@ fn drawExtras(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Win
     const field_w = pg.w - 180;
 
     var y: f32 = kPageTop;
-    if (ui.field(pg.x, y, field_w, "Input log from a snapshot", st.get(.snapshot), "A .sav from the saves folder", mustTag(st.get(.snapshot), .file))) openDialog(window, .snapshot);
+    pathField(ui, window, st, pg.x, y, field_w, "Input log from a snapshot", .snapshot, "A .sav from the saves folder", mustTag(st.get(.snapshot), .file));
     if (ui.buttons(pg.x + field_w + 16, y + 25, &.{.{ .label = "Save Input Log", .enabled = idle and snapshot_ok, .main = false }}) != null) startJob(alloc, st, .input_log);
     y += kFieldStep;
     ui.p.text(.small, pg.x, y - 14, kTextDim, "Writes the buttons pressed since the snapshot as text, beside it.");
     y += 16;
 
-    if (ui.field(pg.x, y, field_w, "Dictionary for the dialogue", st.get(.dialogue), "A dialogue.txt, as Export writes", mustTag(st.get(.dialogue), .file))) openDialog(window, .dialogue);
+    pathField(ui, window, st, pg.x, y, field_w, "Dictionary for the dialogue", .dialogue, "A dialogue.txt, as Export writes", mustTag(st.get(.dialogue), .file));
     if (ui.buttons(pg.x + field_w + 16, y + 25, &.{.{ .label = "Find Dictionary", .enabled = idle and dialogue_ok, .main = false }}) != null) startJob(alloc, st, .text_dict);
     y += kFieldStep;
     ui.p.text(.small, pg.x, y - 14, kTextDim, "Searches for the best text compression dictionary. Takes a few minutes.");
@@ -1276,7 +1687,6 @@ fn drawExtras(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Win
 // ------------------------------------------------------------- the frame
 
 /// The update offer shows in the sidebar while there is one.
-
 /// The updater's labels are capitals, for the start menu's font: "V1.9",
 /// "NIGHTLY 1A2B3C4". Here they read "v1.9" and "Nightly 1a2b3c4".
 fn softLabel(label: []const u8, buf: []u8) []const u8 {
@@ -1371,19 +1781,19 @@ fn drawSidebar(ui: *Ui, alloc: std.mem.Allocator, st: *State) void {
 fn drawLog(ui: *Ui, rect: Rect) void {
     if (rect.h < 80) return;
     if (g_log_count == 0 and !jobRunning()) return;
-    ui.night.heading(rect.x, rect.y, rect.w, 18, "Activity");
+    // Copy Log at the heading's end, saying Copied for a moment after.
+    const copied = g_copied_at != 0 and c.SDL_GetTicks() -| g_copied_at < 1500;
+    const copy_label = if (copied) "\u{2713}  Copied" else "Copy Log";
+    const copy_w = ui.p.textWidth(.small, copy_label) + 26;
+    ui.night.heading(rect.x, rect.y, rect.w - copy_w - 12, 18, "Activity");
+    const copy = Rect{ .x = rect.x + rect.w - copy_w, .y = rect.y - 4, .w = copy_w, .h = 26 };
+    const chit = ui.item(copy, g_log_count != 0);
+    if (chit.ring) ui.ring(copy, copy.h / 2, kBg);
+    ui.p.box(copy, copy.h / 2, 1, if (chit.lit) kAccent else kBorder, if (chit.lit) kSurfaceHi else kSurface);
+    ui.p.textCentered(.small, copy.x + copy.w / 2, copy.y + (copy.h - ui.p.lineHeight(.small)) / 2, if (copied) kOk else if (chit.lit) kAccentHi else kTextDim, copy_label);
+    if (chit.pressed) copyLog();
     const panel = Rect{ .x = rect.x, .y = rect.y + 26, .w = rect.w, .h = rect.h - 26 };
     ui.night.panel(kr(panel));
-    // While a job runs, a bar slides along the top of the panel.
-    if (jobRunning()) {
-        const track = panel.w - 32;
-        const seg: f32 = 120;
-        const t: f32 = @floatFromInt(c.SDL_GetTicks() % 1400);
-        const at = (t / 1400) * (track + seg) - seg;
-        const from = @max(0, at);
-        const to = @min(track, at + seg);
-        if (to > from) ui.p.fillRound(.{ .x = panel.x + 16 + from, .y = panel.y + 1, .w = to - from, .h = 2 }, 1, kTeal);
-    }
 
     c.SDL_LockMutex(g_log_lock);
     defer c.SDL_UnlockMutex(g_log_lock);
@@ -1442,6 +1852,166 @@ fn drawLog(ui: *Ui, rect: Rect) void {
     }
 }
 
+// --------------------------------------------------------------- the card
+
+/// Something to do once a job's done, on its card.
+const Step = struct {
+    label: []const u8,
+    act: enum { play, play_in, show_out, show_folder, show_msu, show_installed, show_snapshot, show_dialogue, use_pack },
+    main: bool = false,
+};
+
+/// What makes sense after a job: play what was built, look at what was
+/// written, use the pack that was checked. After a failure, the way to
+/// what needs fixing, where there's one.
+fn nextSteps(d: *const Done, buf: *[2]Step, name_buf: []u8) []const Step {
+    if (!d.ok) {
+        buf[0] = switch (d.job) {
+            .check_msu => .{ .label = "Show Pack", .act = .show_msu },
+            .shrink_msu => .{ .label = "Show Packs", .act = .show_installed },
+            .build_from_files => .{ .label = "Show Folder", .act = .show_folder },
+            else => return buf[0..0],
+        };
+        return buf[0..1];
+    }
+    switch (d.job) {
+        .build => {
+            buf[0] = if (d.language) |l|
+                .{ .label = std.fmt.bufPrint(name_buf, "Play in {s}", .{languageName(l)}) catch "Play", .act = .play_in, .main = true }
+            else
+                .{ .label = "Play Now", .act = .play, .main = true };
+            buf[1] = .{ .label = "Show File", .act = .show_out };
+            return buf[0..2];
+        },
+        .build_from_files => {
+            buf[0] = .{ .label = "Play Now", .act = .play, .main = true };
+            buf[1] = .{ .label = "Show Folder", .act = .show_folder };
+            return buf[0..2];
+        },
+        .export_files, .extract_dialogue => buf[0] = .{ .label = "Show Folder", .act = .show_folder, .main = true },
+        .check_msu => buf[0] = .{ .label = "Use This Pack", .act = .use_pack, .main = true },
+        .shrink_msu => buf[0] = .{ .label = "Show Packs", .act = .show_installed, .main = true },
+        .input_log => buf[0] = .{ .label = "Show File", .act = .show_snapshot, .main = true },
+        .text_dict => buf[0] = .{ .label = "Show File", .act = .show_dialogue, .main = true },
+    }
+    return buf[0..1];
+}
+
+fn doStep(alloc: std.mem.Allocator, ui: *Ui, st: *State, d: *const Done, step: Step) void {
+    switch (step.act) {
+        .play => play(alloc, ui, st),
+        .play_in => {
+            st.exit_language = d.language;
+            play(alloc, ui, st);
+        },
+        .show_out => reveal(st.get(.out)),
+        .show_folder => reveal(st.get(.folder)),
+        .show_msu => reveal(st.get(.msu)),
+        .show_installed => reveal(msu_import.kLibrary),
+        .show_snapshot => reveal(st.get(.snapshot)),
+        .show_dialogue => reveal(st.get(.dialogue)),
+        .use_pack => {
+            if (st.exit_msu) |old| std.heap.c_allocator.free(old);
+            st.exit_msu = std.heap.c_allocator.dupeSentinel(u8, st.get(.msu), 0) catch null;
+            st.close(ui, .menu);
+        },
+    }
+}
+
+/// Under the page's buttons, on the page the job was started from: while it
+/// runs, what it's doing and for how long; after, whether it worked, the
+/// line that says so, what to try if it didn't, and what to do next.
+/// Returns how far down it drew.
+fn drawCard(ui: *Ui, alloc: std.mem.Allocator, st: *State, pg: Page, bottom: f32) f32 {
+    if (st.screen != g_job_screen) return bottom;
+    const running = jobRunning();
+    c.SDL_LockMutex(g_log_lock);
+    const done = g_done;
+    c.SDL_UnlockMutex(g_log_lock);
+    if (!running and done == null) return bottom;
+
+    const top = bottom + 22;
+    const failed = !running and !done.?.ok;
+    const box = Rect{ .x = pg.x, .y = top, .w = pg.w, .h = if (failed) 94 else 72 };
+    ui.night.panel(kr(box));
+    const x = box.x + 20;
+    var buf: [128]u8 = undefined;
+
+    if (running) {
+        const now = c.SDL_GetTicks();
+        // Three dots, brightening in turn, then what it's doing.
+        const t: f32 = @floatFromInt(now % 900);
+        for (0..3) |i| {
+            const phase = @mod(t / 300 - @as(f32, @floatFromInt(i)), 3);
+            ui.p.disc(x + 4 + @as(f32, @floatFromInt(i)) * 10, box.y + 25, 3, kAccent.alpha(if (phase < 1) 255 else 90));
+        }
+        ui.p.text(.strong, x + 38, box.y + 15, kAccentHi, std.fmt.bufPrint(&buf, "{s}\u{2026}", .{g_job.doing()}) catch "");
+        const secs = (now -| g_job_started) / 1000;
+        var sub_buf: [128]u8 = undefined;
+        const sub = switch (g_job) {
+            .export_files => std.fmt.bufPrint(&sub_buf, "{d}s so far, {d} files written", .{ secs, ops.exportedSoFar() }),
+            .shrink_msu => blk: {
+                const p = ops.shrinkProgress();
+                break :blk if (p.total == 0)
+                    std.fmt.bufPrint(&sub_buf, "{d}s so far", .{secs})
+                else
+                    std.fmt.bufPrint(&sub_buf, "{d}s so far, track {d} of {d}", .{ secs, @min(p.done + 1, p.total), p.total });
+            },
+            .text_dict => std.fmt.bufPrint(&sub_buf, "{d}s so far. This one takes a few minutes.", .{secs}),
+            else => std.fmt.bufPrint(&sub_buf, "{d}s so far", .{secs}),
+        } catch "";
+        ui.p.text(.small, x + 38, box.y + 40, kTextDim, sub);
+        // A bar sliding along the card's foot.
+        const track = box.w - 40;
+        const seg: f32 = 140;
+        const ft: f32 = @floatFromInt(now % 1400);
+        const at = (ft / 1400) * (track + seg) - seg;
+        const from = @max(0, at);
+        const to = @min(track, at + seg);
+        ui.p.fillRound(.{ .x = x, .y = box.y + box.h - 8, .w = track, .h = 2 }, 1, kBorder);
+        if (to > from) ui.p.fillRound(.{ .x = x + from, .y = box.y + box.h - 8, .w = to - from, .h = 2 }, 1, kTeal);
+        return box.y + box.h;
+    }
+
+    const d = &done.?;
+    // The buttons first, from the right, so the words know their room.
+    var steps_buf: [2]Step = undefined;
+    var name_buf: [48]u8 = undefined;
+    const steps = nextSteps(d, &steps_buf, &name_buf);
+    var actions: [2]Action = undefined;
+    var labels: [2][]const u8 = undefined;
+    for (steps, 0..) |s, i| {
+        const enabled = switch (s.act) {
+            .play, .play_in => st.canPlay(),
+            else => true,
+        };
+        actions[i] = .{ .label = s.label, .enabled = enabled, .main = s.main };
+        labels[i] = s.label;
+    }
+    const bw = if (steps.len == 0) 0 else buttonsWidth(ui, labels[0..steps.len]);
+    const bx = box.x + box.w - 20 - bw;
+    if (steps.len != 0) if (ui.buttons(bx, box.y + (box.h - kButtonH) / 2, actions[0..steps.len])) |i| doStep(alloc, ui, st, d, steps[i]);
+
+    // A tick or a mark in a disc, then what happened.
+    const col = if (d.ok) kOk else kWarn;
+    ui.p.disc(x + 11, box.y + 25, 11, col);
+    ui.p.textCentered(.strong, x + 11, box.y + 25 - ui.p.lineHeight(.strong) / 2, Color.hex(0x07140f), if (d.ok) "\u{2713}" else "!");
+    const tx = x + 34;
+    const room = bx - 20 - tx;
+    const title = if (d.ok) "Done" else "That didn't work";
+    ui.p.text(.strong, tx, box.y + 15, kText, title);
+    const tw = ui.p.textWidth(.strong, title);
+    const secs: f32 = @as(f32, @floatFromInt(d.ms)) / 1000;
+    ui.p.text(.small, tx + tw + 10, box.y + 17, kTextFaint, std.fmt.bufPrint(&buf, "in {d:.1}s", .{secs}) catch "");
+    var fit_buf: [400]u8 = undefined;
+    ui.p.text(.body, tx, box.y + 40, if (d.ok) kTextDim else kWarn, ui.p.fit(.body, d.line.get(), room, &fit_buf));
+    if (failed) {
+        var hint_buf: [200]u8 = undefined;
+        ui.p.text(.small, tx, box.y + 64, kTextDim, ui.p.fit(.small, d.job.hint(), room, &hint_buf));
+    }
+    return box.y + box.h;
+}
+
 fn modalRect(ui: *const Ui) Rect {
     const w: f32 = 480;
     const h: f32 = 172;
@@ -1476,7 +2046,7 @@ fn drawChoices(ui: *Ui, st: *State, labels: [2][]const u8) ?usize {
     return pressed;
 }
 
-fn drawModal(ui: *Ui, st: *State) void {
+fn drawModal(ui: *Ui, alloc: std.mem.Allocator, st: *State) void {
     ui.p.fill(.{ .x = 0, .y = 0, .w = ui.w, .h = ui.h }, Color.hex(0x000000).alpha(150));
     const box = modalRect(ui);
     ui.p.shadow(box, 14);
@@ -1506,22 +2076,201 @@ fn drawModal(ui: *Ui, st: *State) void {
                 }
             }
         },
+        .delete_pack => {
+            const p = if (st.delete_at < st.packs.len) st.packs[st.delete_at] else {
+                st.closeModal(ui);
+                return;
+            };
+            var name_buf: [64]u8 = undefined;
+            ui.p.textEx(.subtitle, x, title_y, kAccentHi, kAccent, 2, std.fmt.bufPrint(&buf, "Delete {s}?", .{ui.p.fit(.subtitle, p.name, box.w - 160, &name_buf)}) catch "Delete it?");
+            ui.p.text(.body, x, body_y, kTextDim, std.fmt.bufPrint(&buf, "Its {d} tracks and {d} MB go for good.", .{ p.tracks, p.bytes / (1024 * 1024) }) catch "");
+            if (drawChoices(ui, st, .{ "Delete", "Keep" })) |i| {
+                if (i == 0) deletePack(alloc, st, p);
+                st.closeModal(ui);
+            }
+        },
+        .rename_pack => {
+            const p = if (st.delete_at < st.packs.len) st.packs[st.delete_at] else {
+                endRename(ui, st);
+                return;
+            };
+            ui.p.textEx(.subtitle, x, title_y, kAccentHi, kAccent, 2, "Rename this pack");
+            const field = Rect{ .x = x, .y = body_y - 8, .w = box.w - 48, .h = 34 };
+            ui.p.box(field, 8, 1, kAccent.alpha(150), kBg);
+            var fit_buf: [128]u8 = undefined;
+            const shown = ui.p.fit(.body, st.rename[0..st.rename_len], field.w - 28, &fit_buf);
+            const ty = field.y + (field.h - ui.p.lineHeight(.body)) / 2;
+            ui.p.text(.body, field.x + 12, ty, kText, shown);
+            if (@mod(c.SDL_GetTicks(), 1000) < 600)
+                ui.p.fill(.{ .x = field.x + 13 + ui.p.textWidth(.body, shown), .y = ty + 1, .w = 2, .h = ui.p.lineHeight(.body) - 2 }, kAccentHi);
+            const name = st.rename[0..st.rename_len];
+            const taken = msu_import.nameTaken(msu_import.kLibrary, p.name, name);
+            const blank = std.mem.trim(u8, name, " .").len == 0;
+            if (taken) ui.p.text(.small, x, field.y + field.h + 8, kWarn, "Another pack has that name.");
+            if (drawChoices(ui, st, .{ "Rename", "Cancel" })) |i| {
+                if (i == 1) {
+                    endRename(ui, st);
+                } else if (!taken and !blank) {
+                    renamePack(alloc, st, p, name);
+                    endRename(ui, st);
+                }
+            }
+        },
         .none => {},
     }
 }
 
-fn initialState(alloc: std.mem.Allocator) State {
-    var st = State{};
-    // Sensible starting points: a ROM in the game's folder, and the asset
-    // file where the game will look for it.
-    for ([_][]const u8{ inGameDir(alloc, "zelda3.sfc"), "zelda3.sfc", inGameDir(alloc, "zelda3.smc"), "zelda3.smc" }) |p| {
-        if (st.get(.rom).len == 0 and exists(alloc, p)) st.set(alloc, .rom, p);
+fn endRename(ui: *Ui, st: *State) void {
+    if (g_window) |w| _ = c.SDL_StopTextInput(w);
+    st.closeModal(ui);
+}
+
+/// Rename pressed and meant: the pack's folder takes the new name, and
+/// MSUPath follows if it's the one playing.
+fn renamePack(alloc: std.mem.Allocator, st: *State, p: msu_import.Pack, name: []const u8) void {
+    var old_buf: [128]u8 = undefined;
+    const old = std.fmt.bufPrint(&old_buf, "{s}", .{p.name}) catch "The pack";
+    const was_playing = ops.samePath(p.path, st.msu_path);
+    const path = msu_import.renamePack(alloc, msu_import.kLibrary, p.path, name) catch |e| {
+        g_logger.err("Couldn't rename {s}: {s}", .{ old, switch (e) {
+            error.NameTaken => "another pack has that name.",
+            error.WriteFailed => "the folder wouldn't move. Is something using it?",
+            error.OutOfMemory => "out of memory.",
+        } });
+        return;
+    };
+    defer alloc.free(path);
+    if (was_playing) {
+        st.setMsuPath(alloc, path);
+        st.msu_changed = true;
     }
+    st.refreshPacks(alloc);
+    g_logger.ok("Renamed {s} to {s}.", .{ old, msu_import.packLabel(path) });
+}
+
+/// Delete pressed and meant: the pack goes, and if it was the one playing,
+/// the first that's left plays instead.
+fn deletePack(alloc: std.mem.Allocator, st: *State, p: msu_import.Pack) void {
+    var name_buf: [128]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "{s}", .{p.name}) catch "The pack";
+    const was_playing = ops.samePath(p.path, st.msu_path);
+    if (!msu_import.deletePack(alloc, msu_import.kLibrary, p.path)) {
+        g_logger.err("Couldn't delete all of {s}. Show opens its folder.", .{name});
+    } else {
+        g_logger.ok("Deleted {s}.", .{name});
+    }
+    st.refreshPacks(alloc);
+    if (was_playing and st.packs.len != 0) {
+        st.setMsuPath(alloc, st.packs[0].path);
+        st.msu_changed = true;
+        g_logger.info("{s} plays now instead.", .{st.packs[0].name});
+    }
+}
+
+fn initialState(alloc: std.mem.Allocator, opts: Options) State {
+    var st = State{};
+    // Sensible starting points: the asset file where the game will look for
+    // it, and a work folder beside it.
     st.set(alloc, .out, gameAssetPath(alloc));
     const folder = inGameDir(alloc, "zelda3_files");
     st.set(alloc, .folder, folder);
     st.set(alloc, .dialogue, std.fmt.allocPrint(alloc, "{s}{s}dialogue.txt", .{ folder, std.fs.path.sep_str }) catch "");
+    // Then whatever was picked last time.
+    if (opts.remember) loadRemembered(alloc, &st);
+    // A remembered ROM that's gone is no use; the one the start menu has,
+    // or one in the game's folder, is.
+    if (st.get(.rom).len != 0 and !exists(alloc, st.get(.rom))) st.set(alloc, .rom, "");
+    if (st.get(.rom).len == 0) {
+        if (opts.rom) |r| if (exists(alloc, r)) st.set(alloc, .rom, r);
+    }
+    st.setMsuPath(alloc, opts.msu_path orelse ops.iniMsuPath(alloc));
+    for ([_][]const u8{ inGameDir(alloc, "zelda3.sfc"), "zelda3.sfc", inGameDir(alloc, "zelda3.smc"), "zelda3.smc" }) |p| {
+        if (st.get(.rom).len == 0 and exists(alloc, p)) st.set(alloc, .rom, p);
+    }
     return st;
+}
+
+/// Where the window keeps what was picked, beside zelda3.ini: a file of its
+/// own, since the start menu holds zelda3.ini open to edit and would write
+/// over anything put in it meanwhile.
+const kRememberPath = "zelda3_tools.ini";
+
+/// Every path, the ticked options and the page that was open, as `key =
+/// value` lines a person could read and fix.
+fn saveRemembered(st: *const State) void {
+    var buf: [16 * 1024]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    writeRemembered(st, &w) catch return;
+    fileio.writeWholeFile(kRememberPath, w.buffered()) catch {};
+}
+
+fn writeRemembered(st: *const State, w: *std.Io.Writer) !void {
+    try w.writeAll("# What the Tools window had picked when it was last closed.\n# Delete this file to start afresh.\n");
+    try w.print("page = {s}\n", .{@tagName(st.screen)});
+    for (std.enums.values(Field)) |f| try w.print("{s} = {s}\n", .{ @tagName(f), st.get(f) });
+    try w.print("sprites_from_png = {d}\n", .{@intFromBool(st.sprites_from_png)});
+    try w.writeAll("languages =");
+    var first = true;
+    for (st.picked, 0..) |on, i| {
+        if (!on) continue;
+        try w.print("{s}{s}", .{ if (first) " " else ",", langs.get(@fromBackingInt(@intCast(i))).code });
+        first = false;
+    }
+    try w.writeAll("\n");
+}
+
+fn loadRemembered(alloc: std.mem.Allocator, st: *State) void {
+    const text = fileio.readWholeFile(alloc, kRememberPath) catch return;
+    defer alloc.free(text);
+    readRemembered(alloc, st, text);
+}
+
+fn readRemembered(alloc: std.mem.Allocator, st: *State, text: []const u8) void {
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        const value = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        if (std.meta.stringToEnum(Field, key)) |f| {
+            if (value.len != 0) st.set(alloc, f, value);
+        } else if (std.mem.eql(u8, key, "page")) {
+            st.screen = std.meta.stringToEnum(Screen, value) orelse st.screen;
+        } else if (std.mem.eql(u8, key, "sprites_from_png")) {
+            st.sprites_from_png = std.mem.eql(u8, value, "1");
+        } else if (std.mem.eql(u8, key, "languages")) {
+            var codes = std.mem.tokenizeAny(u8, value, ", ");
+            while (codes.next()) |code| {
+                if (langs.fromCode(code)) |l| st.picked[@backingInt(l)] = true;
+            }
+        }
+    }
+}
+
+test "what the window remembers comes back as it was" {
+    const alloc = std.testing.allocator;
+    var a = State{};
+    defer a.deinit(alloc);
+    a.screen = .languages;
+    a.set(alloc, .rom, "/games/Zelda (USA).sfc");
+    a.set(alloc, .msu, "C:\\packs\\zelda = msu");
+    a.sprites_from_png = true;
+    a.picked[@backingInt(Language.de)] = true;
+    a.picked[@backingInt(Language.fr_c)] = true;
+    var buf: [4096]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    try writeRemembered(&a, &w);
+
+    var b = State{};
+    defer b.deinit(alloc);
+    readRemembered(alloc, &b, w.buffered());
+    try std.testing.expectEqual(Screen.languages, b.screen);
+    try std.testing.expectEqualStrings("/games/Zelda (USA).sfc", b.get(.rom));
+    try std.testing.expectEqualStrings("C:\\packs\\zelda = msu", b.get(.msu));
+    try std.testing.expect(b.sprites_from_png);
+    try std.testing.expect(b.picked[@backingInt(Language.de)] and b.picked[@backingInt(Language.fr_c)]);
+    try std.testing.expect(!b.picked[@backingInt(Language.es)]);
 }
 
 /// Whether the asset file at `path` is there, whether it's the one this
@@ -1587,7 +2336,11 @@ fn picked(alloc: std.mem.Allocator, st: *State, field: Field, path: []const u8) 
     st.set(alloc, field, path);
 }
 
+/// The page being drawn, for what draws differently on a job's own page.
+var g_drawing: Screen = .assets;
+
 fn drawFrame(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window) void {
+    g_drawing = st.screen;
     ui.begin();
     // Under a modal the window is still drawn, but only the modal takes input.
     ui.blocked = st.modal != .none;
@@ -1614,10 +2367,13 @@ fn drawFrame(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Wind
         .languages => drawLanguages(ui, alloc, st, window, pg),
         .extras => drawExtras(ui, alloc, st, window, pg),
     };
-    if (st.screen != .graphics) drawLog(ui, .{ .x = pg.x, .y = bottom + 32, .w = pg.w, .h = pg.bottom - bottom - 32 });
+    if (st.screen != .graphics) {
+        const below = drawCard(ui, alloc, st, pg, bottom);
+        drawLog(ui, .{ .x = pg.x, .y = below + 32, .w = pg.w, .h = pg.bottom - below - 32 });
+    }
     if (st.modal != .none) {
         ui.blocked = false;
-        drawModal(ui, st);
+        drawModal(ui, alloc, st);
     }
 }
 
@@ -1631,7 +2387,10 @@ fn drawFrame(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Wind
 /// "@watch" turns on rebuilding, "@picture=N" and "@song=N" pick from those
 /// lists, "@focus=N" puts the focus on the Nth thing that can have it and
 /// shows it as the keys would, "@busy=build" shows a job running,
-/// "@modal=leave" the question leaving mid-job asks, "@us=path" takes path to
+/// "@done=build" and "@failed=build" that job's card as it ends (its line
+/// the first + or ! log line, "@lang=de" the language it built in),
+/// "@modal=leave" the question leaving mid-job asks, "@rename=name" a pack
+/// being renamed to name, "@us=path" takes path to
 /// be a US ROM, "@scale=2" draws it as a Retina screen would, and
 /// "@size=WxH" sizes the window.
 pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]const u8, log_lines: []const [:0]const u8) !void {
@@ -1653,12 +2412,13 @@ pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]co
     var night = Night.initFor(renderer, scale, draw.kToolStyles);
     defer night.deinit();
     const paint = &night.paint;
-    var st = initialState(alloc);
+    var st = initialState(alloc, .{ .remember = false });
     var ui = Ui{ .p = paint, .night = &night, .w = w, .h = h, .focus = kMaxItems, .t = 4 };
     if (page_name) |name| {
         st.screen = std.meta.stringToEnum(Screen, name) orelse .assets;
     }
     var picks: ?[]const u8 = null;
+    var done_job: ?struct { Job, bool } = null;
     // Settings first, then the log.
     for (log_lines) |line| {
         if (std.mem.startsWith(u8, line, "@")) {
@@ -1681,7 +2441,21 @@ pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]co
                 ui.keys = true;
             } else if (std.mem.eql(u8, key, "busy")) {
                 g_job = std.meta.stringToEnum(Job, value) orelse .build;
+                g_job_screen = st.screen;
+                g_job_started = c.SDL_GetTicks() -| 7400;
                 g_job_running.store(true, .release);
+            } else if (std.mem.eql(u8, key, "done") or std.mem.eql(u8, key, "failed")) {
+                g_job_screen = st.screen;
+                done_job = .{ std.meta.stringToEnum(Job, value) orelse .build, key[0] == 'd' };
+            } else if (std.mem.eql(u8, key, "lang")) {
+                g_job_language = langs.fromCode(value);
+            } else if (std.mem.eql(u8, key, "rename")) {
+                // "@rename=Big Band" has the first pack being renamed to that.
+                st.modal = .rename_pack;
+                st.delete_at = 0;
+                const n = @min(value.len, st.rename.len);
+                @memcpy(st.rename[0..n], value[0..n]);
+                st.rename_len = n;
             } else if (std.mem.eql(u8, key, "modal")) {
                 st.modal = std.meta.stringToEnum(Modal, value) orelse .none;
                 // Its second answer has the focus, as when it opens.
@@ -1698,6 +2472,19 @@ pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]co
         if (std.mem.startsWith(u8, line, "@")) continue;
         const level: ops.Log.Level = if (std.mem.startsWith(u8, line, "!")) .err else if (std.mem.startsWith(u8, line, "+")) .ok else .info;
         logWrite(&g_log_dummy, level, if (level == .info) line else line[1..]);
+    }
+    if (done_job) |dj| {
+        // As though it ran, and logged as it went.
+        g_job_running.store(true, .release);
+        for (log_lines) |line| {
+            if (line.len > 1 and (line[0] == '+' or line[0] == '!')) {
+                if (line[0] == '!' and g_first_err.len == 0) g_first_err.set(line[1..]);
+                if (line[0] == '+' and g_first_ok.len == 0) g_first_ok.set(line[1..]);
+            }
+        }
+        g_job_started = c.SDL_GetTicks() -| 3200;
+        g_job_running.store(false, .release);
+        finishJob(dj[0], dj[1]);
     }
     st.refreshAvailable();
     if (picks) |p| {
@@ -1720,14 +2507,63 @@ fn windowScale(window: *c.SDL_Window) f32 {
     return if (s > 0) s else 1;
 }
 
-/// The page last open, so coming back to the tools finds it again.
-var g_last_screen: Screen = .assets;
-
 /// Runs the tools in the start menu's window until they're closed, and says
 /// where to go next. The window is the menu's: it comes in sized for the
 /// tools and goes back to the menu as it was, render scale aside, which
 /// the menu sets again.
-pub fn runIn(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_Renderer) Outcome {
+/// The tools' window, for turning typing on and off.
+var g_window: ?*c.SDL_Window = null;
+
+/// Typing into the rename box. True when the event was for it.
+fn renameKey(st: *State, event: *const c.SDL_Event) bool {
+    switch (event.type) {
+        c.SDL_EVENT_TEXT_INPUT => {
+            typeInto(&st.rename, &st.rename_len, std.mem.span(event.text.text));
+            return true;
+        },
+        c.SDL_EVENT_KEY_DOWN => switch (event.key.key) {
+            c.SDLK_BACKSPACE => {
+                while (st.rename_len > 0) {
+                    st.rename_len -= 1;
+                    if (st.rename[st.rename_len] & 0xc0 != 0x80) break;
+                }
+                return true;
+            },
+            // Typed as a space, not pressed as a button.
+            c.SDLK_SPACE => return true,
+            c.SDLK_V => {
+                if (event.key.mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_GUI) == 0) return true;
+                if (c.SDL_GetClipboardText()) |clip| {
+                    defer c.SDL_free(clip);
+                    typeInto(&st.rename, &st.rename_len, std.mem.span(clip));
+                }
+                return true;
+            },
+            else => return false,
+        },
+        else => return false,
+    }
+}
+
+/// `text` onto the end of `buf`, as many whole characters as fit, leaving
+/// out control characters.
+fn typeInto(buf: []u8, len: *usize, text: []const u8) void {
+    var i: usize = 0;
+    while (i < text.len) {
+        const n = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
+        if (i + n > text.len) break;
+        const ch = text[i..][0..n];
+        i += n;
+        if (n == 1 and (ch[0] < 0x20 or ch[0] == 0x7f)) continue;
+        if (len.* + n > buf.len) break;
+        @memcpy(buf[len.*..][0..n], ch);
+        len.* += n;
+    }
+}
+
+pub fn runIn(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_Renderer, opts: Options) Exit {
+    g_window = window;
+    defer g_window = null;
     // The music page plays through SDL; the menu has no sound of its own.
     const audio = c.SDL_InitSubSystem(c.SDL_INIT_AUDIO);
     defer if (audio) c.SDL_QuitSubSystem(c.SDL_INIT_AUDIO);
@@ -1742,10 +2578,9 @@ pub fn runIn(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_R
         if (hand) |h| c.SDL_DestroyCursor(h);
     }
 
-    var st = initialState(alloc);
-    st.screen = g_last_screen;
+    var st = initialState(alloc, opts);
     defer {
-        g_last_screen = st.screen;
+        saveRemembered(&st);
         st.tunes.drop(alloc);
         if (st.gfx.tex) |t| c.SDL_DestroyTexture(t);
         _ = c.SDL_SetCursor(c.SDL_GetDefaultCursor());
@@ -1771,7 +2606,12 @@ pub fn runIn(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_R
     var cursor_hand = false;
     while (true) {
         // Told to go, and nothing's halfway through: go.
-        if (st.leave) |to| if (!jobRunning()) return to;
+        if (st.leave) |to| if (!jobRunning()) return .{
+            .to = to,
+            .language = if (to == .play) st.exit_language else null,
+            .msu_pack = st.exit_msu,
+            .msu_path = if (st.msu_changed) std.heap.c_allocator.dupeSentinel(u8, st.msu_path, 0) catch null else null,
+        };
         const now = c.SDL_GetTicks();
         ui.moved = false;
         ui.clicked = false;
@@ -1790,6 +2630,9 @@ pub fn runIn(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_R
         while (c.SDL_PollEvent(&event)) {
             // Mouse positions in points, as everything's laid out.
             _ = c.SDL_ConvertEventToRenderCoordinates(renderer, &event);
+            // Renaming a pack takes the typing; Enter, Esc and the arrows
+            // still answer the question.
+            if (st.modal == .rename_pack and renameKey(&st, &event)) continue;
             switch (event.type) {
                 c.SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
                     closed = true;
@@ -1891,6 +2734,14 @@ pub fn runIn(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_R
                 if (move_h != 0) ui.move(@floatFromInt(move_h), 0);
                 if (back) st.stay(&ui);
             },
+            .delete_pack => {
+                if (move_h != 0) ui.move(@floatFromInt(move_h), 0);
+                if (back) st.closeModal(&ui);
+            },
+            .rename_pack => {
+                if (move_h != 0) ui.move(@floatFromInt(move_h), 0);
+                if (back) endRename(&ui, &st);
+            },
         }
         c.SDL_LockMutex(g_dialog_lock);
         if (g_dialog_result) |path| {
@@ -1905,6 +2756,9 @@ pub fn runIn(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_R
         const running = jobRunning();
         if (was_running and !running) {
             st.refreshAvailable();
+            // It may have built the assets the sidebar says how stand.
+            st.assets_age = 0;
+            st.msu_age = 91;
             if (g_job.writesFolder() and st.watch) {
                 st.watch_built = folderStamp(&st);
                 st.watch_seen = st.watch_built;

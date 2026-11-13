@@ -1,7 +1,7 @@
 //! MSU-1, the SD2SNES's streaming audio chip, as randomizer seeds use it: the
 //! seed's own code checks for the chip, picks the tracks and fades them, and
 //! this plays the files it asks for, from the same MSUPath and in the same
-//! format (.pcm, or .opuz) as the MSU settings say for the normal game. The
+//! format (.pcm, .flac or .ogg, or .opuz) as the MSU settings say for the normal game. The
 //! data port (for video) isn't here; nothing the randomizer does uses it.
 //!
 //! Registers, in banks $00-$3f and $80-$bf:
@@ -13,8 +13,10 @@
 //! A .pcm track is "MSU1", a loop point in samples, then 44.1kHz 16-bit
 //! stereo. A .opuz track is upstream's Opus container: a table of ranges
 //! (where the audio is, how long it runs, where it loops back to) and then
-//! Opus packets at 48kHz, which carry their own looping.
+//! Opus packets at 48kHz, which carry their own looping. FLAC and Ogg
+//! Vorbis tracks go through msu_codec.zig, at whatever rate they were made.
 const std = @import("std");
+const msu_codec = @import("msu_codec.zig");
 
 const FILE = opaque {};
 extern fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*FILE;
@@ -57,8 +59,12 @@ pub const Msu1 = struct {
     repeat: bool = false,
     volume: u8 = 0,
 
-    /// .pcm: where the loop starts, in samples.
+    /// .pcm, FLAC and Ogg: where the loop starts, in samples.
     loop_point: u32 = 0,
+    /// A FLAC or Ogg track, read through its decoder instead of `file`.
+    decoder: ?*msu_codec.Track = null,
+    /// The rate the open track plays at.
+    rate: u32 = 44100,
 
     /// .opuz: the decoder, the next range record, the one a loop jumps back
     /// to, and how much of the current range is left to play.
@@ -97,8 +103,21 @@ pub const Msu1 = struct {
         return false;
     }
 
+    /// Where track `n` is: the .opuz for an Opuz pack, otherwise the first
+    /// of .pcm, .flac and .ogg that's there (or the .pcm, when none is).
     pub fn trackPath(self: *Msu1, out: []u8, n: u16) ?[*:0]const u8 {
-        const ext = if (self.format == .opuz) "opuz" else "pcm";
+        if (self.format == .opuz) return self.pathWith(out, n, "opuz");
+        for (msu_codec.kTrackExts) |ext| {
+            const p = self.pathWith(out, n, ext) orelse return null;
+            if (fopen(p, "rb")) |f| {
+                _ = fclose(f);
+                return p;
+            }
+        }
+        return self.pathWith(out, n, msu_codec.kTrackExts[0]);
+    }
+
+    fn pathWith(self: *Msu1, out: []u8, n: u16, ext: []const u8) ?[*:0]const u8 {
         const s = std.fmt.bufPrintSentinel(out, "{s}{d}.{s}", .{ self.prefix[0..self.prefix_len], n, ext }, 0) catch return null;
         return s.ptr;
     }
@@ -110,8 +129,10 @@ pub const Msu1 = struct {
     fn close(self: *Msu1) void {
         if (self.file) |f| _ = fclose(f);
         if (self.opus) |o| opus_decoder_destroy(o);
+        if (self.decoder) |t| t.close();
         self.file = null;
         self.opus = null;
+        self.decoder = null;
         self.buf_len = 0;
         self.buf_pos = 0;
     }
@@ -129,6 +150,16 @@ pub const Msu1 = struct {
             _ = fclose(f);
             return;
         }
+        if (msu_codec.kindOf(&header)) |kind| {
+            _ = fclose(f);
+            const t = msu_codec.Track.open(p, kind) orelse return;
+            self.decoder = t;
+            self.rate = t.rate;
+            self.loop_point = @intCast(@min(t.loop_start, std.math.maxInt(u32)));
+            self.missing = false;
+            return;
+        }
+        self.rate = self.format.rate();
         if (std.mem.eql(u8, header[0..4], "MSU1")) {
             self.loop_point = std.mem.readInt(u32, header[4..8], .little);
         } else if (std.mem.eql(u8, header[0..4], "OPUZ")) {
@@ -198,6 +229,19 @@ pub const Msu1 = struct {
         return true;
     }
 
+    /// Refills the buffer from a FLAC or Ogg track, the same way.
+    fn fillTrack(self: *Msu1, t: *msu_codec.Track) bool {
+        var n = t.read(&self.buf);
+        if (n == 0) {
+            if (!self.repeat or !t.seek(self.loop_point)) return false;
+            n = t.read(&self.buf);
+            if (n == 0) return false;
+        }
+        self.buf_len = n;
+        self.buf_pos = 0;
+        return true;
+    }
+
     /// Refills the buffer with the next Opus packet of a .opuz file, moving
     /// through its ranges (which is how it loops). False at the end.
     fn fillOpuz(self: *Msu1, f: *FILE, dec: *OpusDecoder) bool {
@@ -248,8 +292,12 @@ pub const Msu1 = struct {
     /// The next source frame, or null when the track has ended.
     fn nextFrame(self: *Msu1) ?[2]i16 {
         if (self.buf_pos == self.buf_len) {
-            const f = self.file orelse return null;
-            const ok = if (self.opus) |dec| self.fillOpuz(f, dec) else self.fillPcm(f);
+            const ok = if (self.decoder) |t|
+                self.fillTrack(t)
+            else if (self.file) |f|
+                (if (self.opus) |dec| self.fillOpuz(f, dec) else self.fillPcm(f))
+            else
+                return null;
             if (!ok) {
                 self.playing = false;
                 return null;
@@ -262,8 +310,8 @@ pub const Msu1 = struct {
     /// Mixes `samples` frames at `rate` Hz into `out` (interleaved, 1 or 2
     /// channels).
     pub fn mix(self: *Msu1, out: []i16, samples: usize, channels: usize, rate: u32) void {
-        if (!self.playing or self.file == null) return;
-        const step = @as(f64, @floatFromInt(self.format.rate())) / @as(f64, @floatFromInt(rate));
+        if (!self.playing or (self.file == null and self.decoder == null)) return;
+        const step = @as(f64, @floatFromInt(self.rate)) / @as(f64, @floatFromInt(rate));
         const vol: i32 = self.volume;
         for (0..samples) |i| {
             self.frac += step;
@@ -313,4 +361,40 @@ test "tracks are named the way the MSU settings say" {
     try std.testing.expectEqualStrings("msu/alttp_msu-12.opuz", std.mem.span(m.trackPath(&buf, 12).?));
     m.configure("msu/alttp_msu-", .pcm);
     try std.testing.expectEqualStrings("msu/alttp_msu-3.pcm", std.mem.span(m.trackPath(&buf, 3).?));
+}
+
+test "a FLAC track plays, and repeats from its loop point" {
+    const flac_enc = @import("flac_enc.zig");
+    const fileio = @import("fileio.zig");
+    const path = ".zig-cache/msu1-flac-test-7.flac";
+    defer _ = fileio.remove(path);
+    // 3000 frames counting up, so where it is shows in every sample.
+    var samples: [3000 * 2]i16 = undefined;
+    for (0..3000) |i| samples[i * 2] = @intCast(i);
+    for (0..3000) |i| samples[i * 2 + 1] = -@as(i16, @intCast(i));
+    const bytes = try flac_enc.encode(std.testing.allocator, &samples, .{ .loop_start = 2500 });
+    defer std.testing.allocator.free(bytes);
+    try fileio.writeWholeFile(path, bytes);
+
+    var m = Msu1{};
+    defer m.deinit();
+    m.configure(".zig-cache/msu1-flac-test-", .pcm);
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings(path, std.mem.span(m.trackPath(&buf, 7).?));
+    _ = m.write(0x2004, 7);
+    _ = m.write(0x2005, 0);
+    try std.testing.expect(!m.missing);
+    try std.testing.expectEqual(@as(u32, 2500), m.loop_point);
+    _ = m.write(0x2006, 255);
+    _ = m.write(0x2007, 3); // play, repeat
+
+    // At its own rate, one frame in is one frame out.
+    var out: [3600 * 2]i16 = @splat(0);
+    m.mix(&out, 3600, 2, 44100);
+    try std.testing.expectEqual(@as(i16, 0), out[0]);
+    try std.testing.expectEqual(@as(i16, 2999), out[2999 * 2]);
+    try std.testing.expectEqual(@as(i16, -2999), out[2999 * 2 + 1]);
+    // Then back to 2500, not the start.
+    try std.testing.expectEqual(@as(i16, 2500), out[3000 * 2]);
+    try std.testing.expectEqual(@as(i16, 2599), out[3099 * 2]);
 }

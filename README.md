@@ -16,7 +16,8 @@ with the extras a modern re-release would have.
   shadows, glowing lava, lightning and magic, plus embers, sparks, leaves,
   splashes and mist
 - **Rumble** for hits, explosions, bosses, the hammer and more
-- **MSU-1** music packs, including deluxe packs and compressed `.opuz` packs
+- **MSU-1** music packs, including deluxe packs, with tracks as `.pcm`, FLAC,
+  Ogg Vorbis or `.opuz`
 - **Settings everywhere:** a start menu before the game, and the same settings
   inside it, each with a description
 - **Achievements:** 49 of them, from the story to the secrets to a few
@@ -216,18 +217,48 @@ Point `MSUPath` in `zelda3.ini` at a pack and set `EnableMSU`:
 
 | Value | Files | Tracks |
 | --- | --- | --- |
-| `true` | `<MSUPath><n>.pcm` | plain |
-| `deluxe` | `<MSUPath><n>.pcm` | deluxe |
+| `true` | `<MSUPath><n>.pcm`, `.flac` or `.ogg` | plain |
+| `deluxe` | `<MSUPath><n>.pcm`, `.flac` or `.ogg` | deluxe |
 | `opuz` | `<MSUPath><n>.opuz` | plain |
 | `deluxe-opuz` | `<MSUPath><n>.opuz` | deluxe |
 
 Deluxe packs have a track per place rather than per song; only use them with
 a deluxe pack. MSU needs `AudioChannels = 2` and sets the audio rate itself.
 
+Each track can be a different kind, and the game plays the first of `.pcm`,
+`.flac` and `.ogg` it finds. FLAC sounds exactly like the `.pcm` in about half
+the space; Ogg Vorbis takes about an eighth, and you won't hear the difference
+either. Both have to be 44100 Hz and keep their loop point as a `LOOPSTART`
+tag, in samples, the way game music rips usually do. To make your own from a
+`.pcm`, skip its 8-byte header, which holds the loop point:
+
+```sh
+tail -c +9 track-1.pcm > track-1.raw
+oggenc -r -q 5 -c LOOPSTART=123456 -o track-1.ogg track-1.raw
+```
+
+MP3 isn't supported: it pads every file with a little silence, which would
+click at each loop.
+
 With MSU on, **Import MSU-1** in the start menu installs a pack for you: drop
 its folder or `.zip` on the window, or browse for it. It finds the tracks
-whatever the pack calls them, copies them to `MSUPath`, and replaces the pack
-that was there.
+whatever the pack calls them, asks what to call the pack (its folder or zip's
+name to start with), and copies it into a folder of its own, `msu/<name>/`, so
+you can keep as many soundtracks as you like. A bar shows how far it's got,
+and B or Esc stops it without touching the packs you have.
+The one just imported is the one that plays; **MSU Pack** under Sound switches
+between them. Importing a pack again replaces only that pack. A pack of `.pcm`
+tracks can go in as FLAC, ticked unless you untick it as you name it. Each
+track is decoded again and checked against the original, sample for sample,
+before the `.pcm` is let go of. **Shrink to FLAC**
+on the tools' MSU-1 page does the same to every pack you've already installed.
+
+The tools' MSU-1 page lists every installed pack, with its tracks, what kind
+they are and how much room they take, and marks the one that plays. **Use**
+picks another, **Show** opens its folder, **Rename** changes its name (and
+`MSUPath` with it, if it's the one playing), and **Delete** asks first. A pack
+installed by an older version, loose in `msu/` itself, is moved into
+`msu/Earlier import/` the first time the game starts, and `MSUPath` follows.
 
 ## Randomizer
 
@@ -264,6 +295,7 @@ zelda3 tools build --from my_mod
 zelda3 tools extract-dialogue --rom german.sfc --out langs
 zelda3 tools build --languages de,fr --lang-dir langs
 zelda3 tools check-msu my_pack.zip
+zelda3 tools shrink-msu
 zelda3 tools help
 ```
 
@@ -351,6 +383,7 @@ MIT, see `LICENSE.txt`, which keeps the original notices: Copyright (c) 2022
 snesrev and Copyright (c) 2021 elzo_d.
 
 Vendored in `third_party/`: Opus 1.3.1 (3-clause BSD, `COPYING` there and in
-`LICENSE.txt`). SDL3 is a system dependency.
+`LICENSE.txt`), dr_flac (public domain or MIT-0) and stb_vorbis and
+stb_truetype (public domain or MIT). SDL3 is a system dependency.
 
 No game assets are distributed here.

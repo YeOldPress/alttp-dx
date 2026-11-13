@@ -7,6 +7,7 @@ const features = @import("features.zig");
 const config = @import("config.zig");
 const snes_pkg = @import("snes");
 const dsp_mod = snes_pkg.dsp;
+const msu_codec = @import("msu_codec.zig");
 
 const g_ram = &vars.g_ram;
 const g_zenv = &rtl.g_zenv;
@@ -103,7 +104,17 @@ const MsuPlayer = extern struct {
     range_repeat: u16,
     opus: ?*OpusDecoder,
     buffer: [960 * 2]i16,
+    /// A FLAC or Ogg track, read through its decoder instead of `f`. Its
+    /// positions are in samples, the same as a .pcm's.
+    track: ?*msu_codec.Track,
+    /// The track number of the file that's open. Not always the one asked
+    /// for: a deluxe area track the pack hasn't got plays the song's own.
+    file_track: u8,
 };
+
+fn isOpen(mp: *const MsuPlayer) bool {
+    return mp.f != null or mp.track != null;
+}
 
 var g_msu_player: MsuPlayer = std.mem.zeroes(MsuPlayer);
 
@@ -209,7 +220,7 @@ const kMsuCueTracks = [_]u8{8};
 /// pending music request alone and comes back to it next frame.
 pub export fn ZeldaMsuCueStillPlaying() callconv(.c) bool {
     const mp = &g_msu_player;
-    if (!config.g_config.msu_finish_cues or mp.f == null)
+    if (!config.g_config.msu_finish_cues or !isOpen(mp))
         return false;
     if (mp.state != kMsuState_Playing and mp.state != kMsuState_Resuming)
         return false;
@@ -263,6 +274,8 @@ fn MsuPlayer_CloseFile(mp: *MsuPlayer) void {
     opus_decoder_destroy(mp.opus);
     mp.opus = null;
     mp.f = null;
+    if (mp.track) |t| t.close();
+    mp.track = null;
     if (mp.state != kMsuState_FinishedPlaying)
         mp.state = kMsuState_Idle;
     mp.resume_info = std.mem.zeroes(MsuPlayerResumeInfo);
@@ -288,6 +301,28 @@ fn MsuPlayer_Open(mp: *MsuPlayer, orig_track: c_int, resume_from_snapshot: bool)
         resume_info = snap.*;
     }
 
+    // Deluxe packs often leave some areas' tracks out. Those areas play the
+    // pack's ordinary track for the song rather than the SNES's.
+    const orig: u8 = @truncate(@as(c_uint, @bitCast(orig_track)));
+    var fname: [256]u8 = undefined;
+    var file_track = actual_track;
+    if (actual_track != orig and actual_track != 0) {
+        if (openTrackFile(mp, &fname, actual_track)) |f| {
+            _ = fclose(f);
+        } else file_track = orig;
+    }
+    // Two such areas side by side share that track: walking from one to the
+    // other carries on with it rather than starting it over.
+    if (!resume_from_snapshot and file_track != actual_track and isOpen(mp) and
+        mp.state >= kMsuState_Resuming and mp.file_track == file_track)
+    {
+        mp.resume_info.actual_track = actual_track;
+        mp.resume_info.orig_track = orig;
+        mp.volume_target = kVolumeTransitionTargetFloat[3];
+        mp.volume_step = kVolumeTransitionStepFloat[3];
+        return;
+    }
+
     mp.volume_target = kVolumeTransitionTargetFloat[3];
     mp.volume_step = kVolumeTransitionStepFloat[3];
 
@@ -296,26 +331,34 @@ fn MsuPlayer_Open(mp: *MsuPlayer, orig_track: c_int, resume_from_snapshot: bool)
     if (actual_track == 0)
         return;
 
-    var fname: [256]u8 = undefined;
     var buf: [8]u8 = undefined;
-    _ = snprintf(
-        &fname,
-        fname.len,
-        "%s%d.%s",
-        if (config.g_config.msu_path) |p| p else @as([*:0]const u8, ""),
-        @as(c_int, actual_track),
-        if (mp.enabled & kMsuEnabled_Opuz != 0) @as([*:0]const u8, "opuz") else @as([*:0]const u8, "pcm"),
-    );
+    mp.f = openTrackFile(mp, &fname, file_track);
+    mp.file_track = file_track;
     _ = printf("Loading MSU %s\n", &fname);
-    mp.f = fopen(@ptrCast(&fname), "rb");
     if (mp.f == null)
         return openReadError(mp, &fname);
     _ = setvbuf(mp.f.?, null, _IOFBF, 16384);
     if (fread(&buf, 1, 8, mp.f.?) != 8)
         return openReadError(mp, &fname);
 
-    const file_tag = std.mem.readInt(u32, buf[0..4], .little);
+    var file_tag = std.mem.readInt(u32, buf[0..4], .little);
     mp.repeat_position = std.mem.readInt(u32, buf[4..8], .little);
+    if (msu_codec.kindOf(&buf)) |kind| {
+        // The decoder opens it again itself.
+        _ = fclose(mp.f.?);
+        mp.f = null;
+        const t = msu_codec.Track.open(@ptrCast(&fname), kind) orelse return openReadError(mp, &fname);
+        mp.track = t;
+        // Mixed one for one with no resampling, so it has to be at the rate
+        // the mix runs at for plain tracks.
+        if (t.rate != 44100) {
+            std.debug.print("MSU track {s} is {d} Hz; tracks need to be 44100 Hz\n", .{ std.mem.sliceTo(&fname, 0), t.rate });
+            return openReadError(mp, &fname);
+        }
+        if (t.frames > std.math.maxInt(u32)) return openReadError(mp, &fname);
+        file_tag = msu_codec.tag(kind);
+        mp.repeat_position = @intCast(t.loop_start);
+    }
     mp.state = if (resume_info.actual_track == actual_track and resume_info.tag == file_tag)
         kMsuState_Resuming
     else
@@ -347,14 +390,38 @@ fn MsuPlayer_Open(mp: *MsuPlayer, orig_track: c_int, resume_from_snapshot: bool)
     } else if (file_tag == kTagMsu1) {
         _ = fseek(mp.f.?, 0, SEEK_END);
         mp.total_samples_in_file = @intCast(@divTrunc(ftell(mp.f.?) - 8, 4));
+        // A loop point past the end (a badly made track) loops from the
+        // start, rather than failing at the end and dropping to the SNES
+        // music; a resume past it (another file by the same name) starts over.
+        if (mp.repeat_position >= mp.total_samples_in_file) mp.repeat_position = 0;
+        if (mp.cur_file_offs > mp.total_samples_in_file) mp.cur_file_offs = 0;
         mp.samples_until_repeat = mp.total_samples_in_file -% mp.cur_file_offs;
         _ = fseek(mp.f.?, msuSeekOffset(mp.cur_file_offs), SEEK_SET);
+    } else if (mp.track) |t| {
+        mp.total_samples_in_file = @intCast(t.frames);
+        // A resume past the end (a different file under the same name) starts over.
+        if (mp.cur_file_offs >= mp.total_samples_in_file) mp.cur_file_offs = 0;
+        mp.samples_until_repeat = mp.total_samples_in_file - mp.cur_file_offs;
+        if (!t.seek(mp.cur_file_offs)) return openReadError(mp, &fname);
     } else {
         return openReadError(mp, &fname);
     }
 }
 
-/// The C reaches this through `goto READ_ERROR` into a labeled block.
+/// Opens track `n` of the pack: the .opuz for an Opuz pack, otherwise the
+/// first of .pcm, .flac and .ogg that's there. `fname` is left naming it, or
+/// the .pcm (the one most packs use) when there's none, for messages.
+fn openTrackFile(mp: *const MsuPlayer, fname: *[256]u8, n: u8) ?*FILE {
+    const exts: []const []const u8 = if (mp.enabled & kMsuEnabled_Opuz != 0) &.{"opuz"} else &msu_codec.kTrackExts;
+    const prefix = if (config.g_config.msu_path) |p| p else @as([*:0]const u8, "");
+    for (exts) |ext| {
+        _ = snprintf(fname, fname.len, "%s%d.%.*s", prefix, @as(c_int, n), @as(c_int, @intCast(ext.len)), ext.ptr);
+        if (fopen(@ptrCast(fname), "rb")) |f| return f;
+    }
+    _ = snprintf(fname, fname.len, "%s%d.%.*s", prefix, @as(c_int, n), @as(c_int, @intCast(exts[0].len)), exts[0].ptr);
+    return null;
+}
+
 /// Byte offset of a sample index in an MSU file, past the 8 byte header.
 ///
 /// fseek takes a c_long, which is 64-bit on Linux and macOS but 32-bit on
@@ -371,16 +438,16 @@ fn openReadError(mp: *MsuPlayer, fname: *const [256]u8) void {
 fn MixToBufferWithVolume(dst: [*]i16, src: [*]const i16, n: usize, volume: f32) void {
     if (volume == 1.0) {
         for (0..n) |i| {
-            dst[i * 2 + 0] +%= src[i * 2 + 0];
-            dst[i * 2 + 1] +%= src[i * 2 + 1];
+            dst[i * 2 + 0] +|= src[i * 2 + 0];
+            dst[i * 2 + 1] +|= src[i * 2 + 1];
         }
     } else {
         // The C multiplies a promoted int16 by an unsigned volume, so the whole
         // product is computed in unsigned arithmetic before being truncated back.
         const vol: u32 = @bitCast(@as(i32, @intFromFloat(65536 * volume)));
         for (0..n) |i| {
-            dst[i * 2 + 0] +%= scaleSample(src[i * 2 + 0], vol);
-            dst[i * 2 + 1] +%= scaleSample(src[i * 2 + 1], vol);
+            dst[i * 2 + 0] +|= scaleSample(src[i * 2 + 0], vol);
+            dst[i * 2 + 1] +|= scaleSample(src[i * 2 + 1], vol);
         }
     }
 }
@@ -403,8 +470,8 @@ fn MixToBufferWithVolumeRamp(
     const step: i64 = @intFromFloat(volume_step * 281474976710656.0);
     for (0..n) |i| {
         const v: u32 = @truncate(@as(u64, @bitCast(vol >> 32)));
-        dst[i * 2 + 0] +%= scaleSample(src[i * 2 + 0], v);
-        dst[i * 2 + 1] +%= scaleSample(src[i * 2 + 1], v);
+        dst[i * 2 + 0] +|= scaleSample(src[i * 2 + 0], v);
+        dst[i * 2 + 1] +|= scaleSample(src[i * 2 + 1], v);
         vol +%= step;
     }
 }
@@ -535,10 +602,22 @@ pub export fn MsuPlayer_Mix(mp: *MsuPlayer, audio_buffer_in: [*]i16, audio_sampl
                         return;
                     }
                     mp.cur_file_offs = mp.repeat_position;
-                    _ = fseek(mp.f.?, msuSeekOffset(mp.cur_file_offs), SEEK_SET);
+                    if (mp.track) |t| {
+                        if (!t.seek(mp.cur_file_offs)) {
+                            mixReadError(mp);
+                            return;
+                        }
+                    } else {
+                        _ = fseek(mp.f.?, msuSeekOffset(mp.cur_file_offs), SEEK_SET);
+                    }
                 }
                 r = @intCast(@min(@as(u32, 960), mp.samples_until_repeat));
-                if (fread(&mp.buffer, 4, @intCast(r), mp.f.?) != @as(usize, @intCast(r))) {
+                const want: usize = @intCast(r);
+                const got = if (mp.track) |t|
+                    t.read(@as(*[960][2]i16, @ptrCast(&mp.buffer))[0..want])
+                else
+                    fread(&mp.buffer, 4, want, mp.f.?);
+                if (got != want) {
                     mixReadError(mp);
                     return;
                 }
@@ -641,9 +720,31 @@ pub export fn ZeldaRenderAudio(audio_buffer: [*]i16, samples: c_int, channels: c
     ZeldaPopApuState();
     SpcPlayer_GenerateSamples(player());
     dsp_mod.dsp_getSamples(player().dsp.?, audio_buffer, samples, channels);
-    if (g_msu_player.f != null and channels == 2)
-        MsuPlayer_Mix(&g_msu_player, audio_buffer, samples);
+    if (isOpen(&g_msu_player)) {
+        if (channels == 2) {
+            MsuPlayer_Mix(&g_msu_player, audio_buffer, samples);
+        } else if (channels == 1) {
+            mixMono(&g_msu_player, audio_buffer, @intCast(samples));
+        }
+    }
     ZeldaApuUnlock();
+}
+
+/// MSU tracks are stereo: mixed into a stereo scratch buffer first, then
+/// both sides, halved, into the mono output.
+fn mixMono(mp: *MsuPlayer, out: [*]i16, samples: usize) void {
+    var tmp: [1024 * 2]i16 = undefined;
+    var done: usize = 0;
+    while (done < samples and isOpen(mp)) {
+        const n: usize = @min(1024, samples - done);
+        @memset(tmp[0 .. n * 2], 0);
+        MsuPlayer_Mix(mp, &tmp, @intCast(n));
+        for (0..n) |i| {
+            const m: i16 = @intCast((@as(i32, tmp[i * 2]) + tmp[i * 2 + 1]) >> 1);
+            out[done + i] +|= m;
+        }
+        done += n;
+    }
 }
 
 pub export fn ZeldaIsMusicPlaying() callconv(.c) bool {
@@ -810,7 +911,7 @@ test "msu deluxe remaps only overworld and indoor songs" {
     try testing.expectEqual(200, RemapMsuDeluxeTrack(&mp, 200));
 }
 
-test "mixing at full volume is a plain saturating-free add" {
+test "mixing at full volume is a plain add" {
     var dst = [_]i16{ 100, -100, 0, 0 };
     const src = [_]i16{ 20, 30, -40, -50 };
     MixToBufferWithVolume(&dst, &src, 2, 1.0);
@@ -905,4 +1006,174 @@ test "the music tables came over at the right sizes" {
     // The dark world block starts halfway through the overworld table.
     try testing.expectEqual(49, kMsuDeluxe_OW_Songs[64]);
     try testing.expectEqual(37, kMsuDeluxe_OW_Songs[0]);
+}
+
+test "a FLAC track plays sample for sample and loops at its LOOPSTART" {
+    const flac_enc = @import("flac_enc.zig");
+    const fileio = @import("fileio.zig");
+    const path = ".zig-cache/audio-msu-test-2.flac";
+    defer _ = fileio.remove(path);
+    var samples: [3000 * 2]i16 = undefined;
+    for (0..3000) |i| {
+        samples[i * 2] = @intCast(i);
+        samples[i * 2 + 1] = -@as(i16, @intCast(i));
+    }
+    const bytes = try flac_enc.encode(testing.allocator, &samples, .{ .loop_start = 1000 });
+    defer testing.allocator.free(bytes);
+    try fileio.writeWholeFile(path, bytes);
+
+    @memset(g_ram[0..0x2000], 0);
+    config.g_config.msuvolume = 100;
+    config.g_config.audio_freq = 44100;
+    config.g_config.msu_path = ".zig-cache/audio-msu-test-";
+    config.g_config.resume_msu = false;
+    defer config.g_config.msu_path = null;
+    ZeldaEnableMsu(kMsuEnabled_Msu);
+    defer g_msu_player.enabled = 0;
+    const mp = &g_msu_player;
+    MsuPlayer_Open(mp, 2, false);
+    defer MsuPlayer_CloseFile(mp);
+    try testing.expect(mp.track != null);
+    try testing.expectEqual(kMsuState_Playing, mp.state);
+    try testing.expectEqual(@as(u32, 1000), mp.repeat_position);
+    mp.volume = 1.0;
+
+    // Track 2 repeats: past the end it picks up again at sample 1000.
+    var out: [3500 * 2]i16 = @splat(0);
+    MsuPlayer_Mix(mp, &out, 3500);
+    for (0..3000) |i| {
+        try testing.expectEqual(@as(i16, @intCast(i)), out[i * 2]);
+        try testing.expectEqual(-@as(i16, @intCast(i)), out[i * 2 + 1]);
+    }
+    try testing.expectEqual(@as(i16, 1000), out[3000 * 2]);
+    try testing.expectEqual(@as(i16, 1499), out[3499 * 2]);
+}
+
+test "loud music and loud sound effects clip instead of wrapping around" {
+    var dst = [_]i16{ 30000, -30000, 20000, -20000 };
+    const src = [_]i16{ 10000, -10000, 10000, -10000 };
+    MixToBufferWithVolume(&dst, &src, 2, 1.0);
+    try testing.expectEqual(@as(i16, 32767), dst[0]);
+    try testing.expectEqual(@as(i16, -32768), dst[1]);
+    try testing.expectEqual(@as(i16, 30000), dst[2]);
+    try testing.expectEqual(@as(i16, -30000), dst[3]);
+}
+
+/// A track counting up, so where the player is shows in every sample.
+fn writeCountingTrack(path: [*:0]const u8, frames: usize, loop: ?u32) !void {
+    const flac_enc = @import("flac_enc.zig");
+    const fileio = @import("fileio.zig");
+    const samples = try testing.allocator.alloc(i16, frames * 2);
+    defer testing.allocator.free(samples);
+    for (0..frames) |i| {
+        samples[i * 2] = @intCast(i);
+        samples[i * 2 + 1] = -@as(i16, @intCast(i));
+    }
+    const bytes = try flac_enc.encode(testing.allocator, samples, .{ .loop_start = loop });
+    defer testing.allocator.free(bytes);
+    try fileio.writeWholeFile(path, bytes);
+}
+
+fn setUpMsuTest(prefix: [*:0]const u8, enable: u8) void {
+    @memset(g_ram[0..0x2000], 0);
+    config.g_config.msuvolume = 100;
+    config.g_config.audio_freq = 44100;
+    config.g_config.msu_path = prefix;
+    config.g_config.resume_msu = false;
+    ZeldaEnableMsu(enable);
+}
+
+test "a deluxe area track the pack hasn't got plays the song's own, and carries on across areas" {
+    const fileio = @import("fileio.zig");
+    const path = ".zig-cache/audio-deluxe-test-2.flac";
+    defer _ = fileio.remove(path);
+    try writeCountingTrack(path, 3000, null);
+    setUpMsuTest(".zig-cache/audio-deluxe-test-", kMsuEnabled_Msu | kMsuEnabled_MsuDeluxe);
+    defer {
+        g_msu_player.enabled = 0;
+        config.g_config.msu_path = null;
+    }
+    const mp = &g_msu_player;
+    defer MsuPlayer_CloseFile(mp);
+
+    // Area 0's deluxe track is 37, which this pack hasn't got: track 2 plays.
+    vars.overworld_area_index.* = 0;
+    MsuPlayer_Open(mp, 2, false);
+    try testing.expect(isOpen(mp));
+    try testing.expectEqual(@as(u8, 2), mp.file_track);
+    try testing.expectEqual(@as(u8, 37), mp.resume_info.actual_track);
+    mp.volume = 1.0;
+    var out: [500 * 2]i16 = @splat(0);
+    MsuPlayer_Mix(mp, &out, 500);
+    try testing.expectEqual(@as(i16, 499), out[499 * 2]);
+
+    // Area 3's is 38, missing too: the same track goes on where it was.
+    const open_track = mp.track;
+    vars.overworld_area_index.* = 3;
+    MsuPlayer_Open(mp, 2, false);
+    try testing.expectEqual(open_track, mp.track);
+    try testing.expectEqual(@as(u8, 38), mp.resume_info.actual_track);
+    @memset(&out, 0);
+    MsuPlayer_Mix(mp, &out, 1);
+    try testing.expectEqual(@as(i16, 500), out[0]);
+}
+
+test "MSU music comes through in mono, both sides together" {
+    const fileio = @import("fileio.zig");
+    const path = ".zig-cache/audio-mono-test-2.flac";
+    defer _ = fileio.remove(path);
+    // Left counts up, right is 100 more: the mono mix is halfway between.
+    {
+        const flac_enc = @import("flac_enc.zig");
+        var samples: [2000 * 2]i16 = undefined;
+        for (0..2000) |i| {
+            samples[i * 2] = @intCast(i);
+            samples[i * 2 + 1] = @intCast(i + 100);
+        }
+        const bytes = try flac_enc.encode(testing.allocator, &samples, .{});
+        defer testing.allocator.free(bytes);
+        try fileio.writeWholeFile(path, bytes);
+    }
+    setUpMsuTest(".zig-cache/audio-mono-test-", kMsuEnabled_Msu);
+    defer {
+        g_msu_player.enabled = 0;
+        config.g_config.msu_path = null;
+    }
+    const mp = &g_msu_player;
+    MsuPlayer_Open(mp, 2, false);
+    defer MsuPlayer_CloseFile(mp);
+    mp.volume = 1.0;
+    var out: [1500]i16 = @splat(0);
+    mixMono(mp, &out, out.len);
+    try testing.expectEqual(@as(i16, 50), out[0]);
+    try testing.expectEqual(@as(i16, 1149), out[1099]);
+}
+
+test "a .pcm whose loop point is past its end loops from the start" {
+    const fileio = @import("fileio.zig");
+    const path = ".zig-cache/audio-badloop-test-2.pcm";
+    defer _ = fileio.remove(path);
+    var bytes: [8 + 100 * 4]u8 = undefined;
+    @memcpy(bytes[0..4], "MSU1");
+    std.mem.writeInt(u32, bytes[4..8], 5000, .little);
+    for (0..100) |i| {
+        std.mem.writeInt(i16, bytes[8 + i * 4 ..][0..2], @intCast(i + 1), .little);
+        std.mem.writeInt(i16, bytes[8 + i * 4 + 2 ..][0..2], @intCast(i + 1), .little);
+    }
+    try fileio.writeWholeFile(path, &bytes);
+    setUpMsuTest(".zig-cache/audio-badloop-test-", kMsuEnabled_Msu);
+    defer {
+        g_msu_player.enabled = 0;
+        config.g_config.msu_path = null;
+    }
+    const mp = &g_msu_player;
+    MsuPlayer_Open(mp, 2, false);
+    defer MsuPlayer_CloseFile(mp);
+    mp.volume = 1.0;
+    var out: [150 * 2]i16 = @splat(0);
+    MsuPlayer_Mix(mp, &out, 150);
+    try testing.expect(isOpen(mp));
+    try testing.expectEqual(@as(i16, 100), out[99 * 2]);
+    // Track 2 repeats, from the start since its loop point made no sense.
+    try testing.expectEqual(@as(i16, 1), out[100 * 2]);
 }

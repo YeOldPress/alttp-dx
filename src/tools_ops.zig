@@ -55,6 +55,13 @@ pub fn plainError(e: anyerror) []const u8 {
         error.NotDir => "part of that path isn't a folder",
         error.NoSpaceLeft => "the disk is full",
         error.OutOfMemory => "ran out of memory",
+        error.ReadOnlyFileSystem => "that drive can't be written to",
+        error.FileBusy, error.SharingViolation => "another program has it open",
+        error.NameTooLong => "the path is too long",
+        error.BadPathName, error.InvalidUtf8 => "the path has characters this system won't take",
+        error.OpenFailed => "it couldn't be opened",
+        error.WriteFailed => "writing it failed partway",
+        error.ReadFailed => "reading it failed partway",
         else => @errorName(e),
     };
 }
@@ -234,10 +241,16 @@ fn loadUsRom(alloc: std.mem.Allocator, log: Log, rom_path: [:0]const u8) ?rom_mo
     return rom;
 }
 
-var g_export_count: usize = 0;
+/// Files written by the export under way, read by the window as it runs.
+var g_export_count = std.atomic.Value(usize).init(0);
+
+pub fn exportedSoFar() usize {
+    return g_export_count.load(.monotonic);
+}
+
 fn countExported(name: []const u8) void {
     _ = name;
-    g_export_count += 1;
+    _ = g_export_count.fetchAdd(1, .monotonic);
 }
 
 /// Writes the ROM's areas, rooms, map table and dialogue into `dir` as files
@@ -249,12 +262,12 @@ pub fn exportFiles(alloc: std.mem.Allocator, log: Log, rom_path: [:0]const u8, d
         log.err("Could not make the folder {s}", .{dir});
         return false;
     };
-    g_export_count = 0;
+    g_export_count.store(0, .monotonic);
     asset_export.exportFiles(alloc, rom, dir, countExported) catch |e| {
-        log.err("Export stopped after {d} files: {s}.", .{ g_export_count, plainError(e) });
+        log.err("Export stopped after {d} files: {s}.", .{ exportedSoFar(), plainError(e) });
         return false;
     };
-    log.ok("Exported {d} files to {s}.", .{ g_export_count, dir });
+    log.ok("Exported {d} files to {s}.", .{ exportedSoFar(), dir });
     log.info("Edit them, then build from the folder to turn them into zelda3_assets.dat.", .{});
     return true;
 }
@@ -312,27 +325,37 @@ pub fn checkMsuPack(alloc: std.mem.Allocator, log: Log, path: [:0]const u8) bool
     const found = msu_import.inspectPack(arena_state.allocator(), path) catch |e| {
         log.err("{s}", .{switch (e) {
             error.NotFound => "Couldn't open that pack.",
-            error.NoTracks => "There are no MSU-1 tracks in that. Their names end in a number and .pcm or .opuz.",
+            error.NoTracks => "There are no MSU-1 tracks in that. Their names end in a number and .pcm, .flac, .ogg or .opuz.",
             error.BadZip => "That zip is damaged, or packed in a way these tools can't read.",
             else => plainError(e),
         }});
         return false;
     };
     if (found.len == 0) {
-        log.err("There are no MSU-1 tracks in that. Their names end in a number and .pcm or .opuz.", .{});
+        log.err("There are no MSU-1 tracks in that. Their names end in a number and .pcm, .flac, .ogg or .opuz.", .{});
         return false;
     }
 
-    var pcm: usize = 0;
-    var opuz: usize = 0;
+    var per_ext: [std.enums.values(msu_import.Ext).len]usize = @splat(0);
     var extra: usize = 0;
     var have: [msu_import.kGameTracks + 1]bool = @splat(false);
     for (found) |f| {
-        if (f.name.ext == .pcm) pcm += 1 else opuz += 1;
+        per_ext[@backingInt(f.name.ext)] += 1;
         if (f.name.number <= msu_import.kGameTracks) have[f.name.number] = true else extra += 1;
     }
-    const kinds = if (pcm != 0 and opuz != 0) ".pcm and .opuz" else if (pcm != 0) ".pcm" else ".opuz";
-    log.info("{s}: {d} tracks, as {s}.", .{ std.fs.path.basename(path), found.len, kinds });
+    // ".pcm", ".pcm and .flac", ".pcm, .flac and .ogg"
+    var kinds_buf: [64]u8 = undefined;
+    var kw = std.Io.Writer.fixed(&kinds_buf);
+    var kinds_left: usize = 0;
+    for (per_ext) |n| kinds_left += @intFromBool(n != 0);
+    for (per_ext, 0..) |n, i| {
+        if (n == 0) continue;
+        kinds_left -= 1;
+        kw.print(".{s}{s}", .{ @tagName(@as(msu_import.Ext, @fromBackingInt(@intCast(i)))), if (kinds_left > 1) ", " else if (kinds_left == 1) " and " else "" }) catch {};
+    }
+    log.info("{s}: {d} tracks, as {s}.", .{ std.fs.path.basename(path), found.len, kw.buffered() });
+    if (per_ext[@backingInt(msu_import.Ext.opuz)] != 0 and per_ext[@backingInt(msu_import.Ext.opuz)] != found.len)
+        log.info("Opuz tracks only play with MSU Audio set to Opuz, and then nothing else does.", .{});
 
     var bad: usize = 0;
     for (found) |f| {
@@ -362,7 +385,109 @@ pub fn checkMsuPack(alloc: std.mem.Allocator, log: Log, path: [:0]const u8) bool
         log.err("{d} track{s} won't play. Fix or replace {s} before importing.", .{ bad, if (bad == 1) "" else "s", if (bad == 1) "it" else "them" });
         return false;
     }
-    log.ok("Looks good. Import it from the game's start menu.", .{});
+    log.ok("Looks good, and ready to import.", .{});
+    return true;
+}
+
+/// How far the shrinking has got, for the window: tracks done, and of how
+/// many.
+var g_shrink_done = std.atomic.Value(usize).init(0);
+var g_shrink_total = std.atomic.Value(usize).init(0);
+
+pub fn shrinkProgress() struct { done: usize, total: usize } {
+    return .{ .done = g_shrink_done.load(.monotonic), .total = g_shrink_total.load(.monotonic) };
+}
+
+fn countShrunk(_: *anyopaque, done: usize, total: usize) void {
+    g_shrink_done.store(done, .monotonic);
+    g_shrink_total.store(total, .monotonic);
+}
+
+/// MSUPath from the zelda3.ini here, or the game's default. The answer is
+/// `alloc`'s, or the default's.
+pub fn iniMsuPath(alloc: std.mem.Allocator) []const u8 {
+    const kDefault = "msu/alttp_msu-";
+    const text = fileio.readWholeFile(alloc, "zelda3.ini") catch return kDefault;
+    defer alloc.free(text);
+    return alloc.dupe(u8, msuPathOf(text) orelse return kDefault) catch kDefault;
+}
+
+fn msuPathOf(text: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#' or line[0] == ';') continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, line[0..eq], " \t"), "MSUPath")) continue;
+        const v = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        return if (v.len == 0) null else v;
+    }
+    return null;
+}
+
+test "MSUPath is read from the ini, comments and all" {
+    try std.testing.expectEqualStrings("packs/mine-", msuPathOf("# MSUPath = no\n[Sound]\nmsupath = packs/mine- \r\n").?);
+    try std.testing.expectEqual(@as(?[]const u8, null), msuPathOf("MSUPath =\n"));
+}
+
+/// Every installed pack's MSUPath: each in the library, and `current` (the
+/// ini's MSUPath) if it's somewhere else.
+pub fn allPackPaths(arena: std.mem.Allocator, current: []const u8) []const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    const packs = msu_import.listPacks(arena, msu_import.kLibrary) catch &.{};
+    var have_current = false;
+    for (packs) |p| {
+        out.append(arena, p.path) catch break;
+        if (samePath(p.path, current)) have_current = true;
+    }
+    if (!have_current and current.len != 0) out.append(arena, current) catch {};
+    return out.items;
+}
+
+/// Two MSUPaths that name the same place, slashes either way, ./ or not.
+pub fn samePath(a: []const u8, b: []const u8) bool {
+    const x = if (std.mem.startsWith(u8, a, "./")) a[2..] else a;
+    const y = if (std.mem.startsWith(u8, b, "./")) b[2..] else b;
+    if (x.len != y.len) return false;
+    for (x, y) |p, q| {
+        const pn = if (p == '\\') '/' else p;
+        const qn = if (q == '\\') '/' else q;
+        if (pn != qn) return false;
+    }
+    return true;
+}
+
+/// Shrinks every installed pack: the library's, and `current` (the ini's
+/// MSUPath) wherever it is.
+pub fn shrinkAllMsu(alloc: std.mem.Allocator, log: Log, current: []const u8) bool {
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    return shrinkMsu(alloc, log, allPackPaths(arena_state.allocator(), current));
+}
+
+/// Turns the .pcm tracks of the packs at `msu_paths` (MSUPath values) into
+/// FLAC, and says how much room that made.
+pub fn shrinkMsu(alloc: std.mem.Allocator, log: Log, msu_paths: []const []const u8) bool {
+    g_shrink_done.store(0, .monotonic);
+    g_shrink_total.store(0, .monotonic);
+    var dummy: u8 = 0;
+    const got = msu_import.shrinkInstalled(alloc, msu_paths, .{ .ctx = &dummy, .f = countShrunk }) catch |e| {
+        log.err("{s}", .{switch (e) {
+            error.NotFound => "There's no MSU pack installed.",
+            error.NoTracks => "No installed pack has .pcm tracks left to shrink.",
+            else => plainError(e),
+        }});
+        return false;
+    };
+    const mb = 1024 * 1024;
+    if (got.tracks != 0) {
+        log.info("{d} track{s} went from {d} MB to {d} MB.", .{ got.tracks, if (got.tracks == 1) "" else "s", got.before / mb, got.after / mb });
+    }
+    if (got.kept != 0) {
+        log.err("{d} track{s} wouldn't convert and stayed .pcm, as {s} {s}.", .{ got.kept, if (got.kept == 1) "" else "s", if (got.kept == 1) "it" else "they", if (got.kept == 1) "was" else "were" });
+        return false;
+    }
+    log.ok("Saved {d} MB, and every track still sounds exactly the same.", .{(got.before -| got.after) / mb});
     return true;
 }
 
