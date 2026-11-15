@@ -220,7 +220,7 @@ there, whichever kind it is. Mono and stereo output both work, at any
 
 Deluxe packs have a track for each area and doorway rather than each song. A
 pack says it's one in a `pack.ini` beside its tracks (`Deluxe = 1`), which an
-import sets when the pack has deluxe-only tracks and the tools' MSU-1 page
+import sets when the pack has deluxe-only tracks and the Music screen
 switches either way. Where a deluxe pack leaves an area out, its ordinary
 track for that song plays. Older inis that said `deluxe`, `opuz` or
 `deluxe-opuz` are turned into `true` (and a `pack.ini`) when the game starts.
@@ -240,25 +240,37 @@ oggenc -r -q 5 -c LOOPSTART=123456 -o track-1.ogg track-1.raw
 MP3 isn't supported: it pads every file with a little silence, which would
 click at each loop.
 
-With MSU on, **Import MSU-1** in the start menu installs a pack for you: drop
-its folder or `.zip` on the window, or browse for it. It finds the tracks
-whatever the pack calls them, asks what to call the pack (its folder or zip's
-name to start with), and copies it into a folder of its own, `msu/<name>/`, so
-you can keep as many soundtracks as you like. A bar shows how far it's got,
-and B or Esc stops it without touching the packs you have.
-The one just imported is the one that plays; **MSU Pack** under Sound switches
-between them. Importing a pack again replaces only that pack. A pack of `.pcm`
-tracks can go in as FLAC, ticked unless you untick it as you name it. Each
-track is decoded again and checked against the original, sample for sample,
-before the `.pcm` is let go of. **Shrink to FLAC**
-on the tools' MSU-1 page does the same to every pack you've already installed.
+**Music** on the start menu is where the soundtracks live. On the left are the
+game's own soundtrack, every installed pack and **Import a Pack…**; on the
+right, the one picked, with its tracks to listen to (by name, the game's
+tracks a pack leaves out greyed, since the SNES music plays there instead).
+Along the bottom is a player: back, play or pause, on, and stop, with what's
+playing, how far in and how long it is. When a track ends the next one plays.
+A pack's tracks play through once; the game's own songs loop for ever, so the
+player gives each two and a half minutes and fades it out, as players of game
+music do. P (or Y on a pad) plays and pauses, and `[` `]` (or
+the shoulder buttons) skip. A click picks a track, and a click on the picked
+one plays it.
 
-The tools' MSU-1 page lists every installed pack, with its tracks, what kind
-they are and how much room they take, and marks the one that plays. **Use**
-picks another, **Show** opens its folder, **Rename** changes its name (and
-`MSUPath` with it, if it's the one playing), and **Delete** asks first. A pack
-installed by an older version, loose in `msu/` itself, is moved into
-`msu/Earlier import/` the first time the game starts, and `MSUPath` follows.
+**Import a Pack…** (or a pack's folder, `.zip` or `.7z` dropped on the window)
+finds the tracks whatever the pack calls them, says what it found, asks what to
+call the pack (its folder or archive's name to start with), and copies it into
+a folder of its own, `msu/<name>/`, so you can keep as many soundtracks as you
+like. A bar shows how far it's got, and B or Esc stops it without touching the
+packs you have. The one just imported is the one that plays, with MSU switched
+on if it wasn't. Importing a pack again replaces only that pack. A pack of
+`.pcm` tracks can go in as FLAC, ticked unless you untick it as you name it.
+Each track is decoded again and checked against the original, sample for
+sample, before the `.pcm` is let go of.
+
+For each pack, **Use This Pack** plays it in the game (so does **MSU Pack**
+under Sound), **Deluxe** says whether it's a deluxe pack, **Shrink to FLAC**
+does to its `.pcm` tracks what the import can, **Rename** changes its name (and
+`MSUPath` with it, if it's the one playing), **Show** opens its folder, and
+**Delete** asks first. A pack installed by an older version, loose in `msu/`
+itself, is moved into `msu/Earlier import/` the first time the game starts, and
+`MSUPath` follows. The Music screen is the modern start menu's; in the retro
+style, **Import MSU-1** brings packs in as it always did.
 
 ## Randomizer
 
@@ -275,9 +287,8 @@ for seeds, the tracker and its options.
 Everything to do with the assets besides playing: building them, exporting the
 maps, text, graphics and music to edit, building them back (by itself, each
 time you save a change, if you like), then playing to try it. They show the
-exported pictures and check `.zspr` Link sprites, play the game's music, look
-over MSU-1 packs before you import them, and add languages from translated
-ROMs. **Tools** on the start menu opens their window, which a mouse, the keys
+exported pictures and check `.zspr` Link sprites, and add languages from
+translated ROMs. Music and MSU-1 packs are on the start menu's Music screen. **Tools** on the start menu opens their window, which a mouse, the keys
 or a pad all drive; **Start Menu** in its corner goes back, and **Play** goes
 straight into the game. From a terminal, `zelda3 tools` opens the window too,
 and a command does the job without one:
@@ -295,6 +306,7 @@ zelda3 tools build --from my_mod
 zelda3 tools extract-dialogue --rom german.sfc --out langs
 zelda3 tools build --languages de,fr --lang-dir langs
 zelda3 tools check-msu my_pack.zip
+zelda3 tools import-msu my_pack.7z --name "My Pack"
 zelda3 tools shrink-msu
 zelda3 tools help
 ```

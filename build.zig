@@ -9,6 +9,23 @@ const c_sources = [_][]const u8{
     "third_party/opus-1.3.1-stripped/opus_decoder_amalgam.c",
     // FLAC and Ogg Vorbis MSU tracks: dr_flac and stb_vorbis behind a shim.
     "src/msu_codecs.c",
+    // MSU packs as .7z: the LZMA SDK's reader, and a shim that streams.
+    "src/msu_7z.c",
+    "third_party/lzma/7zAlloc.c",
+    "third_party/lzma/7zArcIn.c",
+    "third_party/lzma/7zBuf.c",
+    "third_party/lzma/7zCrc.c",
+    "third_party/lzma/7zCrcOpt.c",
+    "third_party/lzma/7zDec.c",
+    "third_party/lzma/7zStream.c",
+    "third_party/lzma/Bcj2.c",
+    "third_party/lzma/Bra.c",
+    "third_party/lzma/Bra86.c",
+    "third_party/lzma/BraIA64.c",
+    "third_party/lzma/CpuArch.c",
+    "third_party/lzma/Delta.c",
+    "third_party/lzma/Lzma2Dec.c",
+    "third_party/lzma/LzmaDec.c",
 };
 
 const c_flags = [_][]const u8{
@@ -211,8 +228,9 @@ pub fn build(b: *std.Build) void {
     menu_tests.root_module.addImport("default_ini", default_ini);
     menu_tests.root_module.addImport("tools_fonts", tools_fonts);
     menu_tests.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
-    // The tools convert MSU packs to FLAC and check the result decodes.
-    menu_tests.root_module.addCSourceFile(.{ .file = b.path("src/msu_codecs.c"), .flags = &c_flags });
+    // The tools convert MSU packs to FLAC, check the result decodes, and play
+    // packs' tracks with the randomizer's MSU-1, which reads Opuz too.
+    menu_tests.root_module.addCSourceFiles(.{ .files = &c_sources, .flags = &c_flags });
     menu_tests.root_module.addOptions("build_info", build_info);
     menu_tests.root_module.addImport("sdl_c", sdl_c_mod);
     addSdlIncludes(b, menu_tests.root_module);
@@ -291,6 +309,7 @@ pub fn build(b: *std.Build) void {
     tools_tests.root_module.addImport("snes", snes_dsp_mod);
     tools_tests.root_module.addImport("tools_fonts", tools_fonts);
     tools_tests.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
+    tools_tests.root_module.addCSourceFiles(.{ .files = &c_sources, .flags = &c_flags });
     addSdlIncludes(b, tools_tests.root_module);
     linkSdlLibs(b, tools_tests.root_module);
     test_step.dependOn(&b.addRunArtifact(tools_tests).step);

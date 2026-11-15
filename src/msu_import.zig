@@ -1,4 +1,4 @@
-//! Installing an MSU-1 pack from a folder or a .zip.
+//! Installing an MSU-1 pack from a folder, a .zip or a .7z.
 //!
 //! The game plays track n from MSUPath ++ n ++ ".pcm" (or ".flac", ".ogg",
 //! or ".opuz"), so a pack is installed by finding its numbered tracks and
@@ -73,9 +73,12 @@ pub const Error = error{
     NotFound,
     /// Nothing in it is named like an MSU-1 track.
     NoTracks,
-    /// The zip is broken, or uses something this doesn't read.
+    /// The zip or 7z is broken, or isn't one.
     BadZip,
-    /// A track's data didn't come out as the zip says it should.
+    /// The 7z is packed in a way this doesn't read (an unusual method, or a
+    /// solid block too big to decode in memory).
+    Unsupported,
+    /// A track's data didn't come out as the archive says it should.
     Corrupt,
     /// Writing a track went wrong, likely a full disk.
     WriteFailed,
@@ -136,8 +139,9 @@ pub fn describe(err: Error) []const u8 {
     return switch (err) {
         error.NotFound => "COULD NOT OPEN THAT",
         error.NoTracks => "NO MSU-1 TRACKS IN THAT",
-        error.BadZip => "COULD NOT READ THAT ZIP",
-        error.Corrupt => "A TRACK IN THE ZIP IS DAMAGED",
+        error.BadZip => "COULD NOT READ THAT ARCHIVE",
+        error.Unsupported => "THAT 7Z IS PACKED IN A WAY THIS CANNOT READ",
+        error.Corrupt => "A TRACK IN THE ARCHIVE IS DAMAGED",
         error.WriteFailed => "COULD NOT WRITE THE TRACKS",
         error.Canceled => "IMPORT CANCELED",
         error.OutOfMemory => "OUT OF MEMORY",
@@ -148,6 +152,8 @@ pub fn describe(err: Error) []const u8 {
 pub const Progress = struct {
     ctx: *anyopaque,
     f: *const fn (ctx: *anyopaque, done: usize, total: usize) void,
+    /// Set to stop, between one track and the next.
+    stop: ?*const std.atomic.Value(bool) = null,
 
     fn report(self: ?Progress, done: usize, total: usize) void {
         if (self) |p| p.f(p.ctx, done, total);
@@ -159,10 +165,32 @@ const Track = struct {
     source: union(enum) {
         file: [:0]u8,
         zip: zip.Entry,
+        /// A file in a .7z, by its index there.
+        sevenzip: struct { index: u32, name: []const u8, size: u64 },
     },
 };
 
-/// Installs the pack at `source`, a folder or a .zip, as the tracks
+/// What a pack comes as.
+const SourceKind = enum { folder, zip, sevenzip };
+
+fn kindOfSource(source: [:0]const u8) SourceKind {
+    if (fileio.isDir(source.ptr)) return .folder;
+    const f = fileio.fopen(source.ptr, "rb") orelse return .zip;
+    defer _ = fileio.fclose(f);
+    var magic: [6]u8 = undefined;
+    if (fileio.fread(&magic, 1, 6, f) == 6 and std.mem.eql(u8, &magic, "7z\xbc\xaf\x27\x1c")) return .sevenzip;
+    return .zip;
+}
+
+fn readSource(arena: std.mem.Allocator, kind: SourceKind, source: [:0]const u8, tracks: *std.ArrayList(Track)) Error!void {
+    switch (kind) {
+        .folder => try readFolder(arena, source, tracks),
+        .zip => try readZip(arena, source, tracks),
+        .sevenzip => try readSevenZip(arena, source, tracks),
+    }
+}
+
+/// Installs the pack at `source`, a folder, .zip or .7z, as the tracks
 /// `msu_path` names.
 pub fn importPack(alloc: std.mem.Allocator, source: [:0]const u8, msu_path: []const u8, progress: ?Progress, opts: ImportOptions) Error!Imported {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
@@ -172,12 +200,8 @@ pub fn importPack(alloc: std.mem.Allocator, source: [:0]const u8, msu_path: []co
     Status.set(status, .reading, 0);
 
     var tracks: std.ArrayList(Track) = .empty;
-    const is_zip = !fileio.isDir(source.ptr);
-    if (is_zip) {
-        try readZip(arena, source, &tracks);
-    } else {
-        try readFolder(arena, source, &tracks);
-    }
+    const kind = kindOfSource(source);
+    try readSource(arena, kind, source, &tracks);
     dedupe(&tracks);
     if (tracks.items.len == 0) return error.NoTracks;
 
@@ -189,6 +213,7 @@ pub fn importPack(alloc: std.mem.Allocator, source: [:0]const u8, msu_path: []co
         size.* = switch (t.source) {
             .file => |path| fileSize(path),
             .zip => |e| e.size,
+            .sevenzip => |e| e.size,
         };
         total += size.* * @as(u64, if (opts.flac and t.name.ext == .pcm) 3 else 1);
     }
@@ -203,10 +228,12 @@ pub fn importPack(alloc: std.mem.Allocator, source: [:0]const u8, msu_path: []co
     removeOldPack(arena, dir_z, split.prefix);
 
     var zip_file: ?*anyopaque = null;
-    if (is_zip) zip_file = fileio.fopen(source.ptr, "rb") orelse return error.NotFound;
+    if (kind == .zip) zip_file = fileio.fopen(source.ptr, "rb") orelse return error.NotFound;
     defer if (zip_file) |f| {
         _ = fileio.fclose(f);
     };
+    // A 7z comes out in one pass, in its own order, before anything else.
+    if (kind == .sevenzip) try extractSevenZip(arena, source, tracks.items, msu_path, status);
 
     var flac: usize = 0;
     for (tracks.items, sizes, 0..) |t, size, i| {
@@ -220,8 +247,10 @@ pub fn importPack(alloc: std.mem.Allocator, source: [:0]const u8, msu_path: []co
                 _ = fileio.remove(dest.ptr);
                 return err;
             },
+            // Out already.
+            .sevenzip => {},
         }
-        Status.add(status, size);
+        if (t.source != .sevenzip) Status.add(status, size);
         if (opts.flac and t.name.ext == .pcm) {
             if (Status.canceled(status)) return error.Canceled;
             Status.set(status, .shrinking, i + 1);
@@ -408,6 +437,7 @@ pub fn shrinkInstalled(alloc: std.mem.Allocator, msu_paths: []const []const u8, 
 
     var out = Shrunk{};
     for (pcms.items, 0..) |p, i| {
+        if (progress) |pr| if (pr.stop) |s| if (s.load(.acquire)) break;
         Progress.report(progress, i, pcms.items.len);
         const before = fileSize(p.path);
         pcmToFlac(alloc, p.path, p.flac) catch |err| {
@@ -448,6 +478,15 @@ pub const Pack = struct {
     loose: bool = false,
     /// Whether it's a deluxe pack, as its pack.ini says.
     deluxe: bool = false,
+    /// Which of the game's own tracks (1 to kGameTracks) it has, bit n for
+    /// track n.
+    game_tracks: u64 = 0,
+
+    /// How many of the game's tracks it leaves to the SNES music.
+    pub fn missing(self: Pack) usize {
+        const all: u64 = ((@as(u64, 1) << (kGameTracks + 1)) - 1) & ~@as(u64, 1);
+        return kGameTracks - @popCount(self.game_tracks & all);
+    }
 };
 
 /// Every pack in `library`: one in each folder in it, and the tracks
@@ -509,6 +548,7 @@ pub fn packLabel(msu_path: []const u8) []const u8 {
 pub fn packName(buf: *[64]u8, source: []const u8) []const u8 {
     var base = basename(std.mem.trimEnd(u8, source, "/\\"));
     if (std.ascii.endsWithIgnoreCase(base, ".zip")) base = base[0 .. base.len - 4];
+    if (std.ascii.endsWithIgnoreCase(base, ".7z")) base = base[0 .. base.len - 3];
     return cleanName(buf, base);
 }
 
@@ -556,6 +596,7 @@ fn bestGroup(arena: std.mem.Allocator, entries: []const Entry) Error!?Pack {
             break :blk &groups.items[groups.items.len - 1];
         };
         g.tracks += 1;
+        if (t.number <= kGameTracks) g.game_tracks |= @as(u64, 1) << @intCast(t.number);
         g.kinds[@backingInt(t.ext)] += 1;
         g.bytes += e.size;
         if (t.ext == .pcm) g.pcm += 1;
@@ -565,6 +606,24 @@ fn bestGroup(arena: std.mem.Allocator, entries: []const Entry) Error!?Pack {
         if (best == null or g.tracks > best.?.tracks) best = g;
     }
     return best;
+}
+
+/// Every track number the pack at `msu_path` has, in order, once each
+/// however many kinds of file it's there as.
+pub fn trackNumbers(arena: std.mem.Allocator, msu_path: []const u8) []u16 {
+    const split = splitMsuPath(msu_path);
+    const dir_z = arena.dupeSentinel(u8, split.dir, 0) catch return &.{};
+    var entries: std.ArrayList(Entry) = .empty;
+    var ctx = EntryCtx{ .arena = arena, .entries = &entries };
+    if (!c.SDL_EnumerateDirectory(dir_z.ptr, entryCallback, &ctx)) return &.{};
+    var numbers: std.ArrayList(u16) = .empty;
+    for (entries.items) |e| {
+        if (e.dir or !isInstalledTrack(e.name, split.prefix)) continue;
+        const t = trackOf(e.name) orelse continue;
+        if (std.mem.indexOfScalar(u16, numbers.items, t.number) == null) numbers.append(arena, t.number) catch return numbers.items;
+    }
+    std.mem.sort(u16, numbers.items, {}, std.sort.asc(u16));
+    return numbers.items;
 }
 
 /// What kind of tracks a pack has, for the tools' list: "FLAC", or "FLAC
@@ -953,11 +1012,7 @@ pub fn pcmTracksIn(alloc: std.mem.Allocator, source: [:0]const u8) usize {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var tracks: std.ArrayList(Track) = .empty;
-    if (fileio.isDir(source.ptr)) {
-        readFolder(arena, source, &tracks) catch return 0;
-    } else {
-        readZip(arena, source, &tracks) catch return 0;
-    }
+    readSource(arena, kindOfSource(source), source, &tracks) catch return 0;
     dedupe(&tracks);
     var n: usize = 0;
     for (tracks.items) |t| n += @intFromBool(t.name.ext == .pcm);
@@ -998,12 +1053,12 @@ pub const Found = struct {
     problem: ?[]const u8 = null,
 };
 
-/// Every track in the pack at `source`, a folder or a .zip, by number, with
+/// Every track in the pack at `source`, a folder, .zip or .7z, by number, with
 /// anything that would stop the game playing it. Nothing is copied.
 pub fn inspectPack(arena: std.mem.Allocator, source: [:0]const u8) Error![]Found {
     var tracks: std.ArrayList(Track) = .empty;
-    const is_zip = !fileio.isDir(source.ptr);
-    if (is_zip) try readZip(arena, source, &tracks) else try readFolder(arena, source, &tracks);
+    const kind = kindOfSource(source);
+    try readSource(arena, kind, source, &tracks);
     dedupe(&tracks);
     std.mem.sort(Track, tracks.items, {}, struct {
         fn lt(_: void, a: Track, b: Track) bool {
@@ -1012,7 +1067,7 @@ pub fn inspectPack(arena: std.mem.Allocator, source: [:0]const u8) Error![]Found
         }
     }.lt);
 
-    const zip_file: ?*anyopaque = if (is_zip) fileio.fopen(source.ptr, "rb") orelse return error.NotFound else null;
+    const zip_file: ?*anyopaque = if (kind == .zip) fileio.fopen(source.ptr, "rb") orelse return error.NotFound else null;
     defer if (zip_file) |f| {
         _ = fileio.fclose(f);
     };
@@ -1037,10 +1092,14 @@ pub fn inspectPack(arena: std.mem.Allocator, source: [:0]const u8) Error![]Found
                 const want: usize = @intCast(@min(size, head.len));
                 if (zip.readStart(zip_file.?, e, head[0..want]) catch false) head_len = want;
             },
+            // Its start would mean decoding the block it's in: its size
+            // will have to do.
+            .sevenzip => |e| size = e.size,
         }
         const file = switch (t.source) {
             .file => |path| basename(path),
             .zip => |e| basename(e.name),
+            .sevenzip => |e| basename(e.name),
         };
         out.* = .{ .name = t.name, .file = file, .size = size, .problem = trackProblem(t.name.ext, size, if (head_len >= 8) head[0..head_len] else null) };
     }
@@ -1095,6 +1154,119 @@ fn readZip(arena: std.mem.Allocator, path: [:0]const u8, tracks: *std.ArrayList(
         const t = trackOf(e.name) orelse continue;
         try tracks.append(arena, .{ .name = t, .source = .{ .zip = e } });
     }
+}
+
+// ---------------------------------------------------------------------- 7z
+
+const Msu7z = opaque {};
+extern fn msu7z_open(path: [*:0]const u8, err: *c_int) ?*Msu7z;
+extern fn msu7z_close(a: *Msu7z) void;
+extern fn msu7z_count(a: *const Msu7z) c_uint;
+extern fn msu7z_is_dir(a: *const Msu7z, i: c_uint) c_int;
+extern fn msu7z_size(a: *const Msu7z, i: c_uint) c_ulonglong;
+extern fn msu7z_name(a: *const Msu7z, i: c_uint, out: [*]u8, cap: usize) usize;
+const Sink = *const fn (ctx: ?*anyopaque, index: c_uint, data: ?*const anyopaque, len: usize, last: c_int) callconv(.c) c_int;
+extern fn msu7z_extract(a: *Msu7z, want: [*]const u8, sink: Sink, ctx: ?*anyopaque) c_int;
+
+/// msu_7z.c's answers.
+fn sevenZipError(code: c_int) Error {
+    return switch (code) {
+        1 => error.NotFound,
+        3 => error.Unsupported,
+        4 => error.Corrupt,
+        5 => error.Canceled,
+        6 => error.OutOfMemory,
+        else => error.BadZip,
+    };
+}
+
+fn openSevenZip(path: [:0]const u8) Error!*Msu7z {
+    var code: c_int = 0;
+    return msu7z_open(path.ptr, &code) orelse sevenZipError(code);
+}
+
+fn readSevenZip(arena: std.mem.Allocator, path: [:0]const u8, tracks: *std.ArrayList(Track)) Error!void {
+    const a = try openSevenZip(path);
+    defer msu7z_close(a);
+    var name_buf: [4096]u8 = undefined;
+    for (0..msu7z_count(a)) |i| {
+        const idx: c_uint = @intCast(i);
+        if (msu7z_is_dir(a, idx) != 0) continue;
+        const len = msu7z_name(a, idx, &name_buf, name_buf.len);
+        if (len == 0) continue;
+        const t = trackOf(name_buf[0..len]) orelse continue;
+        const name = arena.dupe(u8, name_buf[0..len]) catch return error.OutOfMemory;
+        try tracks.append(arena, .{ .name = t, .source = .{ .sevenzip = .{ .index = idx, .name = name, .size = msu7z_size(a, idx) } } });
+    }
+}
+
+/// Writes each track's bytes as the 7z hands them over.
+const SevenZipSink = struct {
+    /// The file to write each archive entry to, or null for one not wanted.
+    dests: []?[:0]u8,
+    status: ?*Status,
+    file: ?*anyopaque = null,
+    current: c_uint = std.math.maxInt(c_uint),
+    started: usize = 0,
+    write_failed: bool = false,
+
+    fn sink(ctx: ?*anyopaque, index: c_uint, data: ?*const anyopaque, len: usize, last: c_int) callconv(.c) c_int {
+        const self: *SevenZipSink = @ptrCast(@alignCast(ctx));
+        if (Status.canceled(self.status)) return 1;
+        if (index != self.current) {
+            self.close();
+            const dest = self.dests[index] orelse return 0;
+            self.file = fileio.fopen(dest.ptr, "wb") orelse {
+                self.write_failed = true;
+                return 1;
+            };
+            self.current = index;
+            self.started += 1;
+            Status.set(self.status, .copying, self.started);
+        }
+        if (len != 0) {
+            if (fileio.fwrite(data.?, 1, len, self.file.?) != len) {
+                self.write_failed = true;
+                return 1;
+            }
+            Status.add(self.status, len);
+        }
+        if (last != 0) self.close();
+        return 0;
+    }
+
+    fn close(self: *SevenZipSink) void {
+        if (self.file) |f| _ = fileio.fclose(f);
+        self.file = null;
+        self.current = std.math.maxInt(c_uint);
+    }
+};
+
+/// Takes `tracks` (all from the 7z at `path`) out to their places at
+/// `msu_path`, in one pass through the archive.
+fn extractSevenZip(arena: std.mem.Allocator, path: [:0]const u8, tracks: []const Track, msu_path: []const u8, status: ?*Status) Error!void {
+    const a = try openSevenZip(path);
+    defer msu7z_close(a);
+    const count = msu7z_count(a);
+    const want = arena.alloc(u8, count) catch return error.OutOfMemory;
+    @memset(want, 0);
+    const dests = arena.alloc(?[:0]u8, count) catch return error.OutOfMemory;
+    @memset(dests, null);
+    for (tracks) |t| {
+        const e = t.source.sevenzip;
+        want[e.index] = 1;
+        dests[e.index] = std.fmt.allocPrintSentinel(arena, "{s}{d}.{s}", .{ msu_path, t.name.number, t.name.ext.name() }, 0) catch return error.OutOfMemory;
+    }
+    var s = SevenZipSink{ .dests = dests, .status = status };
+    const code = msu7z_extract(a, want.ptr, SevenZipSink.sink, &s);
+    s.close();
+    if (code == 0) return;
+    // Nothing half written stays behind.
+    for (dests) |d| if (d) |dest| {
+        _ = fileio.remove(dest.ptr);
+    };
+    if (s.write_failed) return error.WriteFailed;
+    return sevenZipError(code);
 }
 
 // -------------------------------------------------------------------- tests
@@ -1585,4 +1757,111 @@ test "only a deluxe pack has tracks past the randomizer's" {
     try testing.expect(!looksDeluxe(61));
     try testing.expect(looksDeluxe(62));
     try testing.expect(looksDeluxe(114));
+}
+
+test "a pack's tracks are listed by number, and the missing ones counted" {
+    const lib = ".zig-cache/msu-numbers-test";
+    defer {
+        for ([_][*:0]const u8{ lib ++ "/P/alttp_msu-1.pcm", lib ++ "/P/alttp_msu-1.flac", lib ++ "/P/alttp_msu-3.ogg", lib ++ "/P/alttp_msu-40.flac" }) |f| _ = c.SDL_RemovePath(f);
+        for ([_][*:0]const u8{ lib ++ "/P", lib }) |d| _ = c.SDL_RemovePath(d);
+    }
+    try testing.expect(c.SDL_CreateDirectory(lib ++ "/P"));
+    for ([_][*:0]const u8{ lib ++ "/P/alttp_msu-1.pcm", lib ++ "/P/alttp_msu-1.flac", lib ++ "/P/alttp_msu-3.ogg", lib ++ "/P/alttp_msu-40.flac" }) |f| try fileio.writeWholeFile(f, "x");
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try testing.expectEqualSlices(u16, &.{ 1, 3, 40 }, trackNumbers(arena, lib ++ "/P/alttp_msu-"));
+    const packs = try listPacks(arena, lib);
+    try testing.expectEqual(@as(usize, kGameTracks - 2), packs[0].missing());
+}
+
+/// A solid 7z, as 7-Zip makes them by default (LZMA2): "Tiny Pack/t-1.pcm"
+/// and "t-40.pcm", 608 bytes each (MSU1, the track number as the loop
+/// point, then byte i is i * n), and a notes.txt.
+const kTiny7z = [_]u8{
+    0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0x00, 0x04, 0x7a, 0x16, 0x08, 0xa7, 0xd6, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x23, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xed, 0x0d, 0x04, 0x5c, 0xe0, 0x04, 0xca, 0x01, 0x2b, 0x5d, 0x00, 0x37, 0x1b, 0xca, 0xea, 0x25, 0x4b, 0x84, 0x65, 0x1f,
+    0x18, 0x9f, 0x46, 0x6f, 0xae, 0xc2, 0x95, 0xf6, 0x03, 0xaa, 0xbd, 0x3a, 0x0a, 0x52, 0xf0, 0xa9, 0x05, 0x9a, 0x76, 0xf8, 0x79, 0x52, 0x19, 0xa9,
+    0x3d, 0x32, 0x18, 0x09, 0xae, 0x50, 0x1f, 0xea, 0x59, 0xd4, 0x05, 0x10, 0x06, 0x42, 0xbc, 0x22, 0x90, 0xe7, 0x7d, 0x71, 0xda, 0xdd, 0x69, 0xf5,
+    0x05, 0xa6, 0x77, 0x01, 0x82, 0xab, 0x30, 0x5e, 0xe3, 0x3c, 0x59, 0xcd, 0x8f, 0x28, 0xa3, 0x6e, 0x3c, 0xdf, 0x5c, 0x07, 0x3c, 0xe4, 0x79, 0xf9,
+    0x96, 0xe0, 0xec, 0xfe, 0x5d, 0x7d, 0x82, 0x8f, 0x61, 0xb3, 0xd3, 0x8b, 0x03, 0x07, 0x41, 0x89, 0x59, 0x71, 0x99, 0x21, 0xbe, 0x53, 0xb4, 0x61,
+    0xcc, 0xd0, 0x12, 0xfd, 0x9f, 0x02, 0x01, 0xe6, 0x98, 0x74, 0x5a, 0x72, 0x13, 0x82, 0xaf, 0x37, 0x12, 0x9c, 0x52, 0x3d, 0x11, 0x7f, 0xaf, 0x19,
+    0x77, 0xe2, 0x4e, 0xd5, 0x2a, 0xe2, 0x5f, 0x4e, 0xb7, 0x87, 0xbe, 0x43, 0x6c, 0xce, 0x0b, 0xa4, 0x50, 0xf6, 0xae, 0x32, 0xc5, 0x9a, 0xe7, 0x41,
+    0x42, 0xde, 0x36, 0xf2, 0x50, 0x5e, 0x09, 0xf4, 0x4a, 0x55, 0xd2, 0xcc, 0x5c, 0x7f, 0xd7, 0xc2, 0x4e, 0x9f, 0x87, 0x1c, 0x39, 0xbe, 0xa8, 0x37,
+    0x94, 0xff, 0xd5, 0x1a, 0x9b, 0x89, 0x24, 0xc3, 0x5d, 0x51, 0x4b, 0x1e, 0x29, 0x42, 0x20, 0x35, 0xaf, 0x92, 0x70, 0x65, 0x8b, 0xc4, 0x28, 0xf5,
+    0xa2, 0x14, 0x90, 0x9d, 0x9c, 0x0a, 0xf9, 0xe7, 0x80, 0x47, 0x0b, 0x7f, 0x59, 0xc3, 0xd9, 0x87, 0x77, 0xe7, 0x5d, 0x9c, 0x04, 0x6a, 0x3d, 0x12,
+    0x8c, 0xe8, 0xab, 0xb9, 0x8d, 0xfc, 0x3b, 0xd8, 0x58, 0x65, 0xd9, 0x03, 0x97, 0x3f, 0x38, 0x49, 0xb5, 0xb0, 0xca, 0x37, 0xec, 0x2c, 0x61, 0xa3,
+    0x2a, 0xad, 0x8f, 0x86, 0x56, 0x24, 0x4c, 0xb0, 0x0b, 0x5f, 0x41, 0xe7, 0x50, 0x20, 0xcd, 0xb4, 0x68, 0x0e, 0xfc, 0xf4, 0xc2, 0xe6, 0xcf, 0xd3,
+    0x6c, 0x61, 0x13, 0xfe, 0xb3, 0xc5, 0x50, 0x89, 0x4a, 0xbe, 0x0f, 0xe0, 0xf8, 0xa2, 0x6c, 0xd5, 0xa5, 0xf3, 0x49, 0x84, 0x55, 0x11, 0x7a, 0x09,
+    0x7d, 0x00, 0x00, 0x00, 0x00, 0x81, 0x33, 0x07, 0xae, 0x0f, 0xd5, 0x38, 0xf3, 0x21, 0xd7, 0x24, 0xd3, 0xfe, 0xb3, 0x70, 0x23, 0xe6, 0x34, 0x13,
+    0xfe, 0x98, 0xad, 0x8f, 0xc4, 0xcc, 0xcf, 0x0d, 0xcd, 0x1c, 0x54, 0x90, 0x21, 0x5d, 0xc2, 0x4d, 0x09, 0x38, 0xbf, 0xc2, 0xf3, 0xec, 0xf5, 0xef,
+    0x96, 0x0b, 0x8e, 0xac, 0xc8, 0x7d, 0xfa, 0x67, 0xae, 0xb3, 0x78, 0x97, 0x9e, 0x49, 0xd4, 0x6a, 0x8d, 0x48, 0x56, 0x2d, 0x28, 0x26, 0x10, 0x77,
+    0x61, 0x8a, 0xf9, 0x63, 0xbb, 0xcd, 0xce, 0x84, 0xf1, 0x39, 0x50, 0xba, 0x46, 0xc4, 0xab, 0x8b, 0xb1, 0x4d, 0x73, 0x7e, 0x2e, 0x7a, 0xff, 0x4e,
+    0xc7, 0x65, 0xda, 0x5e, 0x1d, 0xe0, 0xc3, 0xc9, 0x79, 0x83, 0x7d, 0x78, 0xf4, 0xb7, 0x4e, 0x67, 0x4e, 0x3d, 0x39, 0xd5, 0x8c, 0x77, 0x81, 0x9c,
+    0x97, 0x9b, 0xa3, 0x15, 0x17, 0x8c, 0x51, 0x66, 0x31, 0x69, 0xe0, 0xd4, 0x9f, 0x2e, 0x95, 0x9a, 0xb5, 0xeb, 0xdb, 0x41, 0x76, 0x2c, 0x3e, 0xde,
+    0xa0, 0x06, 0xed, 0x1e, 0xcd, 0xd1, 0xd9, 0xa9, 0x31, 0x36, 0xc7, 0x21, 0x9b, 0x26, 0xb3, 0xa7, 0xd3, 0x28, 0x0f, 0x00, 0x00, 0x00, 0x17, 0x06,
+    0x81, 0x33, 0x01, 0x09, 0x80, 0xa3, 0x00, 0x07, 0x0b, 0x01, 0x00, 0x01, 0x23, 0x03, 0x01, 0x01, 0x05, 0x5d, 0x00, 0x10, 0x00, 0x00, 0x0c, 0x81,
+    0x06, 0x0a, 0x01, 0x71, 0xfc, 0x27, 0x34, 0x00, 0x00,
+};
+
+fn tinyTrack(n: u8) [608]u8 {
+    var out: [608]u8 = undefined;
+    @memcpy(out[0..4], "MSU1");
+    std.mem.writeInt(u32, out[4..8], n, .little);
+    for (0..600) |i| out[8 + i] = @truncate(i *% n);
+    return out;
+}
+
+test "a 7z pack's tracks are found, imported whole, and the rest left in it" {
+    const root = ".zig-cache/msu-7z-test";
+    const archive = root ++ "/tiny.7z";
+    const lib = root ++ "/msu";
+    defer {
+        for ([_][*:0]const u8{ archive, lib ++ "/Tiny/alttp_msu-1.pcm", lib ++ "/Tiny/alttp_msu-40.pcm", lib ++ "/Tiny/pack.ini" }) |f| _ = c.SDL_RemovePath(f);
+        for ([_][*:0]const u8{ lib ++ "/Tiny", lib, root }) |d| _ = c.SDL_RemovePath(d);
+    }
+    try testing.expect(c.SDL_CreateDirectory(root));
+    try fileio.writeWholeFile(archive, &kTiny7z);
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const found = try inspectPack(arena_state.allocator(), archive);
+    try testing.expectEqual(@as(usize, 2), found.len);
+    try testing.expectEqualStrings("t-1.pcm", found[0].file);
+    try testing.expectEqual(@as(u64, 608), found[1].size);
+    try testing.expectEqual(@as(usize, 2), pcmTracksIn(testing.allocator, archive));
+
+    const got = try importNamed(testing.allocator, archive, lib, "Tiny", .{});
+    defer testing.allocator.free(got.msu_path);
+    try testing.expectEqual(@as(usize, 2), got.imported.tracks);
+    for ([_]u8{ 1, 40 }) |n| {
+        var path_buf: [64]u8 = undefined;
+        const path = try std.fmt.bufPrintSentinel(&path_buf, lib ++ "/Tiny/alttp_msu-{d}.pcm", .{n}, 0);
+        const bytes = try fileio.readWholeFile(testing.allocator, path.ptr);
+        defer testing.allocator.free(bytes);
+        try testing.expectEqualSlices(u8, &tinyTrack(n), bytes);
+    }
+    try testing.expect(!fileio.exists(lib ++ "/Tiny/notes.txt"));
+}
+
+test "a damaged 7z is turned away, and leaves nothing behind" {
+    const root = ".zig-cache/msu-7z-bad";
+    const archive = root ++ "/bad.7z";
+    const lib = root ++ "/msu";
+    defer {
+        _ = c.SDL_RemovePath(archive);
+        for ([_][*:0]const u8{ lib ++ "/.importing-Bad", lib, root }) |d| _ = c.SDL_RemovePath(d);
+    }
+    try testing.expect(c.SDL_CreateDirectory(lib));
+    var bad = kTiny7z;
+    // Into the packed data, past the 32-byte signature header.
+    bad[60] ^= 0xff;
+    bad[61] ^= 0xff;
+    try fileio.writeWholeFile(archive, &bad);
+    if (importNamed(testing.allocator, archive, lib, "Bad", .{})) |got| {
+        testing.allocator.free(got.msu_path);
+        return error.TestUnexpectedResult;
+    } else |e| try testing.expect(e == error.Corrupt or e == error.BadZip);
+    try testing.expect(!fileio.isDir(lib ++ "/Bad"));
+    try testing.expect(!fileio.isDir(lib ++ "/.importing-Bad"));
 }

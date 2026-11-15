@@ -24,6 +24,8 @@ extern fn fclose(f: *FILE) c_int;
 extern fn fread(ptr: *anyopaque, size: usize, n: usize, f: *FILE) usize;
 extern fn fseek(f: *FILE, off: c_long, whence: c_int) c_int;
 const SEEK_SET = 0;
+const SEEK_END = 2;
+extern fn ftell(f: *FILE) c_long;
 
 const OpusDecoder = anyopaque;
 const OPUS_RESET_STATE: c_int = 4028;
@@ -55,6 +57,10 @@ pub const Msu1 = struct {
     decoder: ?*msu_codec.Track = null,
     /// The rate the open track plays at.
     rate: u32 = 44100,
+    /// Where in the track the next frame is, and how long the track is (in
+    /// frames), when that's known: an Opuz file doesn't say.
+    frame: u64 = 0,
+    length: ?u64 = null,
 
     /// .opuz: the decoder, the next range record, the one a loop jumps back
     /// to, and how much of the current range is left to play.
@@ -144,14 +150,22 @@ pub const Msu1 = struct {
             self.decoder = t;
             self.rate = t.rate;
             self.loop_point = @intCast(@min(t.loop_start, std.math.maxInt(u32)));
+            self.frame = 0;
+            self.length = t.frames;
             self.missing = false;
             return;
         }
         if (std.mem.eql(u8, header[0..4], "MSU1")) {
             self.loop_point = std.mem.readInt(u32, header[4..8], .little);
+            self.frame = 0;
+            _ = fseek(f, 0, SEEK_END);
+            self.length = @intCast(@divTrunc(@max(ftell(f) - 8, 0), 4));
+            _ = fseek(f, 8, SEEK_SET);
             self.rate = 44100;
         } else if (std.mem.eql(u8, header[0..4], "OPUZ")) {
             self.rate = 48000;
+            self.frame = 0;
+            self.length = null;
             self.opus = opus_decoder_create(48000, 2, null) orelse {
                 _ = fclose(f);
                 return;
@@ -206,6 +220,7 @@ pub const Msu1 = struct {
         if (n == 0) {
             if (!self.repeat) return false;
             _ = fseek(f, @intCast(8 + @as(i64, self.loop_point) * 4), SEEK_SET);
+            self.frame = self.loop_point;
             n = fread(&raw, 4, self.buf.len, f);
             if (n == 0) return false;
         }
@@ -223,6 +238,7 @@ pub const Msu1 = struct {
         var n = t.read(&self.buf);
         if (n == 0) {
             if (!self.repeat or !t.seek(self.loop_point)) return false;
+            self.frame = self.loop_point;
             n = t.read(&self.buf);
             if (n == 0) return false;
         }
@@ -293,6 +309,7 @@ pub const Msu1 = struct {
             }
         }
         defer self.buf_pos += 1;
+        self.frame += 1;
         return self.buf[self.buf_pos];
     }
 
@@ -390,4 +407,31 @@ test "a FLAC track plays, and repeats from its loop point" {
     // Then back to 2500, not the start.
     try std.testing.expectEqual(@as(i16, 2500), out[3000 * 2]);
     try std.testing.expectEqual(@as(i16, 2599), out[3099 * 2]);
+}
+
+test "a track knows how long it is and where it's got to, and stops at its end without repeat" {
+    const flac_enc = @import("flac_enc.zig");
+    const fileio = @import("fileio.zig");
+    const path = ".zig-cache/msu1-clock-test-3.flac";
+    defer _ = fileio.remove(path);
+    var samples: [2000 * 2]i16 = @splat(100);
+    const bytes = try flac_enc.encode(std.testing.allocator, &samples, .{});
+    defer std.testing.allocator.free(bytes);
+    try fileio.writeWholeFile(path, bytes);
+
+    var m = Msu1{};
+    defer m.deinit();
+    m.configure(".zig-cache/msu1-clock-test-");
+    _ = m.write(0x2004, 3);
+    _ = m.write(0x2005, 0);
+    try std.testing.expectEqual(@as(?u64, 2000), m.length);
+    _ = m.write(0x2006, 255);
+    _ = m.write(0x2007, 1); // play, once
+    var out: [1500 * 2]i16 = @splat(0);
+    m.mix(&out, 1500, 2, 44100);
+    try std.testing.expect(m.playing);
+    try std.testing.expect(m.frame >= 1500 and m.frame <= 1501);
+    m.mix(&out, 1500, 2, 44100);
+    // Past its 2000 frames: over, which is what moves the player on.
+    try std.testing.expect(!m.playing);
 }

@@ -49,6 +49,8 @@ pub const Player = struct {
     sp: *SpcPlayer,
     stream: ?*c.SDL_AudioStream = null,
     playing: ?Song = null,
+    /// Frames made since the song started, which is how long it's played.
+    rendered: u64 = 0,
 
     /// Reads the banks out of the asset file at `assets_path`.
     pub fn init(alloc: std.mem.Allocator, assets_path: [:0]const u8) !*Player {
@@ -108,12 +110,45 @@ pub const Player = struct {
         if (song.bank != .overworld) spc.SpcPlayer_Upload(self.sp, self.uploads[@backingInt(song.bank)].stream.ptr);
         self.sp.input_ports[0] = song.number;
         self.playing = song;
+        self.rendered = 0;
+        if (self.stream) |s| _ = c.SDL_SetAudioStreamGain(s, 1);
+    }
+
+    /// How long the song's played, in seconds.
+    pub fn seconds(self: *Player) f64 {
+        const s = self.stream orelse return 0;
+        _ = c.SDL_LockAudioStream(s);
+        defer _ = c.SDL_UnlockAudioStream(s);
+        return @as(f64, @floatFromInt(self.rendered)) / kRate;
+    }
+
+    /// Whether the song stopped by itself, as the jingles do: the driver
+    /// says it's playing nothing. Songs that loop never do.
+    pub fn ended(self: *Player) bool {
+        const s = self.stream orelse return false;
+        _ = c.SDL_LockAudioStream(s);
+        defer _ = c.SDL_UnlockAudioStream(s);
+        return self.rendered > kRate and self.sp.port_to_snes[0] == 0;
+    }
+
+    /// Turns it down, 0 to 1, for fading out.
+    pub fn setGain(self: *Player, gain: f32) void {
+        if (self.stream) |s| _ = c.SDL_SetAudioStreamGain(s, gain);
     }
 
     /// The next 60th of a second, as stereo samples at `kRate`.
     pub fn render(self: *Player, buf: *[kFrameSamples * 2]i16) void {
         spc.SpcPlayer_GenerateSamples(self.sp);
         dsp_mod.dsp_getSamples(self.sp.dsp.?, buf, kFrameSamples, 2);
+    }
+
+    /// Holds the song where it is, and lets it go on.
+    pub fn pause(self: *Player) void {
+        if (self.stream) |s| _ = c.SDL_PauseAudioStreamDevice(s);
+    }
+
+    pub fn @"resume"(self: *Player) void {
+        if (self.stream) |s| _ = c.SDL_ResumeAudioStreamDevice(s);
     }
 
     pub fn stop(self: *Player) void {
@@ -132,6 +167,7 @@ pub const Player = struct {
         var left = additional;
         while (left > 0) {
             self.render(&buf);
+            self.rendered += kFrameSamples;
             _ = c.SDL_PutAudioStreamData(stream, &buf, @sizeOf(@TypeOf(buf)));
             left -= @sizeOf(@TypeOf(buf));
         }

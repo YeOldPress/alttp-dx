@@ -316,7 +316,7 @@ fn verifyData(log: Log, data: []const u8) bool {
 
 // ------------------------------------------------------------ MSU-1 packs
 
-/// Looks over an MSU-1 pack, a folder or a .zip, without installing it: which
+/// Looks over an MSU-1 pack, a folder, .zip or .7z, without installing it: which
 /// of the game's tracks it has, which it leaves to the game's own music, and
 /// any file that won't play. True when nothing's wrong with it.
 pub fn checkMsuPack(alloc: std.mem.Allocator, log: Log, path: [:0]const u8) bool {
@@ -326,7 +326,8 @@ pub fn checkMsuPack(alloc: std.mem.Allocator, log: Log, path: [:0]const u8) bool
         log.err("{s}", .{switch (e) {
             error.NotFound => "Couldn't open that pack.",
             error.NoTracks => "There are no MSU-1 tracks in that. Their names end in a number and .pcm, .flac, .ogg or .opuz.",
-            error.BadZip => "That zip is damaged, or packed in a way these tools can't read.",
+            error.BadZip => "That archive is damaged, or isn't a zip or 7z.",
+            error.Unsupported => "That 7z is packed in a way these tools can't read. Repacking it with 7-Zip's defaults (LZMA2) will do.",
             else => plainError(e),
         }});
         return false;
@@ -401,6 +402,32 @@ pub fn shrinkProgress() struct { done: usize, total: usize } {
 fn countShrunk(_: *anyopaque, done: usize, total: usize) void {
     g_shrink_done.store(done, .monotonic);
     g_shrink_total.store(total, .monotonic);
+}
+
+/// Installs the pack at `source` (a folder, .zip or .7z) in the msu folder
+/// as a pack called `name` (its folder or archive's name when null), as the
+/// start menu's Import does. MSU Pack in Settings then picks it.
+pub fn importMsu(alloc: std.mem.Allocator, log: Log, source: [:0]const u8, name: ?[]const u8, flac: bool) bool {
+    var name_buf: [64]u8 = undefined;
+    const pack_name = name orelse msu_import.packName(&name_buf, source);
+    const got = msu_import.importNamed(alloc, source, msu_import.kLibrary, pack_name, .{ .flac = flac }) catch |e| {
+        log.err("Couldn't import {s}: {s}", .{ std.fs.path.basename(source), switch (e) {
+            error.NotFound => "it isn't there, or can't be read.",
+            error.NoTracks => "there are no MSU-1 tracks in it.",
+            error.BadZip => "the archive is damaged, or isn't a zip or 7z.",
+            error.Unsupported => "that 7z is packed in a way this can't read. Repack it with 7-Zip's defaults (LZMA2).",
+            error.Corrupt => "a track in it is damaged.",
+            error.WriteFailed => "a track couldn't be written. Is the disk full?",
+            error.Canceled => "it was stopped.",
+            error.OutOfMemory => "out of memory.",
+        } });
+        return false;
+    };
+    defer alloc.free(got.msu_path);
+    log.info("{d} tracks{s}, as {s}.", .{ got.imported.tracks, if (got.imported.flac != 0) " (the .pcm ones as FLAC)" else "", got.msu_path });
+    if (got.imported.deluxe) log.info("It has deluxe tracks, so it's marked as a deluxe pack.", .{});
+    log.ok("Imported {s}. Pick it with MSU Pack in Settings.", .{pack_name});
+    return true;
 }
 
 /// MSUPath from the zelda3.ini here, or the game's default. The answer is

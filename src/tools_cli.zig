@@ -36,8 +36,12 @@ const kUsage =
     \\                    ROM this doesn't recognize as that language
     \\  verify [FILE]     Check an asset file against this version
     \\  rom-info ROM      Say which release a ROM is
-    \\  check-msu PACK    Look over an MSU-1 pack, a folder or a .zip, for
+    \\  check-msu PACK    Look over an MSU-1 pack, a folder, .zip or .7z, for
     \\                    missing tracks and files that won't play
+    \\  import-msu PACK [--name NAME] [--keep-pcm]
+    \\                    Install an MSU-1 pack (a folder, .zip or .7z) in
+    \\                    the msu folder, its .pcm tracks as FLAC unless
+    \\                    --keep-pcm. MSU Pack in Settings picks it
     \\  shrink-msu [MSUPATH]
     \\                    Turn installed MSU packs' .pcm tracks into FLAC:
     \\                    the same sound in about half the space (default:
@@ -136,7 +140,8 @@ fn positional(args: []const [:0]const u8, i: usize) ?[:0]const u8 {
             continue;
         }
         if (std.mem.startsWith(u8, a, "--")) {
-            skip = !std.mem.eql(u8, a, "--sprites-from-png");
+            // Flags stand alone; every other option has a value after it.
+            skip = !std.mem.eql(u8, a, "--sprites-from-png") and !std.mem.eql(u8, a, "--keep-pcm");
             continue;
         }
         if (n == i) return a;
@@ -198,6 +203,10 @@ fn runCommand(alloc: std.mem.Allocator, args: []const [:0]const u8) !bool {
     }
     if (std.mem.eql(u8, cmd, "check-msu")) {
         return ops.checkMsuPack(alloc, log, positional(rest, 0) orelse return error.Usage);
+    }
+    if (std.mem.eql(u8, cmd, "import-msu")) {
+        const source = positional(rest, 0) orelse return error.Usage;
+        return ops.importMsu(alloc, log, source, try option(rest, "--name"), !flag(rest, "--keep-pcm"));
     }
     if (std.mem.eql(u8, cmd, "shrink-msu")) {
         if (positional(rest, 0)) |one| return ops.shrinkMsu(alloc, log, &.{one});

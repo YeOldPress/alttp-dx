@@ -30,6 +30,8 @@ pub const Item = struct {
 /// A button and what it does, along the bottom.
 pub const Hint = struct { key: []const u8, action: []const u8 };
 
+pub const Transport = enum { prev, play, pause, next, stop };
+
 pub const State = struct {
     items: []const Item,
     cursor: usize,
@@ -514,6 +516,30 @@ pub const Page = struct {
 
     /// A sub-screen's sky and header: the same night as the front page with
     /// fewer motes, a small Triforce by the screen's name, and the way back.
+    /// The sky round the page, for a window of another shape than the
+    /// page's: `w` by `h` with the page at (ox, oy), in the page's units.
+    /// The same gradient and glows in the same places, carried on past the
+    /// page's edges so the bars either side meet it without a seam, and
+    /// motes drifting through them. `front` is the front page's sky, or
+    /// else a sub-screen's.
+    pub fn skyAround(self: *const Page, t: f32, ox: f32, oy: f32, w: f32, h: f32, front: bool) void {
+        const p = &self.paint;
+        _ = c.SDL_SetRenderDrawBlendMode(p.r, c.SDL_BLENDMODE_BLEND);
+        if (oy > 0) {
+            p.fill(.{ .x = 0, .y = 0, .w = w, .h = oy }, kSkyTop);
+            p.fill(.{ .x = 0, .y = oy + kH, .w = w, .h = h - oy - kH }, kSkyBottom);
+        }
+        gradient(p.r, .{ .x = 0, .y = oy, .w = w, .h = kH }, kSkyTop, kSkyBottom, .vertical);
+        if (front) {
+            self.glowAt(ox + kTitleX, oy + kTitleY + 4, 300 * kTitleScale, Color.hex(0x2a7c86).alpha(52));
+            self.glowAt(ox + kW - 80, oy + kH + 40, 380, Color.hex(0x7a5a2a).alpha(34));
+        } else {
+            self.glowAt(ox + 150, oy + 40, 340, Color.hex(0x2a7c86).alpha(40));
+            self.glowAt(ox + kW - 80, oy + kH + 40, 380, Color.hex(0x7a5a2a).alpha(30));
+        }
+        self.motesIn(t, if (front) 1 else 0.55, w, h);
+    }
+
     pub fn backdrop(self: *const Page, t: f32, name: []const u8, back_picked: bool) void {
         const p = &self.paint;
         _ = c.SDL_SetRenderDrawBlendMode(p.r, c.SDL_BLENDMODE_BLEND);
@@ -624,6 +650,171 @@ pub const Page = struct {
         const s: f32 = 4;
         triangle(r, .{ left, cy }, .{ left + s, cy - s }, .{ left + s, cy + s }, col);
         triangle(r, .{ right, cy }, .{ right - s, cy - s }, .{ right - s, cy + s }, col);
+    }
+
+    /// The Super Nintendo pad from the retro menu (pad_art.zig): the same
+    /// shapes and colors, a light outline on a dark body, but drawn smooth
+    /// at full resolution rather than a pixel at a time. As wide as fits in
+    /// `box`; button `lit` (in controls.kButtonNames' order: the d-pad's
+    /// four, Select, Start, A, B, X, Y, L, R) is filled gold. Returns how
+    /// tall it came out, shoulders and all.
+    pub fn pad(self: *const Page, box: kit.Rect, lit: ?usize, t: f32) f32 {
+        const p = &self.paint;
+        const r = p.r;
+        // pad_art's drawing is 110 across and 44 down, plus 4 of shoulder.
+        const W = @min(box.w, 390);
+        const k = W / 110.0;
+        const ox = box.x + (box.w - W) / 2;
+        const oy = box.y + 4 * k;
+        const lw: f32 = 1.8;
+        const line = Color.hex(0xe0e0ec);
+        const body = Color.hex(0x2c2c40);
+        const well = Color.hex(0x1e1e2c);
+        const pulse: f32 = 0.75 + 0.25 * @sin(t * 5);
+        const M = struct {
+            ox: f32,
+            oy: f32,
+            k: f32,
+            fn x(m_: @This(), v: f32) f32 {
+                return m_.ox + v * m_.k;
+            }
+            fn y(m_: @This(), v: f32) f32 {
+                return m_.oy + v * m_.k;
+            }
+            fn s(m_: @This(), v: f32) f32 {
+                return v * m_.k;
+            }
+        };
+        const m = M{ .ox = ox, .oy = oy, .k = k };
+        const isLit = struct {
+            fn f(l: ?usize, i: usize) bool {
+                return l != null and l.? == i;
+            }
+        }.f;
+        const fillOf = struct {
+            fn f(on: bool, base: Color) Color {
+                return if (on) kGold else base;
+            }
+        }.f;
+        const glowIf = struct {
+            fn f(pg: *const Page, on: bool, gx: f32, gy: f32, rad: f32, pu: f32) void {
+                if (on) pg.glowAt(gx, gy, rad, kGold.alpha(@intFromFloat(120 * pu)));
+            }
+        }.f;
+
+        // L and R first, so the body sits on them and hides all but the
+        // strips along the top: a circle of 25 round each end, cut off
+        // below 9, from 6 inside the middle to 17 out.
+        for ([_]usize{ 10, 11 }, [_]f32{ 22, 88 }, [_]f32{ -1, 1 }) |i, cx, dir| {
+            const on = isLit(lit, i);
+            const x_in = cx - dir * 6;
+            const x_out = cx + dir * 17;
+            glowIf(self, on, m.x((x_in + x_out) / 2), m.y(-1), m.s(16), pulse);
+            shoulderBand(p, m.x(cx), m.y(22), m.s(25) + lw, m.x(@min(x_in, x_out)) - lw, m.x(@max(x_in, x_out)) + lw, m.y(9), line);
+            shoulderBand(p, m.x(cx), m.y(22), m.s(25), m.x(@min(x_in, x_out)), m.x(@max(x_in, x_out)), m.y(9), fillOf(on, body));
+        }
+
+        // The body: two ends of 22 and the bridge between, a hair shorter
+        // at the bottom.
+        for ([_]f32{ lw, 0 }, [_]Color{ line, body }) |g, col| {
+            p.disc(m.x(22), m.y(22), m.s(22) + g, col);
+            p.disc(m.x(88), m.y(22), m.s(22) + g, col);
+            p.fill(.{ .x = m.x(22), .y = m.y(0) - g, .w = m.s(66), .h = m.s(41.5) + g * 2 }, col);
+        }
+
+        // The cross pad in its ring.
+        p.disc(m.x(22), m.y(22), m.s(15.5) + lw, line);
+        p.disc(m.x(22), m.y(22), m.s(15.5), well);
+        const arm = m.s(11.5);
+        const half = m.s(4);
+        const cx = m.x(22);
+        const cy = m.y(22);
+        for ([_]f32{ lw, 0 }, [_]Color{ line, body }) |g, col| {
+            p.fill(.{ .x = cx - arm - g, .y = cy - half - g, .w = (arm + g) * 2, .h = (half + g) * 2 }, col);
+            p.fill(.{ .x = cx - half - g, .y = cy - arm - g, .w = (half + g) * 2, .h = (arm + g) * 2 }, col);
+        }
+        // Each arm, gold when it's the one picked, with its arrow pointing
+        // out (in the body's color when the arm's lit, so it still shows).
+        const arms = [4]ui.Rect{
+            .{ .x = cx - half, .y = cy - arm, .w = half * 2, .h = arm - half },
+            .{ .x = cx - half, .y = cy + half, .w = half * 2, .h = arm - half },
+            .{ .x = cx - arm, .y = cy - half, .w = arm - half, .h = half * 2 },
+            .{ .x = cx + half, .y = cy - half, .w = arm - half, .h = half * 2 },
+        };
+        for (arms, 0..) |a, i| {
+            const on = isLit(lit, i);
+            glowIf(self, on, a.x + a.w / 2, a.y + a.h / 2, m.s(9), pulse);
+            if (on) p.fill(a, kGold);
+            const col = if (on) body else line;
+            const tip = m.s(10);
+            const base = m.s(7.4);
+            const w2 = m.s(2.5);
+            switch (i) {
+                0 => triangle(r, .{ cx, cy - tip }, .{ cx + w2, cy - base }, .{ cx - w2, cy - base }, col),
+                1 => triangle(r, .{ cx, cy + tip }, .{ cx - w2, cy + base }, .{ cx + w2, cy + base }, col),
+                2 => triangle(r, .{ cx - tip, cy }, .{ cx - base, cy - w2 }, .{ cx - base, cy + w2 }, col),
+                else => triangle(r, .{ cx + tip, cy }, .{ cx + base, cy + w2 }, .{ cx + base, cy - w2 }, col),
+            }
+        }
+        p.disc(cx, cy, m.s(2.5) + lw, line);
+        p.disc(cx, cy, m.s(2.5), body);
+
+        // Select and Start: two little slanted capsules.
+        for ([_]usize{ 4, 5 }, [_][4]f32{ .{ 43, 31, 50, 24 }, .{ 56, 31, 63, 24 } }) |i, cap| {
+            const on = isLit(lit, i);
+            const mx = m.x((cap[0] + cap[2]) / 2);
+            const my = m.y((cap[1] + cap[3]) / 2);
+            const len = m.s(@sqrt((cap[2] - cap[0]) * (cap[2] - cap[0]) + (cap[3] - cap[1]) * (cap[3] - cap[1])) + 2 * 2.4);
+            const ang = std.math.atan2(cap[3] - cap[1], cap[2] - cap[0]);
+            glowIf(self, on, mx, my, m.s(8), pulse);
+            slantPill(p, mx, my, len + lw * 2, m.s(4.8) + lw * 2, ang, line);
+            slantPill(p, mx, my, len, m.s(4.8), ang, fillOf(on, body));
+        }
+
+        // The face buttons: a ring, two capsules (Y with X, B with A), and
+        // the buttons in them.
+        p.disc(m.x(88), m.y(22), m.s(19) + lw, line);
+        p.disc(m.x(88), m.y(22), m.s(19), well);
+        const face = [4][2]f32{ .{ 97, 22 }, .{ 88, 31 }, .{ 88, 13 }, .{ 79, 22 } }; // A, B, X, Y
+        for ([_][2]usize{ .{ 3, 2 }, .{ 1, 0 } }) |pair| {
+            const a = face[pair[0]];
+            const b = face[pair[1]];
+            const len = m.s(@sqrt((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1])) + 2 * 5.3);
+            const ang = std.math.atan2(b[1] - a[1], b[0] - a[0]);
+            const mx = m.x((a[0] + b[0]) / 2);
+            const my = m.y((a[1] + b[1]) / 2);
+            slantPill(p, mx, my, len + lw * 2, m.s(10.6) + lw * 2, ang, line);
+            slantPill(p, mx, my, len, m.s(10.6), ang, body);
+        }
+        for (face, 0..) |f, j| {
+            const on = isLit(lit, 6 + j);
+            glowIf(self, on, m.x(f[0]), m.y(f[1]), m.s(7), pulse);
+            p.disc(m.x(f[0]), m.y(f[1]), m.s(3.8) + lw, line);
+            p.disc(m.x(f[0]), m.y(f[1]), m.s(3.8), fillOf(on, body));
+        }
+        return m.s(48);
+    }
+
+    /// A music player's button face, centered on (cx, cy), `s` across.
+    pub fn transport(self: *const Page, kind: Transport, cx: f32, cy: f32, s: f32, col: Color) void {
+        const r = self.paint.r;
+        const h = s / 2;
+        switch (kind) {
+            .play => triangle(r, .{ cx - h * 0.7, cy - h }, .{ cx + h, cy }, .{ cx - h * 0.7, cy + h }, col),
+            .pause => {
+                self.paint.fill(.{ .x = cx - h * 0.8, .y = cy - h, .w = h * 0.55, .h = s }, col);
+                self.paint.fill(.{ .x = cx + h * 0.25, .y = cy - h, .w = h * 0.55, .h = s }, col);
+            },
+            .stop => self.paint.fill(.{ .x = cx - h * 0.8, .y = cy - h * 0.8, .w = h * 1.6, .h = h * 1.6 }, col),
+            .prev => {
+                self.paint.fill(.{ .x = cx - h, .y = cy - h, .w = h * 0.3, .h = s }, col);
+                triangle(r, .{ cx + h, cy - h }, .{ cx - h * 0.6, cy }, .{ cx + h, cy + h }, col);
+            },
+            .next => {
+                triangle(r, .{ cx - h, cy - h }, .{ cx + h * 0.6, cy }, .{ cx - h, cy + h }, col);
+                self.paint.fill(.{ .x = cx + h * 0.7, .y = cy - h, .w = h * 0.3, .h = s }, col);
+            },
+        }
     }
 
     /// A mark for something done, or the outline of one not yet.
@@ -775,6 +966,43 @@ pub const Page = struct {
 // ----------------------------------------------------------------- shapes
 
 const Dir = enum { vertical, horizontal };
+
+/// The top of a circle of radius `rad` round (cx, cy), between x0 and x1
+/// and down to `bottom`: a shoulder button's strip, before the body covers
+/// all but its top. The circle's drawn whole and clipped, so its edge stays
+/// as smooth as any other disc's.
+fn shoulderBand(p: *const ui.Paint, cx: f32, cy: f32, rad: f32, x0: f32, x1: f32, bottom: f32, col: Color) void {
+    var was: c.SDL_Rect = undefined;
+    const had = c.SDL_RenderClipEnabled(p.r);
+    _ = c.SDL_GetRenderClipRect(p.r, &was);
+    const top = cy - rad - 2;
+    const clip = c.SDL_Rect{
+        .x = @intFromFloat(@round(x0)),
+        .y = @intFromFloat(@floor(top)),
+        .w = @intFromFloat(@round(x1 - x0)),
+        .h = @intFromFloat(@round(bottom - top)),
+    };
+    _ = c.SDL_SetRenderClipRect(p.r, &clip);
+    p.disc(cx, cy, rad, col);
+    _ = c.SDL_SetRenderClipRect(p.r, if (had) &was else null);
+}
+
+/// A pill `len` long and `thick` across, centered on (cx, cy) and turned
+/// `angle` radians (negative tilts its right end up).
+fn slantPill(p: *const ui.Paint, cx: f32, cy: f32, len: f32, thick: f32, angle: f32, col: Color) void {
+    const dx = @cos(angle) * (len - thick) / 2;
+    const dy = @sin(angle) * (len - thick) / 2;
+    const nx = -@sin(angle) * thick / 2;
+    const ny = @cos(angle) * thick / 2;
+    const a = [2]f32{ cx - dx + nx, cy - dy + ny };
+    const b = [2]f32{ cx + dx + nx, cy + dy + ny };
+    const cc = [2]f32{ cx + dx - nx, cy + dy - ny };
+    const d = [2]f32{ cx - dx - nx, cy - dy - ny };
+    triangle(p.r, a, b, cc, col);
+    triangle(p.r, a, cc, d, col);
+    p.disc(cx - dx, cy - dy, thick / 2, col);
+    p.disc(cx + dx, cy + dy, thick / 2, col);
+}
 
 /// A rectangle shading from `a` to `b`, top to bottom or left to right.
 fn gradient(r: *c.SDL_Renderer, rect: ui.Rect, a: Color, b: Color, dir: Dir) void {

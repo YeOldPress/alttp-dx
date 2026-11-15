@@ -14,6 +14,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const fileio = @import("fileio.zig");
 const msu_import = @import("msu_import.zig");
+const menu_music = @import("menu_music.zig");
 const tools_ops = @import("tools_ops.zig");
 const updater = @import("updater.zig");
 const start_logo = @import("start_logo.zig");
@@ -749,7 +750,7 @@ pub fn describe(s: Setting) []const u8 {
         .{ "AudioSamples", "The sound buffer's size. Smaller means less delay before you hear things, larger helps if the sound crackles." },
         .{ "EnableMSU", "Play an MSU music pack instead of the SNES music. Tracks can be .pcm, FLAC, Ogg Vorbis or Opuz. A deluxe pack, with a track for each area, says so itself. The tools list shows which packs are." },
         .{ "MSUVolume", "How loud MSU music plays." },
-        .{ "MSUPath", "Which MSU pack plays. Import MSU-1 puts each pack in a folder of its own under msu, and left or right here switches between them." },
+        .{ "MSUPath", "Which MSU pack plays. Music on the front page brings packs in, each in a folder of its own under msu, and left or right here switches between them." },
         .{ "ResumeMSU", "Pick an overworld area's MSU track up where it left off when you come back to it." },
         .{ "MSUFinishCues", "Let short MSU music cues, like the mirror warp, play to their end before the next track starts." },
         .{ "ItemSwitchLR", "Switch items with L and R, and reorder the inventory with Y and a direction. Hold L or R on an item to put it on that button." },
@@ -790,11 +791,15 @@ const Modal = enum {
     msu_name,
     /// The pack going in: which track, how far, and a way to stop.
     msu_progress,
+    /// A new name for an installed pack, from the Music screen.
+    pack_rename,
+    /// Whether to delete an installed pack.
+    pack_delete,
     /// A newer version: whether to install it, then how that's going.
     update,
 };
 
-const kMsuChoices = [_][]const u8{ "Folder", "Zip File" };
+const kMsuChoices = [_][]const u8{ "Folder", "Zip or 7z" };
 
 const kQuitChoices = [_][]const u8{ "Quit", "Stay" };
 /// Stay is the default, so pressing the button again backs out rather than
@@ -804,7 +809,7 @@ const kQuitStay = 1;
 /// The launcher is a short menu and the screens it opens: the two lists of
 /// settings, and the randomizer's pages (a choice of randomizer, then the
 /// ALTTPR.COM page seeds are dropped on, and what a seed says about itself).
-const Screen = enum { main, settings, features, controls, achievements, hub, alttpr, details };
+const Screen = enum { main, settings, features, controls, achievements, hub, alttpr, details, music, tools };
 
 /// Where the FEATURES heading sits, so the two lists are slices of the one
 /// schema instead of separate tables that could drift out of step with it.
@@ -844,7 +849,7 @@ fn screenRange(screen: Screen) struct { from: usize, to: usize } {
         .settings => .{ .from = 0, .to = kFeaturesStart },
         .features => .{ .from = kFeaturesStart, .to = kRandomizerStart },
         .alttpr => .{ .from = kRandomizerStart, .to = kControlsStart },
-        .main, .controls, .achievements, .hub, .details => .{ .from = 0, .to = 0 },
+        .main, .controls, .achievements, .hub, .details, .music, .tools => .{ .from = 0, .to = 0 },
     };
 }
 
@@ -901,13 +906,185 @@ fn modernRowRect(slot: usize) Rect {
     return .{ .x = kModernListX, .y = kModernListY + kModernRowH * @as(f32, @floatFromInt(slot)), .w = kModernListW, .h = kModernRowH - 2 };
 }
 
-/// The window's size: widescreen for the modern menu, 4:3 for the retro.
-fn windowW() f32 {
+/// How much bigger than its layout the modern menu starts out: its pages
+/// are laid out at 960x540 and shown at 1280x720. The tools, which lay out
+/// at 1280x720 themselves, are drawn this much smaller than the pages.
+const kModernZoom: f32 = 4.0 / 3.0;
+
+/// The size the screens are laid out at: widescreen for the modern menu,
+/// 4:3 for the retro.
+fn layoutW() f32 {
     return if (g_modern) start_page.kW else kWindowW;
 }
 
-fn windowH() f32 {
+fn layoutH() f32 {
     return if (g_modern) start_page.kH else kWindowH;
+}
+
+/// The window's size to start at, in its points, before the screen's own
+/// scale: 1280x720 for the modern menu, 640x480 for the retro.
+fn windowW() f32 {
+    return if (g_modern) start_page.kW * kModernZoom else kWindowW;
+}
+
+fn windowH() f32 {
+    return if (g_modern) start_page.kH * kModernZoom else kWindowH;
+}
+
+/// How the layout sits in the window, worked out from the window's size
+/// every frame. The window can be any size and shape, or fullscreen: the
+/// layout's drawn as big as fits, `zoom` window points to each of its own,
+/// centered at (x, y), with the night going on in the bars either side.
+const Fit = struct {
+    zoom: f32 = kModernZoom,
+    x: f32 = 0,
+    y: f32 = 0,
+    /// The window, in points, and how many pixels make one.
+    w: f32 = start_page.kW * kModernZoom,
+    h: f32 = start_page.kH * kModernZoom,
+    density: f32 = 1,
+};
+
+var g_fit = Fit{};
+
+fn zoom() f32 {
+    return g_fit.zoom;
+}
+
+fn fitWindow(window: *c.SDL_Window) void {
+    var w: c_int = 0;
+    var h: c_int = 0;
+    _ = c.SDL_GetWindowSize(window, &w, &h);
+    fitSize(@floatFromInt(@max(w, 1)), @floatFromInt(@max(h, 1)), pixelDensity(window));
+}
+
+fn fitSize(fw: f32, fh: f32, density: f32) void {
+    const z = @min(fw / layoutW(), fh / layoutH());
+    g_fit = .{
+        .zoom = z,
+        .x = @round((fw - layoutW() * z) / 2),
+        .y = @round((fh - layoutH() * z) / 2),
+        .w = fw,
+        .h = fh,
+        .density = density,
+    };
+}
+
+/// The fit a menu screenshot draws at: the window's starting size, 1:1.
+fn fitDefault() void {
+    g_fit = .{ .zoom = if (g_modern) kModernZoom else 1, .w = windowW(), .h = windowH() };
+}
+
+/// A point in the window as a point of the layout.
+fn toLayoutX(x: f32) f32 {
+    return (x - g_fit.x) / g_fit.zoom;
+}
+
+fn toLayoutY(y: f32) f32 {
+    return (y - g_fit.y) / g_fit.zoom;
+}
+
+/// The canvas each frame's drawn on, as many pixels as the layout covers
+/// in the window, so the type's baked for the screen it's on and copied
+/// across 1:1 rather than stretched. Only the live menu has one; a
+/// screenshot draws straight on its picture.
+var g_canvas: ?*c.SDL_Texture = null;
+var g_canvas_w: c_int = 0;
+var g_canvas_h: c_int = 0;
+var g_canvas_on = false;
+
+fn canvasW() c_int {
+    return @intFromFloat(@max(1, @round(layoutW() * g_fit.zoom * g_fit.density)));
+}
+
+/// Pixels to a point of the layout: what everything's drawn at.
+fn canvasScale() f32 {
+    return @as(f32, @floatFromInt(canvasW())) / layoutW();
+}
+
+/// Points the frame at the canvas, made again if the window's changed size.
+fn beginCanvas(r: *c.SDL_Renderer) void {
+    if (!g_canvas_on) return;
+    const w = canvasW();
+    const h: c_int = @intFromFloat(@max(1, @round(layoutH() * canvasScale())));
+    if (g_canvas == null or w != g_canvas_w or h != g_canvas_h) {
+        if (g_canvas) |t| c.SDL_DestroyTexture(t);
+        g_canvas = c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_ARGB8888, c.SDL_TEXTUREACCESS_TARGET, w, h);
+        if (g_canvas) |t| {
+            _ = c.SDL_SetTextureScaleMode(t, c.SDL_SCALEMODE_NEAREST);
+            _ = c.SDL_SetTextureBlendMode(t, c.SDL_BLENDMODE_NONE);
+        }
+        g_canvas_w = w;
+        g_canvas_h = h;
+    }
+    const t = g_canvas orelse return;
+    _ = c.SDL_SetRenderTarget(r, t);
+    const k = canvasScale();
+    _ = c.SDL_SetRenderScale(r, k, k);
+}
+
+/// Puts the canvas in the window, the night in the bars round it, and shows
+/// the frame.
+fn presentCanvas(r: *c.SDL_Renderer) void {
+    defer _ = c.SDL_RenderPresent(r);
+    if (!g_canvas_on) return;
+    const t = g_canvas orelse return;
+    _ = c.SDL_SetRenderTarget(r, null);
+    if (g_fit.x > 0 or g_fit.y > 0) {
+        // The bars in the layout's own units, from the window's corner.
+        const k = canvasScale();
+        _ = c.SDL_SetRenderScale(r, k, k);
+        const w = g_fit.w / g_fit.zoom;
+        const h = g_fit.h / g_fit.zoom;
+        if (modernPage()) |page|
+            page.skyAround(pageTime(), g_fit.x / g_fit.zoom, g_fit.y / g_fit.zoom, w, h, g_screen_now == .main)
+        else
+            kit.fillBackground(r, w, h);
+    }
+    _ = c.SDL_SetRenderScale(r, 1, 1);
+    const dst = c.SDL_FRect{
+        .x = @round(g_fit.x * g_fit.density),
+        .y = @round(g_fit.y * g_fit.density),
+        .w = @floatFromInt(g_canvas_w),
+        .h = @floatFromInt(g_canvas_h),
+    };
+    _ = c.SDL_RenderTexture(r, t, null, &dst);
+}
+
+/// The window's size to start at or go back to: windowW by windowH, in the
+/// screen's points. Windows sizes a window in pixels and says how big its
+/// points are on the side, 1.5 at 150%; a Mac or Wayland sizes it in points
+/// already, and says 1. No bigger than the screen has room for.
+fn defaultSize(display: c.SDL_DisplayID) [2]c_int {
+    const cs = c.SDL_GetDisplayContentScale(display);
+    const k: f32 = if (cs > 0) cs else 1;
+    var w = windowW() * k;
+    var h = windowH() * k;
+    var usable: c.SDL_Rect = undefined;
+    if (c.SDL_GetDisplayUsableBounds(display, &usable) and usable.w > 0 and usable.h > 0) {
+        const room = @min(@as(f32, @floatFromInt(usable.w)) * 0.92 / w, @as(f32, @floatFromInt(usable.h)) * 0.92 / h);
+        if (room < 1) {
+            w *= room;
+            h *= room;
+        }
+    }
+    return .{ @intFromFloat(@round(w)), @intFromFloat(@round(h)) };
+}
+
+/// Back to the starting size, and the least it can be dragged down to: half
+/// of it.
+fn resizeToDefault(window: *c.SDL_Window) void {
+    const display = c.SDL_GetDisplayForWindow(window);
+    const size = defaultSize(display);
+    const cs = c.SDL_GetDisplayContentScale(display);
+    const k: f32 = if (cs > 0) cs else 1;
+    _ = c.SDL_SetWindowMinimumSize(window, @intFromFloat(windowW() * k / 2), @intFromFloat(windowH() * k / 2));
+    resizeCentered(window, size[0], size[1]);
+}
+
+fn toggleFullscreen(window: *c.SDL_Window) void {
+    const full = (c.SDL_GetWindowFlags(window) & c.SDL_WINDOW_FULLSCREEN) != 0;
+    _ = c.SDL_SetWindowFullscreen(window, !full);
 }
 
 /// Whether the pointer is over the modern sub-screens' Back button.
@@ -927,10 +1104,13 @@ const Pointer = struct {
     /// Holding a scrollbar.
     dragging: bool = false,
 
-    /// Whether `target` is somewhere new, remembering it either way.
+    /// Whether the pointer moving onto `target` should pick it, remembering
+    /// where it is either way. It never does: hovering only lights things
+    /// up, and a click picks them, so the pick doesn't wander about as the
+    /// mouse passes over the menu on its way somewhere.
     fn enters(self: *Pointer, target: ?usize) bool {
-        defer self.over = target;
-        return target != null and !std.meta.eql(target, self.over);
+        self.over = target;
+        return false;
     }
 
     fn addWheel(self: *Pointer, dy: f32) void {
@@ -1040,12 +1220,13 @@ fn onLeftArrow(ini: *const Ini, screen: Screen, pos: usize, slot: usize, px: f32
     return (Rect{ .x = right - vw - 30, .y = r.y, .w = 28, .h = r.h }).contains(px, py);
 }
 
-const kMainItems = [_][]const u8{ "Settings", "Features", "Controls", "Achievements", "Save Settings", "Build Assets", "Tools", "Import MSU-1", "Play", "Randomizer", "Update" };
+const kMainItems = [_][]const u8{ "Settings", "Features", "Controls", "Achievements", "Save Settings", "Build Assets", "Tools", "Music", "Play", "Randomizer", "Update" };
 const kMainControls = 2;
 const kMainAchievements = 3;
 const kMainSave = 4;
 const kMainBuild = 5;
-/// The asset tools' window: modding, translations, the music and pictures.
+/// The asset tools: modding, translations and pictures. One of the menu's
+/// own screens in the modern style; their own window in the retro one.
 pub const kMainTools = 6;
 /// Only there while MSU audio is on: there's no pack to want otherwise.
 const kMainImport = 7;
@@ -1169,7 +1350,9 @@ fn pageItems(out: *PageItems) []const start_page.Item {
 
 fn mainShown(i: usize) bool {
     if (i == kMainUpdate) return updateShown();
-    return i != kMainImport or g_msu_on;
+    // Music always, in the modern style; the retro style's Import MSU-1
+    // with MSU on.
+    return i != kMainImport or g_msu_on or g_modern;
 }
 
 // ------------------------------------------------------------------ updates
@@ -1235,7 +1418,7 @@ fn msuPickCallback(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, filt
     g_msu_pick = copy;
 }
 
-const kZipFilters = [_]c.SDL_DialogFileFilter{.{ .name = "MSU-1 pack", .pattern = "zip" }};
+const kZipFilters = [_]c.SDL_DialogFileFilter{.{ .name = "MSU-1 pack", .pattern = "zip;7z" }};
 
 fn openMsuPicker(window: *c.SDL_Window, zip: bool) void {
     if (g_msu_pick_lock == null) g_msu_pick_lock = c.SDL_CreateMutex();
@@ -1258,7 +1441,7 @@ fn takeMsuPick() ?[:0]u8 {
 
 /// Whether a dropped path looks like an MSU-1 pack: a folder, or a zip.
 fn looksLikeMsuPack(path: [:0]const u8) bool {
-    return fileio.isDir(path.ptr) or std.ascii.endsWithIgnoreCase(path, ".zip");
+    return fileio.isDir(path.ptr) or std.ascii.endsWithIgnoreCase(path, ".zip") or std.ascii.endsWithIgnoreCase(path, ".7z");
 }
 
 /// What the status line says while a pack goes in and once it has.
@@ -1276,7 +1459,122 @@ const kMsuNameChoices = [_][]const u8{ "Import", "Cancel" };
 /// whether the keys or a pad have the box picked rather than the name.
 var g_msu_flac = true;
 var g_msu_pcm: usize = 0;
+/// What looking the pack over found, for the naming question: what it has,
+/// what it leaves to the SNES music, and anything that won't play.
+var g_msu_check_buf: [160]u8 = undefined;
+var g_msu_check: []const u8 = "";
+var g_msu_check_bad = false;
+
+/// Looks the pack at `source` over, as the tools' Check Pack used to.
+fn checkPack(source: [:0]const u8) void {
+    g_msu_check = "";
+    g_msu_check_bad = false;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena_state.deinit();
+    const found = msu_import.inspectPack(arena_state.allocator(), source) catch return;
+    var have: [msu_import.kGameTracks + 1]bool = @splat(false);
+    var extras: usize = 0;
+    var bad: usize = 0;
+    for (found) |f| {
+        if (f.name.number <= msu_import.kGameTracks) have[f.name.number] = true else extras += 1;
+        if (f.problem != null) bad += 1;
+    }
+    var missing: usize = 0;
+    for (have[1..]) |h| missing += @intFromBool(!h);
+    var w = std.Io.Writer.fixed(&g_msu_check_buf);
+    if (bad != 0) {
+        w.print("{d} track{s} won't play, and the SNES music plays there.", .{ bad, if (bad == 1) "" else "s" }) catch {};
+        g_msu_check_bad = true;
+    } else if (missing == 0) {
+        w.print("All {d} of the game's tracks", .{msu_import.kGameTracks}) catch {};
+    } else {
+        w.print("{d} of the game's {d} tracks; the SNES music plays for the rest", .{ msu_import.kGameTracks - missing, msu_import.kGameTracks }) catch {};
+    }
+    if (bad == 0 and extras != 0) w.print(", plus {d} extra{s}.", .{ extras, if (extras == 1) "" else "s" }) catch {} else if (bad == 0) w.print(".", .{}) catch {};
+    g_msu_check = w.buffered();
+}
 var g_msu_on_check = false;
+
+/// The installed pack Rename or Delete was picked for on the Music screen.
+var g_pack_path: [1024]u8 = undefined;
+var g_pack_path_len: usize = 0;
+var g_pack_name: [64]u8 = undefined;
+var g_pack_name_len: usize = 0;
+var g_pack_tracks: usize = 0;
+var g_pack_mb: u64 = 0;
+/// Delete's answer picked: 0 deletes, 1 (the default) keeps.
+var g_pack_choice: usize = 1;
+const kDeleteChoices = [_][]const u8{ "Delete", "Keep" };
+const kRenameChoices = [_][]const u8{ "Rename", "Cancel" };
+
+fn packPath() []const u8 {
+    return g_pack_path[0..g_pack_path_len];
+}
+
+fn packName() []const u8 {
+    return g_pack_name[0..g_pack_name_len];
+}
+
+fn setPackTarget(pk: msu_import.Pack) void {
+    g_pack_path_len = @min(pk.path.len, g_pack_path.len);
+    @memcpy(g_pack_path[0..g_pack_path_len], pk.path[0..g_pack_path_len]);
+    g_pack_name_len = @min(pk.name.len, g_pack_name.len);
+    @memcpy(g_pack_name[0..g_pack_name_len], pk.name[0..g_pack_name_len]);
+    g_pack_tracks = pk.tracks;
+    g_pack_mb = pk.bytes / (1024 * 1024);
+}
+
+/// Makes the pack at `path` the one the game plays, MSU on, and saves.
+fn usePack(ini: *Ini, dirty: *bool, path: []const u8) void {
+    if (!msuOnIn(ini)) if (settingIndex("Sound", "EnableMSU")) |ei| {
+        ini.set(ei, "true") catch {};
+    };
+    if (settingIndex("Sound", "MSUPath")) |mi| ini.set(mi, path) catch return;
+    if (ini.save("zelda3.ini")) |_| {
+        dirty.* = false;
+    } else |_| {
+        dirty.* = true;
+    }
+}
+
+/// Rename answered: the folder takes the name, and MSUPath follows if it's
+/// the pack that plays.
+fn renamePicked(alloc: std.mem.Allocator, ini: *Ini, dirty: *bool) []const u8 {
+    const was_playing = tools_ops.samePath(packPath(), msuPathIn(ini));
+    const path = msu_import.renamePack(alloc, msu_import.kLibrary, packPath(), msuName()) catch |e| return switch (e) {
+        error.NameTaken => "ANOTHER PACK HAS THAT NAME",
+        error.WriteFailed => "COULD NOT RENAME ITS FOLDER",
+        error.OutOfMemory => "OUT OF MEMORY",
+    };
+    defer alloc.free(path);
+    if (was_playing) {
+        if (settingIndex("Sound", "MSUPath")) |mi| {
+            ini.set(mi, path) catch {};
+            if (ini.save("zelda3.ini")) |_| {
+                dirty.* = false;
+            } else |_| {
+                dirty.* = true;
+            }
+        }
+    }
+    menu_music.refresh(alloc, path);
+    return "RENAMED";
+}
+
+/// Delete answered yes: the pack goes, and if it played, the first left
+/// plays instead.
+fn deletePicked(alloc: std.mem.Allocator, ini: *Ini, dirty: *bool) []const u8 {
+    const was_playing = tools_ops.samePath(packPath(), msuPathIn(ini));
+    const ok = msu_import.deletePack(alloc, msu_import.kLibrary, packPath());
+    if (was_playing) {
+        var arena_state = std.heap.ArenaAllocator.init(alloc);
+        defer arena_state.deinit();
+        const left = msu_import.listPacks(arena_state.allocator(), msu_import.kLibrary) catch &.{};
+        if (left.len != 0) usePack(ini, dirty, left[0].path);
+    }
+    menu_music.refresh(alloc, null);
+    return if (ok) "DELETED" else "COULD NOT DELETE ALL OF IT";
+}
 
 /// The question up as of the last frame drawn, for the boxes that change
 /// size with it.
@@ -1319,6 +1617,7 @@ fn askMsuName(window: *c.SDL_Window, source: []const u8) void {
     g_msu_flac = true;
     g_msu_on_check = false;
     g_msu_pcm = msu_import.pcmTracksIn(std.heap.c_allocator, copy);
+    checkPack(copy);
     _ = c.SDL_StartTextInput(window);
 }
 
@@ -1354,9 +1653,13 @@ fn msuNameBackspace() void {
 /// A pack going in, on a thread of its own so the window keeps drawing and
 /// can say how far it's got.
 const MsuJob = struct {
+    /// Importing a pack, or shrinking one that's installed (at `source`,
+    /// its MSUPath).
+    kind: enum { import, shrink } = .import,
     source: [:0]u8,
     name: []u8,
     flac: bool,
+    shrunk: msu_import.Shrunk = .{},
     status: msu_import.Status = .{},
     finished: std.atomic.Value(bool) = .init(false),
     thread: ?std.Thread = null,
@@ -1366,6 +1669,17 @@ const MsuJob = struct {
     msu_path: ?[]u8 = null,
 
     fn run(self: *MsuJob) void {
+        if (self.kind == .shrink) {
+            const progress = msu_import.Progress{ .ctx = self, .f = shrinkProgress, .stop = &self.status.cancel };
+            self.status.phase.store(.shrinking, .release);
+            if (msu_import.shrinkInstalled(std.heap.c_allocator, &.{self.source}, progress)) |got| {
+                self.shrunk = got;
+            } else |err| {
+                self.err = err;
+            }
+            self.finished.store(true, .release);
+            return;
+        }
         if (msu_import.importNamed(std.heap.c_allocator, self.source, msu_import.kLibrary, self.name, .{ .flac = self.flac, .status = &self.status })) |got| {
             self.imported = got.imported;
             self.msu_path = got.msu_path;
@@ -1373,6 +1687,14 @@ const MsuJob = struct {
             self.err = err;
         }
         self.finished.store(true, .release);
+    }
+
+    fn shrinkProgress(ctx: *anyopaque, done: usize, total: usize) void {
+        const self: *MsuJob = @ptrCast(@alignCast(ctx));
+        self.status.tracks.store(total, .release);
+        self.status.track.store(@min(done + 1, total), .release);
+        self.status.total.store(total, .release);
+        self.status.done.store(done, .release);
     }
 
     fn destroy(self: *MsuJob) void {
@@ -1406,6 +1728,28 @@ fn startMsuImport() bool {
     return true;
 }
 
+/// Starts shrinking the installed pack at `path` (its MSUPath) to FLAC.
+fn startMsuShrink(path: []const u8, name: []const u8) bool {
+    const a = std.heap.c_allocator;
+    const job = a.create(MsuJob) catch return false;
+    const src = a.dupeSentinel(u8, path, 0) catch {
+        a.destroy(job);
+        return false;
+    };
+    const nm = a.dupe(u8, name) catch {
+        a.free(src);
+        a.destroy(job);
+        return false;
+    };
+    job.* = .{ .kind = .shrink, .source = src, .name = nm, .flac = true };
+    job.thread = std.Thread.spawn(.{}, MsuJob.run, .{job}) catch {
+        job.destroy();
+        return false;
+    };
+    g_msu_job = job;
+    return true;
+}
+
 /// Once the pack's in (or isn't): makes it the one that plays, and says
 /// how it went. Null while it's still going.
 fn finishMsuImport(ini: *Ini, dirty: *bool) ?[]const u8 {
@@ -1414,7 +1758,18 @@ fn finishMsuImport(ini: *Ini, dirty: *bool) ?[]const u8 {
     if (job.thread) |t| t.join();
     g_msu_job = null;
     defer job.destroy();
+    if (job.kind == .shrink) {
+        menu_music.refresh(std.heap.c_allocator, null);
+        if (job.err) |err| return msu_import.describe(err);
+        const mb = 1024 * 1024;
+        return std.fmt.bufPrint(&g_msu_status_buf, "SHRANK {d} TRACKS, SAVED {d} MB", .{ job.shrunk.tracks, (job.shrunk.before -| job.shrunk.after) / mb }) catch "SHRUNK";
+    }
     if (job.err) |err| return msu_import.describe(err);
+    menu_music.refresh(std.heap.c_allocator, job.msu_path.?);
+    // MSU on, if it wasn't: a pack was just brought in to be heard.
+    if (!msuOnIn(ini)) if (settingIndex("Sound", "EnableMSU")) |ei| {
+        ini.set(ei, "true") catch {};
+    };
     // The pack just brought in is the one to hear, from now on.
     if (settingIndex("Sound", "MSUPath")) |mi| {
         if (ini.set(mi, job.msu_path.?)) |_| {
@@ -1549,7 +1904,7 @@ const View = struct {
 
 fn listIndex(sc: Screen) usize {
     return switch (sc) {
-        .main, .settings, .controls, .achievements, .hub, .details => 0,
+        .main, .settings, .controls, .achievements, .hub, .details, .music, .tools => 0,
         .features => 1,
         .alttpr => 2,
     };
@@ -1594,11 +1949,28 @@ pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const 
     defer ini.deinit();
     g_modern = modernIn(&ini);
     defer g_modern = false;
-    const surface = c.SDL_CreateSurface(@intFromFloat(windowW()), @intFromFloat(windowH()), c.SDL_PIXELFORMAT_XRGB8888) orelse return error.SdlSurface;
+    fitDefault();
+    // SHOT_SIZE=1920x1080 draws it as a window that size would, through the
+    // live menu's canvas, bars and all.
+    var shot_w = windowW();
+    var shot_h = windowH();
+    if (std.c.getenv("SHOT_SIZE")) |sz| {
+        var it = std.mem.splitScalar(u8, std.mem.span(sz), 'x');
+        shot_w = std.fmt.parseFloat(f32, it.next() orelse "") catch shot_w;
+        shot_h = std.fmt.parseFloat(f32, it.next() orelse "") catch shot_h;
+        fitSize(shot_w, shot_h, 1);
+        g_canvas_on = true;
+    }
+    defer {
+        g_canvas_on = false;
+        if (g_canvas) |t| c.SDL_DestroyTexture(t);
+        g_canvas = null;
+    }
+    const surface = c.SDL_CreateSurface(@intFromFloat(shot_w), @intFromFloat(shot_h), c.SDL_PIXELFORMAT_XRGB8888) orelse return error.SdlSurface;
     defer c.SDL_DestroySurface(surface);
     const renderer = c.SDL_CreateSoftwareRenderer(surface) orelse return error.SdlRenderer;
     defer c.SDL_DestroyRenderer(renderer);
-    g_page = start_page.Page.init(renderer);
+    g_page = start_page.Page.initScaled(renderer, if (g_canvas_on) canvasScale() else zoom());
     defer {
         g_page.?.deinit();
         g_page = null;
@@ -1607,6 +1979,22 @@ pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const 
     defer start_logo.release();
     if (seed) |sp| _ = loadSeed(sp);
     const screen = std.meta.stringToEnum(Screen, which) orelse .alttpr;
+    // MUSIC_PACK=name picks that pack on the Music screen; MUSIC_ZONE=tracks
+    // (or actions, sources) puts the focus there.
+    if (screen == .music) {
+        menu_music.open(alloc, msuPathIn(&ini));
+        if (std.c.getenv("MUSIC_PACK")) |n| menu_music.pickForShot(alloc, std.mem.span(n), if (std.c.getenv("MUSIC_ZONE")) |z| std.mem.span(z) else "sources");
+        // MUSIC_NOW=n shows track n of it playing; MUSIC_PAUSED=1, paused.
+        if (std.c.getenv("MUSIC_NOW")) |t| menu_music.nowForShot(std.fmt.parseInt(u16, std.mem.span(t), 10) catch 1, std.c.getenv("MUSIC_PAUSED") != null);
+    }
+    defer if (screen == .music) menu_music.deinit();
+    // TOOLS_PAGE=modding (or assets, graphics, languages, extras) opens that
+    // one of the tools.
+    if (screen == .tools) {
+        tools_gui.embedOpen(alloc, null, renderer, g_page.?.paint.scale / kModernZoom, .{ .remember = false });
+        if (std.c.getenv("TOOLS_PAGE")) |n| tools_gui.embedShow(std.mem.span(n));
+    }
+    defer if (screen == .tools) tools_gui.embedClose();
     g_spoilers = std.c.getenv("SPOILERS") != null;
     if (std.c.getenv("DETAILS_TOP")) |t| g_details_top = std.fmt.parseInt(usize, std.mem.span(t), 10) catch 0;
     // CTL_ROW=n picks a row on the Controls screen; CAPTURE=1 has it waiting.
@@ -1667,10 +2055,19 @@ pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const 
 }
 
 fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
+    beginCanvas(renderer);
+    drawOnCanvas(renderer, ini, v);
+    presentCanvas(renderer);
+}
+
+/// The screen last drawn, for the sky in the bars round it.
+var g_screen_now: Screen = .main;
+
+fn drawOnCanvas(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     g_modal_now = v.modal;
+    g_screen_now = v.screen;
     if (modernPage()) |page| {
         drawModern(page, ini, v);
-        _ = c.SDL_RenderPresent(renderer);
         return;
     }
     fillBackground(renderer);
@@ -1679,7 +2076,8 @@ fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
     drawHeader(renderer, v.screen);
 
     switch (v.screen) {
-        .main => drawMain(renderer, v),
+        // Music and the tools in the menu are the modern style's alone.
+        .main, .music, .tools => drawMain(renderer, v),
         .hub => drawHub(renderer, v),
         .controls => drawControls(renderer, ini, v),
         .achievements => drawAchievements(renderer, v),
@@ -1696,7 +2094,6 @@ fn drawScreen(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
 
     drawFooter(renderer, v);
     if (v.modal != .none) drawModal(renderer, v);
-    _ = c.SDL_RenderPresent(renderer);
 }
 
 /// The seconds the modern page's motes and glows go by; a menu shot can
@@ -1776,6 +2173,8 @@ fn drawModernModal(page: *const start_page.Page, v: View) void {
             };
             lines[0] = if (msu_import.packExists(msuName()))
                 .{ .text = "You have a pack called that. This replaces it.", .tone = .warn }
+            else if (g_msu_check.len != 0)
+                .{ .text = g_msu_check, .tone = if (g_msu_check_bad) .warn else .dim }
             else if (g_msu_pcm == 0)
                 .{ .text = "Its tracks are already compressed, so they go in as they are." }
             else
@@ -1785,8 +2184,30 @@ fn drawModernModal(page: *const start_page.Page, v: View) void {
             d.choice_rects = &rects;
             d.picked = g_msu_name_choice;
         },
+        .pack_rename => {
+            d.title = "Rename this pack";
+            d.field = msuName();
+            d.caret = @mod(c.SDL_GetTicks(), 1000) < 600;
+            lines[0] = if (msu_import.nameTaken(msu_import.kLibrary, packName(), msuName()))
+                .{ .text = "Another pack has that name.", .tone = .warn }
+            else
+                .{ .text = "Its folder in msu takes the new name too." };
+            d.lines = lines[0..1];
+            d.choices = &kRenameChoices;
+            d.choice_rects = &rects;
+            d.picked = g_msu_name_choice;
+        },
+        .pack_delete => {
+            var name_buf: [48]u8 = undefined;
+            d.title = std.fmt.bufPrint(&buf, "Delete {s}?", .{page.paint.fit(.subtitle, packName(), 300, &name_buf)}) catch "Delete it?";
+            lines[0] = .{ .text = std.fmt.bufPrint(&buf2, "Its {d} tracks and {d} MB go for good.", .{ g_pack_tracks, g_pack_mb }) catch "", .tone = .warn };
+            d.lines = lines[0..1];
+            d.choices = &kDeleteChoices;
+            d.choice_rects = &rects;
+            d.picked = g_pack_choice;
+        },
         .msu_progress => {
-            d.title = "Importing";
+            d.title = if (g_msu_job) |j| (if (j.kind == .shrink) "Shrinking to FLAC" else "Importing") else "Importing";
             const pr = msuProgressText(&buf2);
             const name = if (g_msu_job) |j| j.name else "";
             lines[0] = .{ .text = name, .tone = .accent };
@@ -1802,7 +2223,7 @@ fn drawModernModal(page: *const start_page.Page, v: View) void {
         .msu => {
             d.title = "Import an MSU-1 pack";
             d.lines = &.{
-                L{ .text = "Drop a folder or .zip here, or browse for one" },
+                L{ .text = "Drop a folder, .zip or .7z here, or browse for one" },
                 L{ .text = "Kept beside your other packs, and played from now on" },
             };
             d.choices = &kMsuChoices;
@@ -1866,6 +2287,8 @@ fn pageHints(v: View, out: *[5]start_page.Hint) []const start_page.Hint {
         else
             &.{ .{ .key = "Type", .action = "Name it" }, .{ .key = "Enter / A", .action = "Import" }, cancel },
         .msu_progress => &.{.{ .key = "B / Esc", .action = "Stop" }},
+        .pack_rename => &.{ .{ .key = "Type", .action = "Name it" }, .{ .key = "Enter / A", .action = "Rename" }, cancel },
+        .pack_delete => &.{ choose, .{ .key = "A / Enter", .action = "Confirm" }, cancel },
         .update => switch (updater.phase()) {
             .downloading => &.{cancel},
             .installing, .ready => &.{},
@@ -1897,6 +2320,8 @@ fn drawModern(page: *const start_page.Page, ini: *const Ini, v: View) void {
         .achievements => "Achievements",
         .alttpr => "ALTTPR.com",
         .details => "Seed Details",
+        .music => "Music",
+        .tools => "Tools",
         .main => unreachable,
     }, g_back_hover);
     switch (v.screen) {
@@ -1917,6 +2342,9 @@ fn drawModern(page: *const start_page.Page, ini: *const Ini, v: View) void {
             setMsuGamePath(ini);
             drawModernDetails(page, v);
         },
+        .music => menu_music.draw(page, t, msuPathIn(ini)),
+        // In the window's points rather than the menu's zoomed-up ones.
+        .tools => tools_gui.embedDraw(t, page.paint.scale / kModernZoom),
         .main => unreachable,
     }
 
@@ -1948,6 +2376,7 @@ fn subHints(v: View, out: *[5]start_page.Hint) []const start_page.Hint {
     const change = H{ .key = "\xe2\x86\x90 \xe2\x86\x92", .action = "Change" };
     const save = H{ .key = "X / S", .action = "Save" };
     const back = H{ .key = "B / Esc", .action = "Back" };
+    if (v.screen == .music) return menu_music.hints(out);
     const list: []const H = switch (v.screen) {
         .settings, .features => &.{ change, .{ .key = "Y / I", .action = "More info" }, save, back },
         .alttpr => &.{ change, .{ .key = "Start", .action = "Play" }, save, back },
@@ -1958,7 +2387,8 @@ fn subHints(v: View, out: *[5]start_page.Hint) []const start_page.Hint {
         else
             &.{ .{ .key = "A / Enter", .action = "Change" }, save, back },
         .details => &.{ .{ .key = "\xe2\x86\x91 \xe2\x86\x93", .action = "Scroll" }, .{ .key = "A / Enter", .action = if (g_spoilers) "Hide spoilers" else "Show spoilers" }, back },
-        .main => &.{},
+        .tools => &.{ .{ .key = "\xe2\x86\x91 \xe2\x86\x93 \xe2\x86\x90 \xe2\x86\x92", .action = "Move" }, .{ .key = "A / Enter", .action = "Pick" }, .{ .key = "Wheel", .action = "Scroll activity" }, back },
+        .main, .music => &.{},
     };
     @memcpy(out[0..list.len], list);
     return out[0..list.len];
@@ -2244,17 +2674,15 @@ fn drawModernControls(page: *const start_page.Page, ini: *const Ini, v: View) vo
     // The pad on the left, lighting up the button picked.
     const art = Rect{ .x = 40, .y = start_page.kBodyTop, .w = kModernCtlX - 40 - 28, .h = start_page.kBodyBottom - start_page.kBodyTop };
     page.panel(art);
-    const scale: f32 = 3;
-    const art_x = art.x + (art.w - pad_art.kWidth * scale) / 2;
-    const art_y = art.y + 40 + pad_art.kShoulderRise * scale;
-    const blink = (c.SDL_GetTicks() / 267) % 2 == 0;
-    const lit: ?usize = if (v.cursor < 12 and (blink or g_ctl_capture != null)) v.cursor else null;
-    drawPadArt(page.paint.r, lit, art_x, art_y, scale, .{ .r = 0xff, .g = 0xd9, .b = 0x6a });
+    // Drawn smooth for the modern page, the picked button glowing.
+    const lit: ?usize = if (v.cursor < 12) v.cursor else null;
+    const pad_box = Rect{ .x = art.x + 30, .y = art.y + 34, .w = art.w - 60, .h = 0 };
+    const pad_h = page.pad(pad_box, lit, t);
 
     const keys = controls.current(ini, .keyboard);
     const pads = controls.current(ini, .gamepad);
     const in = art.inset(26);
-    var y = art_y + pad_art.kHeight * scale + 30;
+    var y = pad_box.y + pad_h + 34;
     if (v.cursor < 12) {
         p.textEx(.eyebrow, in.x, y, P.kGold, P.kGold, 3, "BUTTON");
         y += 20;
@@ -2388,7 +2816,7 @@ fn drawHeader(renderer: *c.SDL_Renderer, screen: Screen) void {
         .achievements => "ACHIEVEMENTS",
         .alttpr => "ALTTPR.COM",
         .details => "SEED DETAILS",
-        .main => unreachable,
+        .main, .music, .tools => unreachable,
     };
     drawText(renderer, 40, 36, kColorSelect, name);
     drawTextScaled(renderer, kWindowW - 40 - textWidth("ESC BACK", kScale), 36, kColorTextDim, "ESC BACK", kScale);
@@ -2497,8 +2925,11 @@ fn drawMain(renderer: *c.SDL_Renderer, v: View) void {
     const cx: f32 = kWindowW / 2;
 
     const l = entryLayout();
-    for (kMainItems[0..kMainLaunch], 0..) |label, i| {
+    for (kMainItems[0..kMainLaunch], 0..) |item, i| {
         if (!mainShown(i)) continue;
+        // The retro style has no Music screen: its entry imports a pack, as
+        // it always did.
+        const label = if (i == kMainImport) "Import MSU-1" else item;
         const y = l.y + l.gap * entrySlot(i);
         const selected = i == v.cursor;
         const w = textWidth(label, kScale);
@@ -3144,7 +3575,7 @@ fn drawModal(renderer: *c.SDL_Renderer, v: View) void {
         },
         .msu => {
             drawTextCentered(renderer, cx, box.y + 22, kColorSelect, "IMPORT AN MSU-1 PACK", kScale);
-            drawTextCentered(renderer, cx, box.y + 22 + kRowH, kColorTextDim, "DROP A FOLDER OR .ZIP HERE,", kScale);
+            drawTextCentered(renderer, cx, box.y + 22 + kRowH, kColorTextDim, "DROP A FOLDER, ZIP OR 7Z,", kScale);
             drawTextCentered(renderer, cx, box.y + 22 + kRowH * 2, kColorTextDim, "OR BROWSE FOR ONE", kScale);
             drawTextCentered(renderer, cx, box.y + 22 + kRowH * 3, kColorTextDim, "KEPT BESIDE YOUR OTHER PACKS", 1);
             for (kMsuChoices, 0..) |label, i| {
@@ -3190,7 +3621,8 @@ fn drawModal(renderer: *c.SDL_Renderer, v: View) void {
             if (pr.frac > 0) fillRound(renderer, bar_x, bar_y, @max(bar_w * pr.frac, 8), 10, 4, kColorSelect);
         },
         .update => drawUpdateModal(renderer),
-        .info, .none => {},
+        // Only the modern style's Music screen asks these.
+        .pack_rename, .pack_delete, .info, .none => {},
     }
 }
 
@@ -3269,6 +3701,7 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
                 drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "ENTER IMPORT   ESC CANCEL");
             },
             .msu_progress => drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "B/ESC STOP"),
+            .pack_rename, .pack_delete => {},
             .update => switch (updater.phase()) {
                 .downloading => drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "B/ESC CANCEL"),
                 .installing, .ready => {},
@@ -3285,7 +3718,7 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
     }
 
     switch (v.screen) {
-        .main => {
+        .main, .music, .tools => {
             drawText(renderer, 40, footer_y, kColorTextDim, "SELECT A/ENTER   SAVE X/S");
             drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "QUIT B/ESC");
             // Which version this is, out of the way in the corner.
@@ -3649,7 +4082,7 @@ fn resizeCentered(window: *c.SDL_Window, w: c_int, h: c_int) void {
 /// The tools, in this window rather than one of their own: it grows to
 /// their size and can be resized while they're up, then goes back to the
 /// menu's, as it was.
-fn runTools(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_Renderer, msu_path: []const u8) tools_gui.Exit {
+fn runTools(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_Renderer) tools_gui.Exit {
     // Windows sizes a window in pixels and says how big its points are on
     // the side; a Mac or Wayland sizes it in points already, and says 1.
     const content = c.SDL_GetDisplayContentScale(c.SDL_GetDisplayForWindow(window));
@@ -3660,16 +4093,15 @@ fn runTools(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_Re
     _ = c.SDL_SetWindowResizable(window, true);
 
     // They start from the ROM the menu has, found or dropped on it.
-    const outcome = tools_gui.runIn(alloc, window, renderer, .{ .rom = if (g_rom_path) |p| p else null, .msu_path = msu_path });
+    const outcome = tools_gui.runIn(alloc, window, renderer, .{ .rom = if (g_rom_path) |p| p else null });
 
     // Out of fullscreen or maximized first, or the size won't take.
     _ = c.SDL_RestoreWindow(window);
-    _ = c.SDL_SetWindowResizable(window, false);
-    _ = c.SDL_SetWindowMinimumSize(window, 0, 0);
-    resizeCentered(window, @intFromFloat(windowW()), @intFromFloat(windowH()));
+    resizeToDefault(window);
     _ = c.SDL_SetWindowTitle(window, kWindowTitle);
     // The tools drew at their own scale; the menu's comes back.
-    const d = pixelDensity(window);
+    fitWindow(window);
+    const d = canvasScale();
     _ = c.SDL_SetRenderScale(renderer, d, d);
     return outcome;
 }
@@ -3768,18 +4200,33 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     g_modern = modernIn(&ini);
     // Drawn at the screen's own density, so the start page's type and the
     // tools', which open in this same window, come out sharp on Retina.
-    const window = c.SDL_CreateWindow(kWindowTitle, @intFromFloat(windowW()), @intFromFloat(windowH()), c.SDL_WINDOW_HIGH_PIXEL_DENSITY) orelse {
+    // Sized for the screen's own scale, and free to be resized, maximized
+    // or made fullscreen: the menu fills whatever it's given.
+    const size = defaultSize(c.SDL_GetPrimaryDisplay());
+    const window = c.SDL_CreateWindow(kWindowTitle, size[0], size[1], c.SDL_WINDOW_HIGH_PIXEL_DENSITY | c.SDL_WINDOW_RESIZABLE) orelse {
         std.debug.print("Failed to create window: {s}\n", .{c.SDL_GetError()});
         return error.SdlWindow;
     };
     defer c.SDL_DestroyWindow(window);
+    {
+        const cs = c.SDL_GetDisplayContentScale(c.SDL_GetPrimaryDisplay());
+        const k: f32 = if (cs > 0) cs else 1;
+        _ = c.SDL_SetWindowMinimumSize(window, @intFromFloat(windowW() * k / 2), @intFromFloat(windowH() * k / 2));
+    }
 
     const renderer = c.SDL_CreateRenderer(window, null) orelse {
         std.debug.print("Failed to create renderer: {s}\n", .{c.SDL_GetError()});
         return error.SdlRenderer;
     };
     defer c.SDL_DestroyRenderer(renderer);
-    g_page = start_page.Page.initScaled(renderer, pixelDensity(window));
+    fitWindow(window);
+    g_canvas_on = true;
+    defer {
+        g_canvas_on = false;
+        if (g_canvas) |t| c.SDL_DestroyTexture(t);
+        g_canvas = null;
+    }
+    g_page = start_page.Page.initScaled(renderer, canvasScale());
     defer {
         g_page.?.deinit();
         g_page = null;
@@ -3843,12 +4290,19 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     var save_queued = false;
     // A pack still going in when the menu closes is stopped first.
     defer stopMsuImport();
+    defer menu_music.deinit();
+    defer tools_gui.embedClose();
     while (running) {
         const now = c.SDL_GetTicks();
         var confirm = false;
         // Enter while naming a pack, which imports whatever's picked; A on a
         // pad ticks the FLAC box when that's picked.
         var name_enter = false;
+        // The Music screen's player keys: P or Y, and the shoulders or
+        // brackets for the track before or after.
+        var music_pause = false;
+        var music_prev = false;
+        var music_next = false;
         var start = false;
         var back = false;
         var save = save_queued;
@@ -3899,7 +4353,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
             }
             // Naming a pack takes the keyboard for typing. Enter and Esc
             // still answer, and a pad or the mouse work as ever.
-            if (modal == .msu_name) switch (event.type) {
+            if (modal == .msu_name or modal == .pack_rename) switch (event.type) {
                 c.SDL_EVENT_TEXT_INPUT => {
                     // With the FLAC box picked, Space ticks it rather than
                     // typing.
@@ -3930,7 +4384,10 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 else => {},
             };
             switch (event.type) {
-                c.SDL_EVENT_QUIT => running = false,
+                // With a job running in the tools, they ask first.
+                c.SDL_EVENT_QUIT => if (!(screen == .tools and tools_gui.embedQuit())) {
+                    running = false;
+                },
                 c.SDL_EVENT_GAMEPAD_ADDED => pads.open(event.gdevice.which),
                 c.SDL_EVENT_GAMEPAD_REMOVED => pads.close(event.gdevice.which),
 
@@ -3938,6 +4395,11 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 // fresh checkout to a playable game.
                 c.SDL_EVENT_DROP_FILE => {
                     var handled = false;
+                    // The tools take whatever's dropped on them themselves.
+                    if (screen == .tools) {
+                        if (event.drop.data) |path| tools_gui.embedDrop(std.mem.span(path));
+                        continue;
+                    }
                     if (event.drop.data) |path| {
                         const span = std.mem.span(path);
                         const rando_page = screen == .hub or screen == .alttpr or screen == .details;
@@ -3960,7 +4422,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         } else if (modal == .msu or modal == .msu_name or modal == .msu_progress or looksLikeMsuPack(span)) {
                             // A folder or a zip is an MSU-1 pack, not a ROM.
                             handled = true;
-                            if (!g_msu_on) {
+                            if (!g_msu_on and screen != .music) {
                                 status = "TURN ON MSU AUDIO TO IMPORT A PACK";
                             } else if (g_msu_job != null) {
                                 status = "ONE PACK AT A TIME";
@@ -3985,13 +4447,13 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 // The mouse drives the same cursor the keys do, so nothing
                 // needs its own notion of what is selected.
                 c.SDL_EVENT_MOUSE_MOTION => {
-                    hover_x = event.motion.x;
-                    hover_y = event.motion.y;
+                    hover_x = toLayoutX(event.motion.x);
+                    hover_y = toLayoutY(event.motion.y);
                     hovered = true;
                 },
                 c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                    hover_x = event.button.x;
-                    hover_y = event.button.y;
+                    hover_x = toLayoutX(event.button.x);
+                    hover_y = toLayoutY(event.button.y);
                     hovered = true;
                     if (event.button.button == c.SDL_BUTTON_LEFT) clicked = true;
                     if (event.button.button == c.SDL_BUTTON_RIGHT) back = true;
@@ -4001,8 +4463,8 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 },
                 c.SDL_EVENT_MOUSE_WHEEL => {
                     g_pointer.addWheel(event.wheel.y);
-                    g_pointer.x = event.wheel.mouse_x;
-                    g_pointer.y = event.wheel.mouse_y;
+                    g_pointer.x = toLayoutX(event.wheel.mouse_x);
+                    g_pointer.y = toLayoutY(event.wheel.mouse_y);
                 },
                 c.SDL_EVENT_WINDOW_MOUSE_LEAVE => g_pointer.over = null,
 
@@ -4014,6 +4476,12 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 },
 
                 c.SDL_EVENT_KEY_DOWN => {
+                    // F11, or Alt and Enter, for fullscreen and back.
+                    const alt = (event.key.mod & c.SDL_KMOD_ALT) != 0;
+                    if (!event.key.repeat and (event.key.key == c.SDLK_F11 or (alt and (event.key.key == c.SDLK_RETURN or event.key.key == c.SDLK_KP_ENTER)))) {
+                        toggleFullscreen(window);
+                        continue;
+                    }
                     if (held.set(event.key.key, true)) {
                         switch (event.key.key) {
                             c.SDLK_UP => tap_v -= 1,
@@ -4030,6 +4498,10 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         c.SDLK_B => if (screen == .main) {
                             build = true;
                         },
+                        // The Music screen's player.
+                        c.SDLK_P => music_pause = true,
+                        c.SDLK_LEFTBRACKET, c.SDLK_COMMA => music_prev = true,
+                        c.SDLK_RIGHTBRACKET, c.SDLK_PERIOD => music_next = true,
                         else => {},
                     }
                 },
@@ -4051,6 +4523,8 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         c.SDL_GAMEPAD_BUTTON_DPAD_DOWN => tap_v += 1,
                         c.SDL_GAMEPAD_BUTTON_DPAD_LEFT => tap_h -= 1,
                         c.SDL_GAMEPAD_BUTTON_DPAD_RIGHT => tap_h += 1,
+                        c.SDL_GAMEPAD_BUTTON_LEFT_SHOULDER => music_prev = true,
+                        c.SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER => music_next = true,
                         else => switch (faceAction(event.gbutton.which, event.gbutton.button)) {
                             .confirm => confirm = true,
                             .back => back = true,
@@ -4126,14 +4600,16 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
         start_logo.want(g_logo and g_modern);
         if (g_modern != was_modern) {
             // Widescreen one way, 4:3 the other, kept where it was centered.
-            resizeCentered(window, @intFromFloat(windowW()), @intFromFloat(windowH()));
+            if ((c.SDL_GetWindowFlags(window) & (c.SDL_WINDOW_FULLSCREEN | c.SDL_WINDOW_MAXIMIZED)) == 0) resizeToDefault(window);
             g_back_hover = false;
             g_pointer.forget();
         }
-        // The window may have moved to a screen with other pixels.
-        if (g_page) |*pg| pg.paint.setScale(pixelDensity(window));
+        // The window may have been resized, or moved to a screen with
+        // other pixels.
+        fitWindow(window);
+        if (g_page) |*pg| pg.paint.setScale(canvasScale());
         if (!mainShown(main_cursor)) main_cursor = kMainLaunch;
-        if (modal == .msu and !g_msu_on) modal = .none;
+        if (modal == .msu and !g_msu_on and screen != .music) modal = .none;
         // The pack going in, once it's in.
         if (finishMsuImport(&ini, &dirty)) |said| {
             status = said;
@@ -4144,7 +4620,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
         // A folder or zip picked in the system's own dialog.
         if (takeMsuPick()) |path| {
             defer std.heap.c_allocator.free(path);
-            if (g_msu_on and g_msu_job == null) {
+            if ((g_msu_on or screen == .music) and g_msu_job == null) {
                 askMsuName(window, path);
                 modal = .msu_name;
                 status = "";
@@ -4270,6 +4746,55 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                             modal = .none;
                             status = "COULD NOT START THE IMPORT";
                         }
+                    }
+                },
+                .pack_rename => {
+                    if (hovered) {
+                        const under = choiceUnder(kRenameChoices.len, hover_x, hover_y);
+                        if (g_pointer.enters(under)) g_msu_name_choice = under.?;
+                    }
+                    if (adjust != 0) g_msu_name_choice = 1 - g_msu_name_choice;
+                    if (name_enter) confirm = true;
+                    var over_choice = false;
+                    if (clicked) {
+                        for (0..kRenameChoices.len) |i| {
+                            if (modalChoiceRect(i).contains(hover_x, hover_y)) {
+                                g_msu_name_choice = i;
+                                over_choice = true;
+                            }
+                        }
+                    }
+                    if (back or ((confirm or over_choice) and g_msu_name_choice == 1)) {
+                        _ = c.SDL_StopTextInput(window);
+                        modal = .none;
+                    } else if (confirm or over_choice) {
+                        const blank = std.mem.trim(u8, msuName(), " .").len == 0;
+                        if (!blank and !msu_import.nameTaken(msu_import.kLibrary, packName(), msuName())) {
+                            _ = c.SDL_StopTextInput(window);
+                            modal = .none;
+                            status = renamePicked(alloc, &ini, &dirty);
+                        }
+                    }
+                },
+                .pack_delete => {
+                    if (hovered) {
+                        const under = choiceUnder(kDeleteChoices.len, hover_x, hover_y);
+                        if (g_pointer.enters(under)) g_pack_choice = under.?;
+                    }
+                    if (adjust != 0) g_pack_choice = 1 - g_pack_choice;
+                    var over_choice = false;
+                    if (clicked) {
+                        for (0..kDeleteChoices.len) |i| {
+                            if (modalChoiceRect(i).contains(hover_x, hover_y)) {
+                                g_pack_choice = i;
+                                over_choice = true;
+                            }
+                        }
+                    }
+                    if (back) modal = .none;
+                    if (confirm or over_choice) {
+                        modal = .none;
+                        if (g_pack_choice == 0) status = deletePicked(alloc, &ini, &dirty);
                     }
                 },
                 // Nothing to do but watch, or stop it.
@@ -4404,8 +4929,13 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         status = "";
                     },
                     kMainImport => {
-                        modal = .msu;
-                        g_msu_choice = 0;
+                        if (g_modern) {
+                            menu_music.open(alloc, msuPathIn(&ini));
+                            screen = .music;
+                        } else {
+                            modal = .msu;
+                            g_msu_choice = 0;
+                        }
                         status = "";
                     },
                     kMainRandomizer => {
@@ -4417,8 +4947,13 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         g_update_choice = 0;
                         status = "";
                     },
-                    kMainTools => {
-                        const exit = runTools(alloc, window, renderer, msuPathIn(&ini));
+                    kMainTools => if (g_modern) {
+                        // One of the menu's own screens, in the modern style.
+                        tools_gui.embedOpen(alloc, window, renderer, canvasScale() / kModernZoom, .{ .rom = if (g_rom_path) |p| p else null });
+                        screen = .tools;
+                        status = "";
+                    } else {
+                        const exit = runTools(alloc, window, renderer);
                         // What was held when they opened was let go in them.
                         held = .{};
                         vrepeat = .{};
@@ -4432,43 +4967,6 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                             if (settingIndex("General", "Language")) |li| {
                                 ini.set(li, langs.get(lang).code) catch {};
                                 dirty = true;
-                            }
-                        }
-                        // The installed pack Use picked in the tools (or the
-                        // one left playing after a delete).
-                        if (exit.msu_path) |path| {
-                            defer std.heap.c_allocator.free(path);
-                            if (settingIndex("Sound", "MSUPath")) |mi| {
-                                if (ini.set(mi, path)) |_| {
-                                    if (ini.save("zelda3.ini")) |_| {
-                                        dirty = false;
-                                    } else |_| {
-                                        dirty = true;
-                                    }
-                                } else |_| {}
-                            }
-                        }
-                        // The pack the tools just checked: MSU on if it
-                        // wasn't, kept, and the pack brought in.
-                        if (exit.msu_pack) |pack| import: {
-                            defer std.heap.c_allocator.free(pack);
-                            // Quitting outright isn't the time for it.
-                            if (exit.to == .quit) break :import;
-                            if (!msuOnIn(&ini)) {
-                                if (settingIndex("Sound", "EnableMSU")) |mi| {
-                                    ini.set(mi, "true") catch {};
-                                    dirty = true;
-                                }
-                            }
-                            g_msu_on = msuOnIn(&ini);
-                            if (dirty) {
-                                if (ini.save("zelda3.ini")) |_| {
-                                    dirty = false;
-                                } else |_| {}
-                            }
-                            if (exit.to == .menu and g_msu_job == null) {
-                                askMsuName(window, pack);
-                                modal = .msu_name;
                             }
                         }
                         switch (exit.to) {
@@ -4525,8 +5023,9 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 }
                 if (hovered and g_pointer.enters(under)) g_ctl_row = g_ctl_top + under.?;
                 if (clicked) if (under) |slot| {
+                    // A click picks a row; a click on the picked one changes it.
+                    if (g_ctl_row == g_ctl_top + slot) confirm = true;
                     g_ctl_row = g_ctl_top + slot;
-                    confirm = true;
                 };
                 if (wheel != 0) {
                     if (kCtlRows > ctlVisible()) {
@@ -4572,17 +5071,99 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 // list, picks whatever lands under it.
                 g_ach_top = scrolled(g_ach_top, -wheel, kAchRows -| achVisible());
                 g_ach_row = std.math.clamp(g_ach_row, g_ach_top, g_ach_top + achVisible() - 1);
-                for (0..achVisible()) |slot| {
-                    if (achRowRect(slot).contains(g_pointer.x, g_pointer.y)) {
-                        g_ach_row = g_ach_top + slot;
-                        g_pointer.over = slot;
-                    }
-                }
             }
             if (move != 0) g_ach_row = @intCast(@mod(@as(i32, @intCast(g_ach_row)) + move, @as(i32, kAchRows)));
             if (g_ach_row < g_ach_top) g_ach_top = g_ach_row;
             if (g_ach_row >= g_ach_top + achVisible()) g_ach_top = g_ach_row + 1 - achVisible();
             g_ach_top = @min(g_ach_top, kAchRows -| achVisible());
+        } else if (screen == .music) music: {
+            const page = modernPage() orelse {
+                screen = .main;
+                break :music;
+            };
+            const act = menu_music.input(alloc, page, .{ .move = move, .adjust = adjust, .confirm = confirm, .back = back, .clicked = clicked, .hovered = hovered, .x = hover_x, .y = hover_y, .wheel = wheel, .pause = music_pause or info, .prev = music_prev, .next = music_next }, msuPathIn(&ini));
+            switch (act) {
+                .none => {},
+                .leave => {
+                    screen = .main;
+                    status = "";
+                },
+                .status => |said| status = said,
+                .import_pack => {
+                    modal = .msu;
+                    g_msu_choice = 0;
+                    status = "";
+                },
+                .use => |pk| {
+                    usePack(&ini, &dirty, pk.path);
+                    g_msu_on = msuOnIn(&ini);
+                    status = "PLAYS IN THE GAME NOW";
+                },
+                .rename => |pk| {
+                    setPackTarget(pk);
+                    @memcpy(g_msu_name[0..g_pack_name_len], packName());
+                    g_msu_name_len = g_pack_name_len;
+                    g_msu_name_choice = 0;
+                    g_msu_pcm = 0;
+                    _ = c.SDL_StartTextInput(window);
+                    modal = .pack_rename;
+                },
+                .delete => |pk| {
+                    setPackTarget(pk);
+                    g_pack_choice = 1;
+                    modal = .pack_delete;
+                },
+                .shrink => |pk| {
+                    menu_music.close();
+                    if (g_msu_job == null and startMsuShrink(pk.path, pk.name)) {
+                        modal = .msu_progress;
+                    } else {
+                        status = "COULD NOT START SHRINKING";
+                    }
+                },
+            }
+        } else if (screen == .tools) tools: {
+            if (!g_modern) {
+                tools_gui.embedClose();
+                screen = .main;
+                break :tools;
+            }
+            const z = kModernZoom;
+            const exit = tools_gui.embedInput(.{
+                .move_v = move,
+                .move_h = adjust,
+                .confirm = confirm,
+                .back = back,
+                .clicked = clicked,
+                .moved = hovered,
+                .x = hover_x * z,
+                .y = hover_y * z,
+                .wheel = wheel,
+            }) orelse break :tools;
+            tools_gui.embedClose();
+            screen = .main;
+            // They may well have built some.
+            assets = checkAssets(alloc);
+            status = "";
+            // Play in the language a build just put in.
+            if (exit.language) |lang| {
+                if (settingIndex("General", "Language")) |li| {
+                    ini.set(li, langs.get(lang).code) catch {};
+                    dirty = true;
+                }
+            }
+            switch (exit.to) {
+                .menu => {},
+                .quit => running = false,
+                .play => {
+                    if (dirty) ini.save("zelda3.ini") catch {};
+                    dirty = false;
+                    if (assets.playable()) {
+                        launch = true;
+                        running = false;
+                    } else modal = .rom;
+                },
+            }
         } else if (screen == .hub) {
             if (back) {
                 screen = .main;
@@ -4644,10 +5225,14 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
             if (hovered and g_pointer.enters(if (under) |row| row - list_top[li] else null)) list_cursor[li] = under.?;
             var step_back = false;
             if (clicked) if (under) |row| {
+                // A click picks a row; a click on the picked one changes it.
+                const again = list_cursor[li] == row;
                 list_cursor[li] = row;
-                confirm = true;
-                // The arrow left of a value steps it back.
-                step_back = onLeftArrow(&ini, screen, row, row - list_top[li], hover_x, hover_y);
+                if (again) {
+                    confirm = true;
+                    // The arrow left of a value steps it back.
+                    step_back = onLeftArrow(&ini, screen, row, row - list_top[li], hover_x, hover_y);
+                }
             };
 
             // The wheel moves the page, not the cursor; the pointer, if it's
@@ -4657,10 +5242,9 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 if (n > shown) {
                     list_top[li] = scrolled(list_top[li], -wheel, n - shown);
                     const after = viewOf(screen, main_cursor, list_cursor, list_top, status, dirty, assets, modal, quit_choice);
-                    if (listRowAt(after, g_pointer.x, g_pointer.y)) |row| {
-                        list_cursor[li] = row;
-                        g_pointer.over = row - list_top[li];
-                    } else list_cursor[li] = keepInView(screen, list_cursor[li], list_top[li], shown);
+                    _ = after;
+                    // The pick stays put, only kept on the page.
+                    list_cursor[li] = keepInView(screen, list_cursor[li], list_top[li], shown);
                 } else move = -std.math.sign(wheel);
             }
 
@@ -5050,7 +5634,7 @@ test "the on-screen strings fit the window" {
         "A OR B TO CLOSE",
         "A/ENTER BROWSE   B/ESC CANCEL",
         "IMPORT AN MSU-1 PACK",
-        "DROP A FOLDER OR .ZIP HERE,",
+        "DROP A FOLDER, ZIP OR 7Z,",
         "TURN ON MSU AUDIO TO IMPORT A PACK",
         // Headers.
         "THE LEGEND OF ZELDA",
@@ -5441,18 +6025,14 @@ test "the modern sub-screens fit their widescreen window" {
     try testing.expect(listRowAt(v, kModernPanel.x + 10, r.y + 5) == null);
 }
 
-test "the pointer picks a row by moving onto it, not by sitting on it" {
+test "the pointer passing over a row never picks it: a click does" {
     var ptr = Pointer{};
-    // Onto row 3: picked. Wiggling on it: the keys keep their choice.
-    try testing.expect(ptr.enters(3));
-    try testing.expect(!ptr.enters(3));
-    try testing.expect(!ptr.enters(3));
-    // Off the list and back on: picked again.
-    try testing.expect(!ptr.enters(null));
-    try testing.expect(ptr.enters(3));
-    try testing.expect(ptr.enters(4));
-    ptr.forget();
-    try testing.expect(ptr.enters(4));
+    // Onto row 3, wiggling on it, off and back on, onto 4: nothing picked,
+    // though where it is is remembered.
+    for ([_]?usize{ 3, 3, null, 3, 4 }) |row| {
+        try testing.expect(!ptr.enters(row));
+        try testing.expectEqual(row, ptr.over);
+    }
 }
 
 test "the wheel scrolls whole rows and saves the slivers" {
