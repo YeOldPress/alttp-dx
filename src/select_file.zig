@@ -3,6 +3,7 @@ const std = @import("std");
 const vars = @import("variables.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const settings_menu = @import("settings_menu.zig");
+const preview_boot = @import("preview_boot.zig");
 
 const OamEnt = vars.OamEnt;
 const g_ram = &vars.g_ram;
@@ -333,7 +334,18 @@ pub export fn Module01_FileSelect() callconv(.c) void { // 8ccd7d
     BG3HOFS_copy2.* = 0;
     BG3VOFS_copy2.* = 0;
     switch (submodule_index.*) {
-        0 => Module_SelectFile_0(),
+        0 => {
+            Module_SelectFile_0();
+            // Booting into a room for a picture: a made-up file, loaded in
+            // the same frame, which goes on into the room.
+            if (preview_boot.active()) {
+                preview_boot.fillSave(sram()[0..0x500]);
+                music_control.* = 0xf1;
+                srm_var1().* = 2;
+                writeWord(g_ram[0..].ptr, 0);
+                CopySaveToWRAM();
+            }
+        },
         1 => FileSelect_ReInitSaveFlagsAndEraseTriforce(),
         2 => Module_EraseFile_1(),
         3 => FileSelect_TriggerStripesAndAdvance(),

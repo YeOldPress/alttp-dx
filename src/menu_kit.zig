@@ -44,6 +44,11 @@ pub const Rect = struct {
     pub fn contains(self: Rect, px: f32, py: f32) bool {
         return px >= self.x and px < self.x + self.w and py >= self.y and py < self.y + self.h;
     }
+
+    /// The same, `d` in from every side.
+    pub fn inset(self: Rect, d: f32) Rect {
+        return .{ .x = self.x + d, .y = self.y + d, .w = self.w - d * 2, .h = self.h - d * 2 };
+    }
 };
 
 // ------------------------------------------------------------------ drawing
@@ -163,15 +168,54 @@ pub fn drawTextCentered(r: *c.SDL_Renderer, cx: f32, y: f32, col: Rgb, text: []c
 }
 
 /// SDL's debug font is a fixed 8x8, so size comes from the render scale.
+/// A PlayStation pad's shapes, which stand in text as the bytes 1 to 4
+/// (pad_names.zig), are drawn as 8x8 pixel art of their own, in their
+/// colors.
 pub fn drawTextScaled(r: *c.SDL_Renderer, x: f32, y: f32, col: Rgb, text: []const u8, scale: f32) void {
+    if (std.mem.indexOfAny(u8, text, "\x01\x02\x03\x04")) |at| {
+        drawTextScaled(r, x, y, col, text[0..at], scale);
+        const cell = x + textWidth(text[0..at], scale);
+        drawPadShape(r, cell, y, text[at], scale);
+        drawTextScaled(r, cell + 8 * scale, y, col, text[at + 1 ..], scale);
+        return;
+    }
     var buf: [256]u8 = undefined;
     const n = @min(text.len, buf.len - 1);
     @memcpy(buf[0..n], text[0..n]);
     buf[n] = 0;
     setColor(r, col);
-    _ = c.SDL_SetRenderScale(r, scale, scale);
+    // On top of whatever scale the window already draws at, which is 2 on
+    // a Retina screen, and back to it after.
+    var sx: f32 = 1;
+    var sy: f32 = 1;
+    _ = c.SDL_GetRenderScale(r, &sx, &sy);
+    _ = c.SDL_SetRenderScale(r, sx * scale, sy * scale);
     _ = c.SDL_RenderDebugText(r, x / scale, y / scale, @ptrCast(&buf));
-    _ = c.SDL_SetRenderScale(r, 1, 1);
+    _ = c.SDL_SetRenderScale(r, sx, sy);
+}
+
+/// ✕, ○, □ or △ in an 8x8 cell, as the debug font's letters are.
+fn drawPadShape(r: *c.SDL_Renderer, x: f32, y: f32, which: u8, scale: f32) void {
+    const kArt = [4][7]u7{
+        .{ 0b1000001, 0b0100010, 0b0010100, 0b0001000, 0b0010100, 0b0100010, 0b1000001 },
+        .{ 0b0011100, 0b0100010, 0b1000001, 0b1000001, 0b1000001, 0b0100010, 0b0011100 },
+        .{ 0b1111111, 0b1000001, 0b1000001, 0b1000001, 0b1000001, 0b1000001, 0b1111111 },
+        .{ 0b0001000, 0b0001000, 0b0010100, 0b0010100, 0b0100010, 0b0100010, 0b1111111 },
+    };
+    const kColors = [4]Rgb{ .{ .r = 0x8f, .g = 0xb1, .b = 0xff }, .{ .r = 0xff, .g = 0x7d, .b = 0x7d }, .{ .r = 0xf3, .g = 0x9b, .b = 0xd4 }, .{ .r = 0x5f, .g = 0xd3, .b = 0xad } };
+    const k: usize = which - 1;
+    setColor(r, kColors[k]);
+    for (kArt[k], 0..) |row, ry| {
+        for (0..7) |cx| {
+            if (row & (@as(u7, 1) << @intCast(6 - cx)) == 0) continue;
+            _ = c.SDL_RenderFillRect(r, &.{
+                .x = x + @as(f32, @floatFromInt(cx)) * scale,
+                .y = y + @as(f32, @floatFromInt(ry)) * scale,
+                .w = scale,
+                .h = scale,
+            });
+        }
+    }
 }
 
 // -------------------------------------------------------------------- input

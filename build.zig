@@ -7,6 +7,25 @@ var sdl_lib: ?[]const u8 = null;
 // they move out of this list and are referenced from zelda_zig.zig instead.
 const c_sources = [_][]const u8{
     "third_party/opus-1.3.1-stripped/opus_decoder_amalgam.c",
+    // FLAC and Ogg Vorbis MSU tracks: dr_flac and stb_vorbis behind a shim.
+    "src/msu_codecs.c",
+    // MSU packs as .7z: the LZMA SDK's reader, and a shim that streams.
+    "src/msu_7z.c",
+    "third_party/lzma/7zAlloc.c",
+    "third_party/lzma/7zArcIn.c",
+    "third_party/lzma/7zBuf.c",
+    "third_party/lzma/7zCrc.c",
+    "third_party/lzma/7zCrcOpt.c",
+    "third_party/lzma/7zDec.c",
+    "third_party/lzma/7zStream.c",
+    "third_party/lzma/Bcj2.c",
+    "third_party/lzma/Bra.c",
+    "third_party/lzma/Bra86.c",
+    "third_party/lzma/BraIA64.c",
+    "third_party/lzma/CpuArch.c",
+    "third_party/lzma/Delta.c",
+    "third_party/lzma/Lzma2Dec.c",
+    "third_party/lzma/LzmaDec.c",
 };
 
 const c_flags = [_][]const u8{
@@ -43,7 +62,8 @@ pub fn build(b: *std.Build) void {
     // fills these in. A build nobody named is "dev" and never offers to
     // replace itself with something off GitHub.
     const build_info = b.addOptions();
-    build_info.addOption([]const u8, "version", b.option([]const u8, "version", "The release tag, or nightly (default: dev)") orelse "dev");
+    const version = b.option([]const u8, "version", "The release tag, or nightly (default: dev)") orelse "dev";
+    build_info.addOption([]const u8, "version", version);
     build_info.addOption([]const u8, "commit", b.option([]const u8, "commit", "The commit this was built from") orelse "");
 
     // The SNES emulation is its own module so that nothing under src/ has to
@@ -102,6 +122,32 @@ pub fn build(b: *std.Build) void {
         .root_source_file = default_ini_files.add("default_ini.zig", "pub const text = @embedFile(\"zelda3.ini\");\n"),
     });
 
+    // A release's own notes, .github/release-notes/<tag>.md, which the start
+    // menu shows once after an update to it. Nightly and dev builds have
+    // none.
+    const notes_files = b.addWriteFiles();
+    const notes_src: []const u8 = if (std.mem.startsWith(u8, version, "v")) blk: {
+        _ = notes_files.addCopyFile(b.path(b.fmt(".github/release-notes/{s}.md", .{version})), "notes.md");
+        break :blk "pub const text = @embedFile(\"notes.md\");\n";
+    } else "pub const text = \"\";\n";
+    const release_notes = b.createModule(.{ .root_source_file = notes_files.add("release_notes.zig", notes_src) });
+
+    // The fonts the tools window and the start menu draw with, embedded the
+    // same way as the ini: Inter, cut down to Latin, and Cinzel, the start
+    // page's titles, cut down to ASCII.
+    const font_files = b.addWriteFiles();
+    _ = font_files.addCopyFile(b.path("third_party/inter/Inter-Regular.ttf"), "Inter-Regular.ttf");
+    _ = font_files.addCopyFile(b.path("third_party/inter/Inter-SemiBold.ttf"), "Inter-SemiBold.ttf");
+    _ = font_files.addCopyFile(b.path("third_party/cinzel/Cinzel-SemiBold.ttf"), "Cinzel-SemiBold.ttf");
+    const tools_fonts = b.createModule(.{
+        .root_source_file = font_files.add("tools_fonts.zig",
+            \\pub const regular = @embedFile("Inter-Regular.ttf");
+            \\pub const semibold = @embedFile("Inter-SemiBold.ttf");
+            \\pub const display = @embedFile("Cinzel-SemiBold.ttf");
+            \\
+        ),
+    });
+
     // The ported modules compile to one object that is linked in alongside the
     // remaining C. Each one exports the same symbols its C file used to.
     const zig_obj = b.addObject(.{
@@ -117,8 +163,11 @@ pub fn build(b: *std.Build) void {
     zig_obj.root_module.addImport("snes", snes_mod);
     zig_obj.root_module.addImport("sdl_c", sdl_c_mod);
     zig_obj.root_module.addImport("default_ini", default_ini);
+    zig_obj.root_module.addImport("release_notes", release_notes);
+    zig_obj.root_module.addImport("tools_fonts", tools_fonts);
     zig_obj.root_module.addOptions("build_info", build_info);
     exe.root_module.addObject(zig_obj);
+    exe.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
 
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -132,6 +181,9 @@ pub fn build(b: *std.Build) void {
     tests.root_module.addImport("snes", snes_mod);
     tests.root_module.addImport("sdl_c", sdl_c_mod);
     tests.root_module.addImport("default_ini", default_ini);
+    tests.root_module.addImport("release_notes", release_notes);
+    tests.root_module.addImport("tools_fonts", tools_fonts);
+    tests.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
     tests.root_module.addOptions("build_info", build_info);
     // Exercise the same C/Zig boundaries as the game while the port is in
     // progress. Real implementations replace the former panic-only stubs.
@@ -187,6 +239,12 @@ pub fn build(b: *std.Build) void {
     });
     menu_tests.root_module.addIncludePath(b.path("."));
     menu_tests.root_module.addImport("default_ini", default_ini);
+    menu_tests.root_module.addImport("release_notes", release_notes);
+    menu_tests.root_module.addImport("tools_fonts", tools_fonts);
+    menu_tests.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
+    // The tools convert MSU packs to FLAC, check the result decodes, and play
+    // packs' tracks with the randomizer's MSU-1, which reads Opuz too.
+    menu_tests.root_module.addCSourceFiles(.{ .files = &c_sources, .flags = &c_flags });
     menu_tests.root_module.addOptions("build_info", build_info);
     menu_tests.root_module.addImport("sdl_c", sdl_c_mod);
     addSdlIncludes(b, menu_tests.root_module);
@@ -240,50 +298,19 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
-    // The tools window's font, Inter, cut down to Latin, embedded the same
-    // way as the ini.
-    const font_files = b.addWriteFiles();
-    _ = font_files.addCopyFile(b.path("third_party/inter/Inter-Regular.ttf"), "Inter-Regular.ttf");
-    _ = font_files.addCopyFile(b.path("third_party/inter/Inter-SemiBold.ttf"), "Inter-SemiBold.ttf");
-    const tools_fonts = b.createModule(.{
-        .root_source_file = font_files.add("tools_fonts.zig",
-            \\pub const regular = @embedFile("Inter-Regular.ttf");
-            \\pub const semibold = @embedFile("Inter-SemiBold.ttf");
-            \\
-        ),
-    });
-
-    // zelda3-tools: the asset tools, with a window and a command line. It
-    // needs the asset builder and SDL, not the game.
-    const tools = b.addExecutable(.{
-        .name = "zelda3-tools",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tools_main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    tools.root_module.addIncludePath(b.path("."));
-    tools.root_module.addImport("sdl_c", sdl_c_mod);
-    tools.root_module.addOptions("build_info", build_info);
-    tools.root_module.addImport("default_ini", default_ini);
-    tools.root_module.addImport("snes", snes_dsp_mod);
-    tools.root_module.addImport("tools_fonts", tools_fonts);
-    tools.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
-    addSdlIncludes(b, tools.root_module);
-    linkSdlLibs(b, tools.root_module);
-    tools.headerpad_max_install_names = target.result.os.tag == .macos;
-    b.installArtifact(tools);
-
-    const tools_run = b.addRunArtifact(tools);
+    // The asset tools live in the game: its start menu's Tools entry, and
+    // `zelda3 tools <command>` for the terminal.
+    const tools_run = b.addRunArtifact(exe);
     tools_run.step.dependOn(b.getInstallStep());
+    tools_run.addArg("tools");
     tools_run.addPassthruArgs();
-    b.step("tools", "Build and run zelda3-tools").dependOn(&tools_run.step);
+    b.step("tools", "Run zelda3 tools (the window, or a command after --)").dependOn(&tools_run.step);
 
+    // Their tests get a run of their own, rooted at the command line, with
+    // just the sound chip standing in for the console.
     const tools_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tools_main.zig"),
+            .root_source_file = b.path("src/tools_cli.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -293,9 +320,11 @@ pub fn build(b: *std.Build) void {
     tools_tests.root_module.addImport("sdl_c", sdl_c_mod);
     tools_tests.root_module.addOptions("build_info", build_info);
     tools_tests.root_module.addImport("default_ini", default_ini);
+    tools_tests.root_module.addImport("release_notes", release_notes);
     tools_tests.root_module.addImport("snes", snes_dsp_mod);
     tools_tests.root_module.addImport("tools_fonts", tools_fonts);
     tools_tests.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
+    tools_tests.root_module.addCSourceFiles(.{ .files = &c_sources, .flags = &c_flags });
     addSdlIncludes(b, tools_tests.root_module);
     linkSdlLibs(b, tools_tests.root_module);
     test_step.dependOn(&b.addRunArtifact(tools_tests).step);

@@ -1509,6 +1509,10 @@ pub var g_spotlight_wide: [240]SpotlightWide = @splat(.{ .narrow = 0xff, .left =
 /// The circle's half-width on one line, or null for a line it misses.
 fn spotlightHalfWidth(a: u8) ?u16 {
     const t: u8 = @truncate(snes_divide(@as(u16, a) << 8, @truncate(vars.spotlight_var1.*)) >> 1);
+    // Past the table is a line further out than the radius, which the circle
+    // misses. The ROM read on past its end there; the widescreen margins can
+    // ask about lines that far out.
+    if (t >= tables.kConfigureSpotlightTable_Helper_Tab.len) return null;
     const r10 = tables.kConfigureSpotlightTable_Helper_Tab[t];
     if (r10 == 0) return null;
     const prod: u8 = @truncate((@as(u32, r10) * @as(u8, @truncate(vars.spotlight_var1.*))) >> 8);

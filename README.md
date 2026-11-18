@@ -16,7 +16,8 @@ with the extras a modern re-release would have.
   shadows, glowing lava, lightning and magic, plus embers, sparks, leaves,
   splashes and mist
 - **Rumble** for hits, explosions, bosses, the hammer and more
-- **MSU-1** music packs, including deluxe packs and compressed `.opuz` packs
+- **MSU-1** music packs, including deluxe packs, with tracks as `.pcm`, FLAC,
+  Ogg Vorbis or `.opuz`
 - **Settings everywhere:** a start menu before the game, and the same settings
   inside it, each with a description
 - **Achievements:** 49 of them, from the story to the secrets to a few
@@ -25,23 +26,25 @@ with the extras a modern re-release would have.
   and Continue, and optional gameplay tweaks and bug fixes
 - **Randomizer:** play [alttpr.com](https://alttpr.com) seeds with an item
   tracker that auto updates. 
-- **Modding and languages** with `zelda3-tools`
+- **Modding and languages:** the tools are built in, under **Tools** on the
+  start menu
 
 You bring your own US ROM. No game data ships here, and once the assets are
 built the ROM isn't needed again.
 
 ## Download
 
-[Releases](https://github.com/YeOldPress/alttp-dx/releases) have the game and
-the tools for each platform, with everything they need inside:
+[Releases](https://github.com/YeOldPress/alttp-dx/releases) have the game for
+each platform, with everything it needs inside, the tools included:
 
-| | Game | Tools |
-| --- | --- | --- |
-| macOS 11+, Apple Silicon | `alttp-dx-*-macos-arm64.zip` | `zelda3-tools-*-macos-arm64.zip` |
-| Linux x86_64, glibc 2.35+ | `alttp-dx-*-x86_64.AppImage` | `zelda3-tools-*-x86_64.AppImage` |
-| Windows x86_64 | `alttp-dx-*-windows-x86_64.zip` | `zelda3-tools-*-windows-x86_64.zip` |
+| | Download |
+| --- | --- |
+| macOS 11+, Apple Silicon | `alttp-dx-*-macos-arm64.zip` |
+| Linux x86_64, glibc 2.35+ | `alttp-dx-*-x86_64.AppImage` |
+| Windows x86_64 | `alttp-dx-*-windows-x86_64.zip` |
 
-The game is all you need to play. The **Nightly** release is the latest work
+Up to v1.8 the tools were a download of their own, `zelda3-tools`; from v1.9
+they're in the game, and that one can go. The **Nightly** release is the latest work
 in progress, rebuilt overnight whenever something's changed; the numbered
 releases are the ones to play.
 
@@ -69,8 +72,7 @@ GitHub publishes, puts it in place and restarts:
 Your saves and settings carry over. Under **General**, **Check For Updates**
 turns this off, and **Update Channel** picks **Releases** or **Nightly**. The
 start menu's bottom-right corner says which version you're on, and a build
-you made yourself never offers to update. The tools are still a download of
-their own. From a terminal, `--version` prints the version,
+you made yourself never offers to update. From a terminal, `--version` prints the version,
 `--check-update releases` asks without changing anything, and
 `--update releases` (or `nightly`) does the whole thing.
 
@@ -135,6 +137,9 @@ Settings. Shadows, glow and HD Water/Lava need a GPU.
 **The start menu** opens before the game: Settings, Features, Controls,
 building the assets, and Play. Press Y or I on any setting to see what it
 does. Turn the menu off with **Start Menu** in Settings.
+
+The menu plays the file select's music softly while it's open (the MSU
+pack's when MSU is on); turn it off with **Menu Music** under General.
 
 **In the game**, press Select. The menu slides down with Continue, Save and
 Continue, and Save and Quit, and the settings on the pages after it, L and R
@@ -211,22 +216,64 @@ the file select, and randomizer seeds don't count.
 
 ### MSU-1
 
-Point `MSUPath` in `zelda3.ini` at a pack and set `EnableMSU`:
+Turn on **MSU Audio** under Sound (`EnableMSU = true`), and track `n` plays
+from `<MSUPath><n>`, as `.pcm`, `.flac`, `.ogg` or `.opuz`: the first of those
+there, whichever kind it is. Mono and stereo output both work, at any
+**Audio Frequency**.
 
-| Value | Files | Tracks |
-| --- | --- | --- |
-| `true` | `<MSUPath><n>.pcm` | plain |
-| `deluxe` | `<MSUPath><n>.pcm` | deluxe |
-| `opuz` | `<MSUPath><n>.opuz` | plain |
-| `deluxe-opuz` | `<MSUPath><n>.opuz` | deluxe |
+Deluxe packs have a track for each area and doorway rather than each song. A
+pack says it's one in a `pack.ini` beside its tracks (`Deluxe = 1`), which an
+import sets when the pack has deluxe-only tracks and the Music screen
+switches either way. Where a deluxe pack leaves an area out, its ordinary
+track for that song plays. Older inis that said `deluxe`, `opuz` or
+`deluxe-opuz` are turned into `true` (and a `pack.ini`) when the game starts.
 
-Deluxe packs have a track per place rather than per song; only use them with
-a deluxe pack. MSU needs `AudioChannels = 2` and sets the audio rate itself.
+FLAC sounds exactly like the `.pcm` in about half
+the space; Ogg Vorbis takes about an eighth, and you won't hear the difference
+either. They can be any sample rate (the game matches them to its own) and
+keep their loop point as a `LOOPSTART` tag, in samples at the track's own
+rate, the way game music rips usually do. To make your own from a
+`.pcm`, skip its 8-byte header, which holds the loop point:
 
-With MSU on, **Import MSU-1** in the start menu installs a pack for you: drop
-its folder or `.zip` on the window, or browse for it. It finds the tracks
-whatever the pack calls them, copies them to `MSUPath`, and replaces the pack
-that was there.
+```sh
+tail -c +9 track-1.pcm > track-1.raw
+oggenc -r -q 5 -c LOOPSTART=123456 -o track-1.ogg track-1.raw
+```
+
+MP3 isn't supported: it pads every file with a little silence, which would
+click at each loop.
+
+**Music** on the start menu is where the soundtracks live. On the left are the
+game's own soundtrack, every installed pack and **Import a Pack…**; on the
+right, the one picked, with its tracks to listen to (by name, the game's
+tracks a pack leaves out greyed, since the SNES music plays there instead).
+Along the bottom is a player: back, play or pause, on, and stop, with what's
+playing, how far in and how long it is. When a track ends the next one plays.
+A pack's tracks play through once; the game's own songs loop for ever, so the
+player gives each two and a half minutes and fades it out, as players of game
+music do. P (or Y on a pad) plays and pauses, and `[` `]` (or
+the shoulder buttons) skip. A click picks a track, and a click on the picked
+one plays it.
+
+**Import a Pack…** (or a pack's folder, `.zip` or `.7z` dropped on the window)
+finds the tracks whatever the pack calls them, says what it found, asks what to
+call the pack (its folder or archive's name to start with), and copies it into
+a folder of its own, `msu/<name>/`, so you can keep as many soundtracks as you
+like. A bar shows how far it's got, and B or Esc stops it without touching the
+packs you have. The one just imported is the one that plays, with MSU switched
+on if it wasn't. Importing a pack again replaces only that pack. A pack of
+`.pcm` tracks can go in as FLAC, ticked unless you untick it as you name it.
+Each track is decoded again and checked against the original, sample for
+sample, before the `.pcm` is let go of.
+
+For each pack, **Use This Pack** plays it in the game (so does **MSU Pack**
+under Sound), **Deluxe** says whether it's a deluxe pack, **Shrink to FLAC**
+does to its `.pcm` tracks what the import can, **Rename** changes its name (and
+`MSUPath` with it, if it's the one playing), **Show** opens its folder, and
+**Delete** asks first. A pack installed by an older version, loose in `msu/`
+itself, is moved into `msu/Earlier import/` the first time the game starts, and
+`MSUPath` follows. The Music screen is the modern start menu's; in the retro
+style, **Import MSU-1** brings packs in as it always did.
 
 ## Randomizer
 
@@ -238,15 +285,16 @@ with an item tracker beside the game, over it, or in its own window.
 [The randomizer guide](docs/randomizer.md) has the rest: the seed page, MSU-1
 for seeds, the tracker and its options.
 
-## zelda3-tools
+## Tools
 
 Everything to do with the assets besides playing: building them, exporting the
 maps, text, graphics and music to edit, building them back (by itself, each
-time you save a change, if you like), then starting the game to try it. It
-shows the exported pictures and checks `.zspr` Link sprites, plays the game's
-music, looks over MSU-1 packs before you import them, and adds languages from
-translated ROMs. Run it for a window, which a mouse, the keys or a pad all
-drive, or with a command:
+time you save a change, if you like), then playing to try it. They show the
+exported pictures and check `.zspr` Link sprites, and add languages from
+translated ROMs. Music and MSU-1 packs are on the start menu's Music screen. **Tools** on the start menu opens their window, which a mouse, the keys
+or a pad all drive; **Start Menu** in its corner goes back, and **Play** goes
+straight into the game. From a terminal, `zelda3 tools` opens the window too,
+and a command does the job without one:
 
 <table>
   <tr>
@@ -256,13 +304,18 @@ drive, or with a command:
 </table>
 
 ```sh
-zelda3-tools export --rom zelda3.sfc --out my_mod
-zelda3-tools build --from my_mod
-zelda3-tools extract-dialogue --rom german.sfc --out langs
-zelda3-tools build --languages de,fr --lang-dir langs
-zelda3-tools check-msu my_pack.zip
-zelda3-tools help
+zelda3 tools export --rom zelda3.sfc --out my_mod
+zelda3 tools build --from my_mod
+zelda3 tools extract-dialogue --rom german.sfc --out langs
+zelda3 tools build --languages de,fr --lang-dir langs
+zelda3 tools check-msu my_pack.zip
+zelda3 tools import-msu my_pack.7z --name "My Pack"
+zelda3 tools shrink-msu
+zelda3 tools help
 ```
+
+On a Mac, `zelda3` is `ALTTP-DX.app/Contents/MacOS/zelda3`; on Linux, the
+AppImage takes the same commands.
 
 Set `Language = de` (or whichever) in `zelda3.ini` to play in a language you've
 added. Only the US ROM builds the asset file; its SHA-256 is
@@ -282,7 +335,7 @@ brew install sdl3              # macOS
 git clone https://github.com/YeOldPress/alttp-dx
 cd alttp-dx
 zig build run                      # build and start the game
-zig build tools                    # build and open zelda3-tools
+zig build tools                    # build and open the tools window
 zig build assets                   # build the asset file, no window
 zig build test                     # the tests
 zig build -Doptimize=ReleaseSafe   # a faster build
@@ -345,6 +398,7 @@ MIT, see `LICENSE.txt`, which keeps the original notices: Copyright (c) 2022
 snesrev and Copyright (c) 2021 elzo_d.
 
 Vendored in `third_party/`: Opus 1.3.1 (3-clause BSD, `COPYING` there and in
-`LICENSE.txt`). SDL3 is a system dependency.
+`LICENSE.txt`), dr_flac (public domain or MIT-0) and stb_vorbis and
+stb_truetype (public domain or MIT). SDL3 is a system dependency.
 
 No game assets are distributed here.

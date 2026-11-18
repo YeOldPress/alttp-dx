@@ -29,6 +29,11 @@ comptime {
     _ = @import("src/zelda_rtl.zig");
     _ = @import("src/overworld_wide.zig");
     _ = @import("src/msu_import.zig");
+    _ = @import("src/msu_preview.zig");
+    _ = @import("src/pad_names.zig");
+    _ = @import("src/menu_window.zig");
+    _ = @import("src/menu_news.zig");
+    _ = @import("src/setting_previews.zig");
     _ = @import("src/zip.zig");
     _ = @import("src/updater.zig");
     _ = @import("src/title_dx.zig");

@@ -1,4 +1,8 @@
-//! The zelda3-tools window, laid out like a desktop app.
+//! The tools window, laid out like a desktop app and dressed like the start
+//! menu: the same night sky and drifting motes, gold for what to press,
+//! Cinzel for names. The retro start menu's Tools entry opens it, and
+//! closing it goes back there; the modern one has the same pages as one of
+//! its own screens (embedOpen and the rest, at the end).
 //!
 //! A sidebar down the left lists the things to do, with how the assets stand
 //! and Play at its foot. The page on the right is the chosen one: a heading
@@ -8,28 +12,31 @@
 //! window keeps drawing while a build takes its time. Paths come from the
 //! system's own file dialogs, or from dropping a file on the window.
 const std = @import("std");
-const builtin = @import("builtin");
 const c = @import("sdl.zig").c;
 const ops = @import("tools_ops.zig");
 const kit = @import("menu_kit.zig");
 const draw = @import("tools_draw.zig");
-const menu = @import("menu.zig");
+const start_page = @import("start_page.zig");
+/// The start menu's night, its gold, and the pieces drawn with them.
+const Night = start_page.Page;
 const updater = @import("updater.zig");
 const fileio = @import("fileio.zig");
-const music = @import("tools_music.zig");
 const pictures = @import("tools_pictures.zig");
 const game = @import("tools_game.zig");
 const rom_mod = @import("rom.zig");
+const langs = @import("asset_languages.zig");
 const Language = rom_mod.Language;
 
 const Rect = draw.Rect;
 const Color = draw.Color;
 const Paint = draw.Paint;
 
-const kWindowW = 1080;
-const kWindowH = 720;
-const kMinW = 880;
-const kMinH = 600;
+/// The window's size while it's the tools, in points, and the least it can
+/// be dragged down to.
+pub const kWindowW = 1080;
+pub const kWindowH = 720;
+pub const kMinW = 880;
+pub const kMinH = 600;
 
 const kSideW: f32 = 236;
 /// Around the page, and as wide as its rows get on a big window.
@@ -45,23 +52,26 @@ const kRadius: f32 = 8;
 const kFieldStep: f32 = 24 + kFieldH + 20;
 const kLogLineH: f32 = 19;
 
-const kBg = Color.hex(0x10141c);
-const kSide = Color.hex(0x161b26);
-const kSurface = Color.hex(0x1c2230);
-const kSurfaceHi = Color.hex(0x262e40);
-const kBorder = Color.hex(0x2b3447);
-const kText = Color.hex(0xe9edf4);
-const kTextDim = Color.hex(0x98a2b5);
-const kTextFaint = Color.hex(0x606a7d);
-const kAccent = Color.hex(0x5b8cff);
-const kAccentHi = Color.hex(0x7aa2ff);
-const kOnAccent = Color.hex(0xffffff);
-const kPlay = Color.hex(0x34c76c);
-const kPlayHi = Color.hex(0x4ad681);
-const kOnPlay = Color.hex(0x05230f);
-const kOk = Color.hex(0x63d69d);
-const kWarn = Color.hex(0xf5b45b);
-const kBrand = Color.hex(0xf5c451);
+// The start menu's colors. Gold is for what to press and for names, teal
+// for what's picked, cream for what to read.
+/// About the sky's own color halfway down, for what sits right on it.
+const kBg = Color.hex(0x08121a);
+const kSide = Color.hex(0x060d14).alpha(200);
+const kSurface = Color.hex(0x0c1820).alpha(232);
+const kSurfaceHi = Color.hex(0x16262e);
+const kBorder = Color.hex(0x2a3c45);
+const kText = start_page.kCream;
+const kTextDim = start_page.kMuted;
+const kTextFaint = start_page.kDim;
+const kAccent = start_page.kGold;
+const kAccentHi = start_page.kGoldHi;
+/// A gold button, and the brown on it.
+const kButton = Color.hex(0xe2bb60);
+const kButtonHi = Color.hex(0xf0cd72);
+const kOnAccent = Color.hex(0x2a1a04);
+const kTeal = start_page.kTeal;
+const kOk = start_page.kOk;
+const kWarn = start_page.kWarn;
 
 // ------------------------------------------------------------------ the log
 
@@ -75,6 +85,7 @@ var g_log: [300]LogLine = undefined;
 var g_log_count: usize = 0;
 /// Lines scrolled up from the bottom, as they're wrapped on screen.
 var g_log_scroll: usize = 0;
+var g_fit_buf: [256]u8 = undefined;
 /// Jobs write from their own thread while the window draws.
 var g_log_lock: ?*c.SDL_Mutex = null;
 
@@ -91,6 +102,114 @@ fn logWrite(ctx: *anyopaque, level: ops.Log.Level, text: []const u8) void {
     g_log[g_log_count] = line;
     g_log_count += 1;
     g_log_scroll = 0;
+    // A job's first failure and first success are what its card says.
+    if (g_job_running.load(.acquire)) {
+        if (level == .err and g_first_err.len == 0) g_first_err.set(text);
+        if (level == .ok and g_first_ok.len == 0) g_first_ok.set(text);
+    }
+}
+
+/// A line kept whole, for the card.
+const Kept = struct {
+    text: [400]u8 = undefined,
+    len: usize = 0,
+
+    fn set(self: *Kept, s: []const u8) void {
+        self.len = @min(s.len, self.text.len);
+        @memcpy(self.text[0..self.len], s[0..self.len]);
+    }
+
+    fn get(self: *const Kept) []const u8 {
+        return self.text[0..self.len];
+    }
+};
+
+/// What the last job came to: whether it worked, how long it took, and the
+/// line that says so. Shown on its page until the next job, with what to
+/// do next. Under the log's lock, since the job's thread writes it.
+const Done = struct {
+    job: Job,
+    ok: bool,
+    ms: u64,
+    line: Kept = .{},
+    /// The language a build just put in, to offer playing in it.
+    language: ?Language = null,
+};
+
+var g_done: ?Done = null;
+var g_first_err: Kept = .{};
+var g_first_ok: Kept = .{};
+/// When the job running started, which page started it, and the language
+/// it builds in, if it does.
+var g_job_started: u64 = 0;
+var g_job_screen: Screen = .assets;
+var g_job_language: ?Language = null;
+/// When Copy Log was last pressed, to say so for a moment.
+var g_copied_at: u64 = 0;
+
+/// Every line of the log onto the clipboard, to paste into a bug report or
+/// a message asking for help.
+fn copyLog() void {
+    const alloc = std.heap.c_allocator;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(alloc);
+    c.SDL_LockMutex(g_log_lock);
+    for (g_log[0..g_log_count]) |*line| {
+        const tag = switch (line.level) {
+            .info => "",
+            .ok => "OK: ",
+            .err => "ERROR: ",
+        };
+        text.print(alloc, "{s}{s}\n", .{ tag, line.text[0..line.len] }) catch break;
+    }
+    c.SDL_UnlockMutex(g_log_lock);
+    text.append(alloc, 0) catch return;
+    if (c.SDL_SetClipboardText(text.items[0 .. text.items.len - 1 :0].ptr)) g_copied_at = c.SDL_GetTicks();
+}
+
+// ------------------------------------------------------------ the file manager
+
+/// Opens the folder `path` is, or is in, in Finder, Explorer or whatever the
+/// desktop uses.
+pub fn reveal(path: []const u8) void {
+    var z_buf: [4096]u8 = undefined;
+    const z = std.fmt.bufPrintSentinel(&z_buf, "{s}", .{path}, 0) catch return;
+    var target: []const u8 = if (fileio.isDir(z.ptr)) path else std.fs.path.dirname(path) orelse ".";
+    var abs_buf: [4096]u8 = undefined;
+    if (!std.fs.path.isAbsolute(target)) {
+        var cwd_buf: [4096]u8 = undefined;
+        const cwd = fileio.workingDirectory(&cwd_buf) catch return;
+        target = std.fmt.bufPrint(&abs_buf, "{s}{s}{s}", .{ cwd, std.fs.path.sep_str, target }) catch return;
+    }
+    var url_buf: [3 * 4096 + 16]u8 = undefined;
+    const url = fileUrl(&url_buf, target) orelse return;
+    if (!c.SDL_OpenURL(url.ptr)) g_logger.err("Couldn't open {s}: {s}", .{ target, std.mem.span(c.SDL_GetError()) });
+}
+
+/// A path as a file:// address, with anything a URL can't hold as it is,
+/// spaces included, written as %XX.
+fn fileUrl(buf: []u8, path: []const u8) ?[:0]const u8 {
+    var w = std.Io.Writer.fixed(buf);
+    w.writeAll("file://") catch return null;
+    // A Windows path starts with its drive, which goes after a slash.
+    if (path.len == 0 or (path[0] != '/' and path[0] != '\\')) w.writeByte('/') catch return null;
+    for (path) |ch| {
+        if (ch == '\\') {
+            w.writeByte('/') catch return null;
+        } else if (std.ascii.isAlphanumeric(ch) or std.mem.indexOfScalar(u8, "-._~/:", ch) != null) {
+            w.writeByte(ch) catch return null;
+        } else {
+            w.print("%{X:0>2}", .{ch}) catch return null;
+        }
+    }
+    w.writeByte(0) catch return null;
+    return buf[0 .. w.end - 1 :0];
+}
+
+test "a path becomes a file address the system can open" {
+    var buf: [256]u8 = undefined;
+    try std.testing.expectEqualStrings("file:///Volumes/MacOS%20Spare/zelda3_files", fileUrl(&buf, "/Volumes/MacOS Spare/zelda3_files").?);
+    try std.testing.expectEqualStrings("file:///C:/Games/Zelda%20%231", fileUrl(&buf, "C:\\Games\\Zelda #1").?);
 }
 
 fn clearLog() void {
@@ -114,7 +233,7 @@ const g_logger = ops.Log{ .ctx = &g_log_dummy, .writeFn = logWrite };
 
 /// Every path the window keeps. A dialog's answer can arrive on another
 /// thread, so it lands here under a lock and the main loop picks it up.
-const Field = enum { rom, out, folder, lang_rom, zspr, msu, snapshot, dialogue };
+const Field = enum { rom, out, folder, lang_rom, zspr, snapshot, dialogue };
 const kFieldCount = @typeInfo(Field).@"enum".field_names.len;
 
 var g_dialog_lock: ?*c.SDL_Mutex = null;
@@ -139,7 +258,6 @@ const kDatFilters = [_]c.SDL_DialogFileFilter{.{ .name = "Asset file", .pattern 
 const kZsprFilters = [_]c.SDL_DialogFileFilter{.{ .name = "Link sprite", .pattern = "zspr" }};
 /// A pack is a folder or a zip; picking any track in a folder means the
 /// folder.
-const kMsuFilters = [_]c.SDL_DialogFileFilter{.{ .name = "MSU-1 pack, or a track in one", .pattern = "zip;msu;pcm;opuz" }};
 const kSavFilters = [_]c.SDL_DialogFileFilter{.{ .name = "Snapshot", .pattern = "sav" }};
 const kTxtFilters = [_]c.SDL_DialogFileFilter{.{ .name = "Dialogue", .pattern = "txt" }};
 
@@ -151,7 +269,6 @@ fn openDialog(window_opt: ?*c.SDL_Window, field: Field) void {
         .out => return c.SDL_ShowSaveFileDialog(dialogCallback, userdata, window, &kDatFilters, kDatFilters.len, null),
         .folder => return c.SDL_ShowOpenFolderDialog(dialogCallback, userdata, window, null, false),
         .zspr => &kZsprFilters,
-        .msu => &kMsuFilters,
         .snapshot => &kSavFilters,
         .dialogue => &kTxtFilters,
     };
@@ -165,8 +282,6 @@ const Screen = enum {
     assets,
     modding,
     graphics,
-    music,
-    msu,
     languages,
     extras,
 
@@ -175,10 +290,19 @@ const Screen = enum {
             .assets => "Build Assets",
             .modding => "Mod the Game",
             .graphics => "Graphics",
-            .music => "Music",
-            .msu => "MSU-1 Pack",
             .languages => "Languages",
             .extras => "Extras",
+        };
+    }
+
+    /// A few words on it, under its name in the start menu's list.
+    fn short(self: Screen) []const u8 {
+        return switch (self) {
+            .assets => "Your ROM, made into the game's",
+            .modding => "Export, edit, build back in",
+            .graphics => "Pictures and Link sprites",
+            .languages => "Text from translated ROMs",
+            .extras => "Input logs and dictionaries",
         };
     }
 
@@ -188,8 +312,6 @@ const Screen = enum {
             .assets => "Make the game's asset file from your US ROM. Do this once, and again after an update.",
             .modding => "Export the game's text, maps and pictures to a folder, edit them, then build them back in.",
             .graphics => "Look through the pictures in your work folder, or preview a custom Link sprite.",
-            .music => "Listen to the game's songs, played by its own sound driver.",
-            .msu => "Check a CD-quality MSU-1 music pack for missing or broken tracks before you use it.",
             .languages => "Take the text out of a translated ROM, like German, French or Redux, and build it into the game.",
             .extras => "Small tools for digging into the game.",
         };
@@ -199,7 +321,27 @@ const Screen = enum {
 const AssetState = enum { missing, standard, custom, old };
 
 /// A question over the window, which takes the keys until it's answered.
-const Modal = enum { none, quit, update };
+const Modal = enum { none, leave };
+
+/// Where the window goes when it closes: back to the start menu, into the
+/// game, or out altogether.
+pub const Outcome = enum { menu, play, quit };
+
+/// How the window closed, and anything it asks the start menu to do on the
+/// way: play in the language a build just put in.
+pub const Exit = struct {
+    to: Outcome,
+    language: ?Language = null,
+};
+
+/// What the start menu knows that the tools can start from.
+pub const Options = struct {
+    /// The ROM the menu found or was given.
+    rom: ?[]const u8 = null,
+    /// Pick up where the last visit left off, from zelda3_tools.ini. Off
+    /// for screenshots, which want the same thing every time.
+    remember: bool = true,
+};
 
 const State = struct {
     screen: Screen = .assets,
@@ -220,12 +362,12 @@ const State = struct {
     choice: usize = 0,
     /// Where the focus was before a modal took it, to go back to after.
     focus_before: usize = 0,
-    quit: bool = false,
-
-    /// The game, to start with Play, when it's somewhere the tools can see.
-    game_buf: [4096]u8 = undefined,
-    game: ?[:0]const u8 = null,
-
+    /// Closing, and where to: as soon as no job is halfway through.
+    leave: ?Outcome = null,
+    /// Told to wait for the job, then go.
+    waiting: bool = false,
+    /// What to tell the start menu on the way out.
+    exit_language: ?Language = null,
     /// Rebuilding when the work folder changes: on or off, the folder's
     /// stamp as of the last build or look, and when it was last looked at.
     watch: bool = false,
@@ -234,12 +376,16 @@ const State = struct {
     watch_at: u64 = 0,
 
     gfx: Gallery = .{},
-    tunes: Tunes = .{},
 
     /// The ROM last looked at, and what it turned out to be, so the pages
     /// can say every frame without reading it every frame.
     rom_seen: std.ArrayList(u8) = .empty,
     rom_kind: RomKind = .unreadable,
+
+    fn deinit(self: *State, alloc: std.mem.Allocator) void {
+        for (&self.paths) |*p| p.deinit(alloc);
+        self.rom_seen.deinit(alloc);
+    }
 
     /// The ticked translations the folder has files for.
     fn extra(self: *State) ops.Extra {
@@ -283,25 +429,33 @@ const State = struct {
         ui.focus = self.focus_before;
     }
 
-    /// Whether Play has a game to start. A packaged Mac can always ask
-    /// Launch Services, which knows where the game was put.
+    /// Whether Play has assets the game will start with.
     fn canPlay(self: *const State) bool {
-        if (self.game != null) return true;
-        const base = std.mem.span(c.SDL_GetBasePath() orelse return false);
-        return builtin.os.tag == .macos and menu.isPackaged(base);
+        return self.assets == .standard or self.assets == .custom;
+    }
+
+    /// Closes the window, or says it will once the job's done: a job half
+    /// written is worse than one never started.
+    fn close(self: *State, ui: *Ui, to: Outcome) void {
+        self.leave = to;
+        if (jobRunning() and self.modal == .none) self.openModal(ui, .leave, 1);
+    }
+
+    /// Changed its mind: the window stays.
+    fn stay(self: *State, ui: *Ui) void {
+        self.leave = null;
+        self.waiting = false;
+        self.closeModal(ui);
     }
 
     /// Opens a page with a clean log. The sidebar is drawn first, so the
     /// focus stays on whichever of its entries opened it.
     fn open(self: *State, screen: Screen) void {
         if (self.screen == screen) return;
-        // A song stops when its page is left.
-        if (self.screen == .music) {
-            if (self.tunes.player) |p| p.stop();
-        }
         self.screen = screen;
         self.assets_age = 0;
-        clearLog();
+        // A job's lines stay while it runs, wherever it's watched from.
+        if (!jobRunning()) clearLog();
     }
 
     /// The asset file's state, looked at again every couple of seconds.
@@ -315,26 +469,17 @@ const State = struct {
     }
 };
 
-/// Where a file called `name` would sit in the game's folder: beside this
-/// program for a plain install, or in the game's data directory when this
-/// runs from an app bundle or AppImage, which are read-only.
+/// Where a file called `name` sits in the game's folder, which is the one
+/// this runs in: the start menu moved into it before opening the window.
 fn inGameDir(alloc: std.mem.Allocator, name: []const u8) []const u8 {
-    const base_z = c.SDL_GetBasePath() orelse return name;
-    const base = std.mem.span(base_z);
-    if (menu.isPackaged(base)) {
-        const pref = menu.dataDirectory() orelse return name;
-        defer c.SDL_free(pref);
-        return std.fmt.allocPrint(alloc, "{s}{s}", .{ std.mem.span(pref), name }) catch name;
-    }
-    return std.fmt.allocPrint(alloc, "{s}{s}", .{ base, name }) catch name;
+    var buf: [4096]u8 = undefined;
+    const cwd = fileio.workingDirectory(&buf) catch return name;
+    const sep = if (std.mem.endsWith(u8, cwd, std.fs.path.sep_str)) "" else std.fs.path.sep_str;
+    return std.fmt.allocPrint(alloc, "{s}{s}{s}", .{ cwd, sep, name }) catch name;
 }
 
-/// Where the game will look for its asset file: its data directory when the
-/// tools are packaged (and so is it), or the folder it runs from.
-fn gameAssetPath(alloc: std.mem.Allocator, st: *const State) []const u8 {
-    if (st.game) |g| {
-        if (game.folderOf(g)) |dir| return std.fmt.allocPrint(alloc, "{s}{s}zelda3_assets.dat", .{ dir, std.fs.path.sep_str }) catch "zelda3_assets.dat";
-    }
+/// Where the game looks for its asset file.
+fn gameAssetPath(alloc: std.mem.Allocator) []const u8 {
     return inGameDir(alloc, "zelda3_assets.dat");
 }
 
@@ -344,17 +489,14 @@ fn exists(alloc: std.mem.Allocator, path: []const u8) bool {
     return fileio.exists(z.ptr);
 }
 
-/// Starts the game, and says so, and says if it won't see what was just
+/// Closes the window into the game, and says if it won't see what was just
 /// built because that was saved somewhere it doesn't look.
-fn play(alloc: std.mem.Allocator, st: *State) void {
-    if (!game.start(st.game)) {
-        g_logger.err("Couldn't start the game. Keep the tools beside it, where the downloads put them.", .{});
-        return;
+fn play(alloc: std.mem.Allocator, ui: *Ui, st: *State) void {
+    const expected = gameAssetPath(alloc);
+    if (!std.mem.eql(u8, expected, st.get(.out))) {
+        g_logger.info("The game reads its assets from {s}, not from where these were saved. Save them there to play them.", .{expected});
     }
-    g_logger.ok("Starting the game.", .{});
-    const expected = gameAssetPath(alloc, st);
-    if (!std.mem.eql(u8, expected, st.get(.out)))
-        g_logger.info("It reads its assets from {s}, not from where these were saved.", .{expected});
+    st.close(ui, .play);
 }
 
 // ------------------------------------------------------------------- jobs
@@ -364,7 +506,6 @@ const Job = enum {
     export_files,
     build_from_files,
     extract_dialogue,
-    check_msu,
     input_log,
     text_dict,
 
@@ -375,9 +516,19 @@ const Job = enum {
             .export_files => "Exporting the files",
             .build_from_files => "Building from your files",
             .extract_dialogue => "Extracting the dialogue",
-            .check_msu => "Checking the pack",
             .input_log => "Reading the input log",
             .text_dict => "Searching for a dictionary",
+        };
+    }
+
+    /// What to try when it fails, under what went wrong.
+    fn hint(self: Job) []const u8 {
+        return switch (self) {
+            .build => "Check it's the US ROM, and that no other program has the asset file open.",
+            .build_from_files => "Usually a slip in an edited file. The Activity below names the file and line.",
+            .export_files, .extract_dialogue => "Check the work folder is somewhere you can save to.",
+            .input_log => "Pick a snapshot the game saved, from its saves folder.",
+            .text_dict => "Pick the dialogue.txt that Export wrote.",
         };
     }
 
@@ -422,7 +573,15 @@ fn startJob(alloc: std.mem.Allocator, st: *State, job: Job) void {
         return;
     };
     if (g_log_count != 0) logWrite(&g_log_dummy, .info, "");
+    c.SDL_LockMutex(g_log_lock);
+    g_done = null;
+    g_first_err = .{};
+    g_first_ok = .{};
+    c.SDL_UnlockMutex(g_log_lock);
     g_job = job;
+    g_job_started = c.SDL_GetTicks();
+    g_job_screen = st.screen;
+    g_job_language = if (job == .build and args.language_count != 0) args.languages[0] else null;
     g_job_running.store(true, .release);
     const t = std.Thread.spawn(.{}, jobThread, .{ alloc, args }) catch {
         g_job_running.store(false, .release);
@@ -443,32 +602,43 @@ fn makeJobArgs(alloc: std.mem.Allocator, st: *State, job: Job) !*JobArgs {
         p.* = try alloc.dupeSentinel(u8, st.paths[i].items, 0);
         made += 1;
     }
-    const langs = st.extra().languages;
-    @memcpy(args.languages[0..langs.len], langs);
-    args.language_count = langs.len;
+    const picked_langs = st.extra().languages;
+    @memcpy(args.languages[0..picked_langs.len], picked_langs);
+    args.language_count = picked_langs.len;
     return args;
 }
 
 fn jobThread(alloc: std.mem.Allocator, a: *JobArgs) void {
-    defer {
-        a.free(alloc);
-        g_job_running.store(false, .release);
-    }
     const extra = ops.Extra{ .languages = a.languages[0..a.language_count], .dir = a.get(.folder) };
-    switch (a.job) {
-        .build => _ = ops.buildAssets(alloc, g_logger, a.get(.rom), a.get(.out), extra),
-        .export_files => _ = ops.exportFiles(alloc, g_logger, a.get(.rom), a.get(.folder)),
-        .build_from_files => _ = ops.buildFromFiles(alloc, g_logger, a.get(.rom), a.get(.folder), a.get(.out), .{ .sprites_from_png = a.sprites_from_png }, extra),
-        .extract_dialogue => _ = ops.extractDialogue(alloc, g_logger, a.get(.lang_rom), a.get(.folder), null),
-        .check_msu => _ = ops.checkMsuPack(alloc, g_logger, a.get(.msu)),
-        .input_log => _ = ops.saveInputLog(alloc, g_logger, a.get(.snapshot)),
-        .text_dict => _ = ops.saveTextDict(alloc, g_logger, a.get(.dialogue)),
-    }
+    const ok = switch (a.job) {
+        .build => ops.buildAssets(alloc, g_logger, a.get(.rom), a.get(.out), extra),
+        .export_files => ops.exportFiles(alloc, g_logger, a.get(.rom), a.get(.folder)),
+        .build_from_files => ops.buildFromFiles(alloc, g_logger, a.get(.rom), a.get(.folder), a.get(.out), .{ .sprites_from_png = a.sprites_from_png }, extra),
+        .extract_dialogue => ops.extractDialogue(alloc, g_logger, a.get(.lang_rom), a.get(.folder), null),
+        .input_log => ops.saveInputLog(alloc, g_logger, a.get(.snapshot)),
+        .text_dict => ops.saveTextDict(alloc, g_logger, a.get(.dialogue)),
+    };
+    finishJob(a.job, ok);
+    a.free(alloc);
+    g_job_running.store(false, .release);
+}
+
+/// Says how the job went, for its card: in the job's first success line, or
+/// its first failure.
+fn finishJob(job: Job, ok: bool) void {
+    c.SDL_LockMutex(g_log_lock);
+    defer c.SDL_UnlockMutex(g_log_lock);
+    var d = Done{ .job = job, .ok = ok, .ms = c.SDL_GetTicks() -| g_job_started, .language = if (ok) g_job_language else null };
+    const said = if (ok) g_first_ok.get() else g_first_err.get();
+    d.line.set(if (said.len != 0) said else if (ok) "Finished." else "It stopped without saying why. The Activity below may tell.");
+    g_done = d;
 }
 
 // -------------------------------------------------------------- immediate UI
 
-const kMaxItems = 64;
+/// How many things a frame can have to pick. A deluxe pack's tracks alone
+/// are over a hundred.
+const kMaxItems = 320;
 
 /// Everything that can be picked registers itself as it's drawn, in order,
 /// and the arrows move between them by where they sit on screen. So a page
@@ -476,6 +646,10 @@ const kMaxItems = 64;
 /// own to keep in step.
 const Ui = struct {
     p: *Paint,
+    /// The sky, the glow and the start menu's pieces, drawn with `p`.
+    night: *const Night,
+    /// Seconds, for what moves.
+    t: f32 = 0,
     /// The window's size, in points.
     w: f32 = kWindowW,
     h: f32 = kWindowH,
@@ -542,7 +716,8 @@ const Ui = struct {
         self.count += 1;
         const over = rect.contains(self.mouse_x, self.mouse_y);
         if (enabled and over) self.over_any = true;
-        if (enabled and over and (self.moved or self.clicked)) self.focus = id;
+        // The mouse only lights what it's over; a click is what picks.
+        if (enabled and over and self.clicked) self.focus = id;
         const focused = id == self.focus;
         return .{
             .focused = focused,
@@ -587,21 +762,35 @@ const Ui = struct {
 
     /// The focus ring, around `rect`, on `under`.
     fn ring(self: *const Ui, rect: Rect, radius: f32, under: Color) void {
-        self.p.box(rect.inset(-3), radius + 3, 2, kAccent, under);
+        self.p.box(rect.inset(-3), radius + 3, 2, kAccentHi, under);
     }
 
     /// A file or folder to work with: its label, then a box with the path
     /// in it and Browse at its end. Clicking any of it browses. `tag` is a
-    /// word on how it stands, at the box's right.
-    fn field(self: *Ui, x: f32, y: f32, w: f32, label: []const u8, path: []const u8, placeholder: []const u8, tag: ?Tag) bool {
+    /// word on how it stands, at the box's right. With `show`, a Show
+    /// button in the box opens where the path is in the file manager.
+    fn field(self: *Ui, x: f32, y: f32, w: f32, label: []const u8, path: []const u8, placeholder: []const u8, tag: ?Tag, show: bool) FieldHit {
         self.p.text(.strong, x, y, kText, label);
         const row = Rect{ .x = x, .y = y + 24, .w = w, .h = kFieldH };
         const hit = self.item(row, true);
         if (hit.ring) self.ring(row, kRadius, kBg);
         const box = Rect{ .x = row.x, .y = row.y, .w = row.w - kBrowseW - 8, .h = row.h };
-        self.p.box(box, kRadius, 1, if (hit.lit) kTextFaint else kBorder, kSurface);
+        const show_w = self.p.textWidth(.small, "Show") + 24;
+        const show_rect = Rect{ .x = box.x + box.w - 8 - show_w, .y = box.y + 8, .w = show_w, .h = box.h - 16 };
+        // Over Show, the rest of the row isn't what a click would do.
+        const over_show = show and show_rect.contains(self.mouse_x, self.mouse_y) and !self.keys;
+        const lit = hit.lit and !over_show;
+        self.p.box(box, kRadius, 1, if (lit) kAccent.alpha(150) else kBorder, kSurface);
 
         var right = box.x + box.w - 12;
+        var show_hit = kNoHit;
+        if (show) {
+            show_hit = self.item(show_rect, true);
+            if (show_hit.ring) self.ring(show_rect, show_rect.h / 2, kSurface);
+            self.p.box(show_rect, show_rect.h / 2, 1, if (show_hit.lit) kAccent else kBorder, if (show_hit.lit) kSurfaceHi else kSurface);
+            self.p.textCentered(.small, show_rect.x + show_rect.w / 2, show_rect.y + (show_rect.h - self.p.lineHeight(.small)) / 2, if (show_hit.lit) kAccentHi else kTextDim, "Show");
+            right = show_rect.x - 12;
+        }
         if (tag) |t| {
             const tw = self.p.textWidth(.small, t.text);
             self.p.text(.small, right - tw, box.y + 11, t.color, t.text);
@@ -610,9 +799,11 @@ const Ui = struct {
         self.pathText(.{ .x = box.x + 14, .y = box.y + 10, .w = right - box.x - 14, .h = 20 }, path, placeholder);
 
         const browse = Rect{ .x = row.x + row.w - kBrowseW, .y = row.y, .w = kBrowseW, .h = row.h };
-        self.p.box(browse, kRadius, 1, kBorder, if (hit.lit) kSurfaceHi else kSurface);
-        self.p.textCentered(.strong, browse.x + browse.w / 2, browse.y + 10, kText, "Browse\u{2026}");
-        return hit.pressed;
+        self.p.box(browse, browse.h / 2, 1, if (lit) kAccent else kBorder, if (lit) kSurfaceHi else kSurface);
+        self.p.textCentered(.strong, browse.x + browse.w / 2, browse.y + 10, if (lit) kAccentHi else kText, "Browse\u{2026}");
+        if (show_hit.pressed) return .show;
+        if (hit.pressed and !(self.clicked and show and show_rect.contains(self.mouse_x, self.mouse_y))) return .browse;
+        return .none;
     }
 
     /// A path the way people think of one: the file's name, then which
@@ -641,12 +832,12 @@ const Ui = struct {
         const row = Rect{ .x = x, .y = y + 24, .w = w, .h = kFieldH };
         const hit = self.itemOf(row, enabled, true);
         if (hit.ring) self.ring(row, kRadius, kBg);
-        self.p.box(row, kRadius, 1, if (hit.lit) kTextFaint else kBorder, kSurface);
+        self.p.box(row, kRadius, 1, if (hit.lit) kAccent.alpha(150) else kBorder, kSurface);
         const over_left = self.mouse_x < row.x + row.w / 2;
         for ([_]bool{ true, false }) |left| {
             const b = Rect{ .x = if (left) row.x + 4 else row.x + row.w - 36, .y = row.y + 4, .w = 32, .h = row.h - 8 };
             if (hit.lit and !self.keys and over_left == left) self.p.fillRound(b, 6, kSurfaceHi);
-            self.p.textCentered(.strong, b.x + b.w / 2, b.y + 6, if (enabled) kText else kTextFaint, if (left) "\u{2190}" else "\u{2192}");
+            self.p.textCentered(.strong, b.x + b.w / 2, b.y + 6, if (enabled) kAccent else kTextFaint, if (left) "\u{2190}" else "\u{2192}");
         }
         var buf: [256]u8 = undefined;
         const shown = self.p.fit(.body, value, row.w - 96, &buf);
@@ -667,10 +858,10 @@ const Ui = struct {
         if (hit.lit) self.p.fillRound(row, 6, kSurface);
         const box = Rect{ .x = x, .y = y + 5, .w = 18, .h = 18 };
         if (on and enabled) {
-            self.p.fillRound(box, 5, kAccent);
+            self.p.fillRound(box, 5, kButton);
             self.p.textCentered(.strong, box.x + box.w / 2, box.y - 1, kOnAccent, "\u{2713}");
         } else {
-            self.p.box(box, 5, 1.5, if (enabled) kTextDim else kBorder, kBg);
+            self.p.box(box, 5, 1.5, if (enabled) kTextDim else kBorder, kSurface);
         }
         self.p.text(.body, x + 28, y + 4, if (enabled) kText else kTextFaint, label);
         return hit.pressed;
@@ -685,16 +876,20 @@ const Ui = struct {
             const rect = Rect{ .x = x, .y = y, .w = self.p.textWidth(.strong, a.label) + 40, .h = kButtonH };
             x += rect.w + 12;
             const hit = self.item(rect, a.enabled);
-            if (hit.ring) self.ring(rect, kRadius, kBg);
+            if (hit.ring) self.ring(rect, rect.h / 2, kBg);
+            // Pills, as the start menu's answers are: gold for the one to
+            // press, an outline for the rest.
+            const round = rect.h / 2;
             if (!a.enabled) {
-                self.p.fillRound(rect, kRadius, kSurface);
+                self.p.box(rect, round, 1, kBorder.alpha(140), kSurface);
                 self.p.textCentered(.strong, rect.x + rect.w / 2, rect.y + 9, kTextFaint, a.label);
             } else if (a.main) {
-                self.p.fillRound(rect, kRadius, if (hit.lit) kAccentHi else kAccent);
+                if (hit.lit) self.night.glowAt(rect.x + rect.w / 2, rect.y + rect.h / 2, rect.w * 0.7, kAccent.alpha(60));
+                self.p.box(rect, round, 1.5, kAccentHi, if (hit.lit) kButtonHi else kButton);
                 self.p.textCentered(.strong, rect.x + rect.w / 2, rect.y + 9, kOnAccent, a.label);
             } else {
-                self.p.box(rect, kRadius, 1, kBorder, if (hit.lit) kSurfaceHi else kBg);
-                self.p.textCentered(.strong, rect.x + rect.w / 2, rect.y + 9, kText, a.label);
+                self.p.box(rect, round, 1, if (hit.lit) kAccent else kBorder, if (hit.lit) kSurfaceHi else kSurface);
+                self.p.textCentered(.strong, rect.x + rect.w / 2, rect.y + 9, if (hit.lit) kAccentHi else kText, a.label);
             }
             if (hit.pressed) pressed = i;
         }
@@ -703,7 +898,25 @@ const Ui = struct {
 };
 
 const Action = struct { label: []const u8, enabled: bool, main: bool = true };
+const FieldHit = enum { none, browse, show };
+
+/// A path field for one of the window's paths: Browse opens the system's
+/// picker for it, and Show, there once the path is, opens where it is.
+fn pathField(ui: *Ui, window: ?*c.SDL_Window, st: *State, x: f32, y: f32, w: f32, label: []const u8, f: Field, placeholder: []const u8, tag: ?Tag) void {
+    const path = st.get(f);
+    const show = path.len != 0 and Must.either.satisfiedBy(path);
+    switch (ui.field(x, y, w, label, path, placeholder, tag, show)) {
+        .browse => openDialog(window, f),
+        .show => reveal(path),
+        .none => {},
+    }
+}
 const Tag = struct { text: []const u8, color: Color };
+
+/// A rectangle as the start menu's pieces take one.
+fn kr(r: Rect) kit.Rect {
+    return .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
+}
 
 fn centerX(r: Rect) f32 {
     return r.x + r.w / 2;
@@ -768,6 +981,8 @@ fn folderTag(path: []const u8) ?Tag {
 /// Under the buttons: the next thing to do, in a sentence, so a grayed-out
 /// button is never a mystery. While a job runs, what it's doing.
 fn statusLine(ui: *Ui, x: f32, y: f32, say: []const u8) void {
+    // On the job's own page its card says all this, bigger.
+    if (jobRunning() and g_drawing == g_job_screen) return;
     if (jobRunning()) {
         // Three dots, brightening in turn.
         const t: f32 = @floatFromInt(c.SDL_GetTicks() % 900);
@@ -776,8 +991,9 @@ fn statusLine(ui: *Ui, x: f32, y: f32, say: []const u8) void {
             const a: u8 = if (phase < 1) 255 else 90;
             ui.p.disc(x + 4 + @as(f32, @floatFromInt(i)) * 10, y + 10, 3, kAccent.alpha(a));
         }
-        var buf: [64]u8 = undefined;
-        ui.p.text(.body, x + 34, y, kAccentHi, std.fmt.bufPrint(&buf, "{s}\u{2026}", .{g_job.doing()}) catch "");
+        var buf: [96]u8 = undefined;
+        const secs = (c.SDL_GetTicks() -| g_job_started) / 1000;
+        ui.p.text(.body, x + 34, y, kAccentHi, std.fmt.bufPrint(&buf, "{s}\u{2026}  {d}s", .{ g_job.doing(), secs }) catch "");
         return;
     }
     ui.p.text(.body, x, y, kTextDim, say);
@@ -815,14 +1031,14 @@ fn romStep(st: *State) ?[]const u8 {
 const kLangCount = @typeInfo(Language).@"enum".field_names.len;
 
 /// Where a page draws: its left edge, its width, and how far down it can go.
-const Page = struct { x: f32, w: f32, bottom: f32 };
+const Page = struct { x: f32, w: f32, bottom: f32, top: f32 = kPageTop };
 
 /// Each page returns how far down it drew, for the activity under it.
 fn drawAssets(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window, pg: Page) f32 {
-    var y: f32 = kPageTop;
-    if (ui.field(pg.x, y, pg.w, "Your ROM", st.get(.rom), "Drop a .sfc on the window, or Browse", romTag(st))) openDialog(window, .rom);
+    var y: f32 = pg.top;
+    pathField(ui, window, st, pg.x, y, pg.w, "Your ROM", .rom, "Drop a .sfc on the window, or Browse", romTag(st));
     y += kFieldStep;
-    if (ui.field(pg.x, y, pg.w, "Save assets to", st.get(.out), "zelda3_assets.dat", null)) openDialog(window, .out);
+    pathField(ui, window, st, pg.x, y, pg.w, "Save assets to", .out, "zelda3_assets.dat", null);
     y += kFieldStep + 4;
 
     const ready = !jobRunning() and romStep(st) == null and st.get(.out).len != 0;
@@ -839,12 +1055,12 @@ fn buttonsWidth(ui: *const Ui, labels: []const []const u8) f32 {
 }
 
 fn drawModding(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window, pg: Page) f32 {
-    var y: f32 = kPageTop;
-    if (ui.field(pg.x, y, pg.w, "Your ROM", st.get(.rom), "Drop a .sfc on the window, or Browse", romTag(st))) openDialog(window, .rom);
+    var y: f32 = pg.top;
+    pathField(ui, window, st, pg.x, y, pg.w, "Your ROM", .rom, "Drop a .sfc on the window, or Browse", romTag(st));
     y += kFieldStep;
-    if (ui.field(pg.x, y, pg.w, "Work folder", st.get(.folder), "Where the files go to be edited", folderTag(st.get(.folder)))) openDialog(window, .folder);
+    pathField(ui, window, st, pg.x, y, pg.w, "Work folder", .folder, "Where the files go to be edited", folderTag(st.get(.folder)));
     y += kFieldStep;
-    if (ui.field(pg.x, y, pg.w, "Save assets to", st.get(.out), "zelda3_assets.dat", null)) openDialog(window, .out);
+    pathField(ui, window, st, pg.x, y, pg.w, "Save assets to", .out, "zelda3_assets.dat", null);
     y += kFieldStep - 6;
     if (ui.check(pg.x, y, "Build sprite sheets from PNGs too", st.sprites_from_png, true)) st.sprites_from_png = !st.sprites_from_png;
     if (ui.check(pg.x + pg.w / 2, y, "Rebuild when a file is saved", st.watch, true)) setWatch(st, !st.watch);
@@ -988,9 +1204,9 @@ fn drawGraphics(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_W
     if (g.age == 0 or g.age > 120) g.refresh(alloc, st);
     g.age += 1;
 
-    var y: f32 = kPageTop;
+    var y: f32 = pg.top;
     const half = (pg.w - 16) / 2;
-    if (ui.field(pg.x, y, half, "Link sprite", st.get(.zspr), "A .zspr file", mustTag(st.get(.zspr), .file))) openDialog(window, .zspr);
+    pathField(ui, window, st, pg.x, y, half, "Link sprite", .zspr, "A .zspr file", mustTag(st.get(.zspr), .file));
     const n = g.count(st);
     var buf: [96]u8 = undefined;
     const value = if (n == 0) "Nothing to show yet" else std.fmt.bufPrint(&buf, "{s}  ({d} of {d})", .{ std.fs.path.basename(g.path(st, g.index)), g.index + 1, n }) catch "";
@@ -1006,9 +1222,14 @@ fn drawGraphics(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_W
     ui.p.text(.body, pg.x, y, if (g.bad) kWarn else kTextDim, say);
     y += 30;
     const box = Rect{ .x = pg.x, .y = y, .w = pg.w, .h = pg.bottom - y };
-    ui.p.box(box, 10, 1, kBorder, kSurface);
+    ui.night.panel(kr(box));
     if (n != 0) {
         if (g.tex) |tex| drawPicture(ui.p.r, tex, g.w, g.h, box.inset(16));
+    } else if (!Must.folder.satisfiedBy(st.get(.folder))) {
+        // Nothing to look at until there's an export: the way to one.
+        const label = "Go to Mod the Game";
+        const bw = buttonsWidth(ui, &.{label});
+        if (ui.buttons(box.x + (box.w - bw) / 2, box.y + box.h / 2 - kButtonH / 2, &.{.{ .label = label, .enabled = true }}) != null) st.open(.modding);
     }
     return pg.bottom;
 }
@@ -1051,100 +1272,6 @@ fn drawPicture(r: *c.SDL_Renderer, tex: *c.SDL_Texture, w: f32, h: f32, box: Rec
     }
 }
 
-// -------------------------------------------------------------------- music
-
-/// The Music page's player, made from the asset file the first time the
-/// page wants it, and again if that file changes.
-const Tunes = struct {
-    player: ?*music.Player = null,
-    /// The asset file it was made from, and that file's stamp then.
-    from: std.ArrayList(u8) = .empty,
-    from_size: u64 = 0,
-    index: usize = 0,
-    /// Why there isn't a player, when there should be.
-    problem: []const u8 = "",
-    age: u32 = 0,
-
-    fn ensure(self: *Tunes, alloc: std.mem.Allocator, out: []const u8) void {
-        if (self.age != 0 and self.age < 60) {
-            self.age += 1;
-            return;
-        }
-        self.age = 1;
-        var buf: [4096]u8 = undefined;
-        const z = std.fmt.bufPrintSentinel(&buf, "{s}", .{out}, 0) catch return;
-        var info: c.SDL_PathInfo = undefined;
-        const size: u64 = if (c.SDL_GetPathInfo(z.ptr, &info)) info.size ^ @as(u64, @bitCast(info.modify_time)) else 0;
-        if (std.mem.eql(u8, out, self.from.items) and size == self.from_size) return;
-        self.drop(alloc);
-        self.from.appendSlice(alloc, out) catch return;
-        self.from_size = size;
-        if (size == 0) {
-            self.problem = "Build the assets first: the music comes out of them.";
-            return;
-        }
-        self.player = music.Player.init(alloc, z) catch {
-            self.problem = "The asset file has no music in it that these tools can read.";
-            return;
-        };
-        self.problem = "";
-        if (self.index >= self.player.?.songs.len) self.index = 0;
-    }
-
-    fn drop(self: *Tunes, alloc: std.mem.Allocator) void {
-        if (self.player) |p| p.deinit();
-        self.player = null;
-        self.from.clearRetainingCapacity();
-        _ = alloc;
-    }
-};
-
-fn drawMusic(ui: *Ui, alloc: std.mem.Allocator, st: *State, pg: Page) f32 {
-    const t = &st.tunes;
-    t.ensure(alloc, st.get(.out));
-
-    var y: f32 = kPageTop;
-    const songs: []const music.Song = if (t.player) |p| p.songs else &.{};
-    var buf: [64]u8 = undefined;
-    const value = if (songs.len == 0) "No songs yet" else std.fmt.bufPrint(&buf, "Song {d}, {s}  ({d} of {d})", .{ songs[t.index].number, @tagName(songs[t.index].bank), t.index + 1, songs.len }) catch "";
-    const step = ui.stepper(pg.x, y, @min(pg.w, 420), "Song", value, songs.len > 1);
-    if (step != 0 and songs.len > 0) {
-        t.index = @intCast(@mod(@as(i64, @intCast(t.index)) + step, @as(i64, @intCast(songs.len))));
-        // Changing songs while one plays changes what's playing.
-        if (t.player.?.playing != null) _ = t.player.?.play(songs[t.index]);
-    }
-    y += kFieldStep + 4;
-
-    const playing = if (t.player) |p| p.playing else null;
-    const label = if (playing != null) "\u{25a0}  Stop" else "\u{25b6}  Play";
-    if (ui.buttons(pg.x, y, &.{.{ .label = label, .enabled = songs.len != 0 }}) != null) {
-        if (playing != null) {
-            t.player.?.stop();
-        } else if (!t.player.?.play(songs[t.index])) {
-            g_logger.err("Couldn't play anything: there's no sound device to play it on.", .{});
-        }
-    }
-
-    var say_buf: [64]u8 = undefined;
-    statusLine(ui, pg.x + buttonsWidth(ui, &.{label}) + 20, y + 9, if (t.problem.len != 0)
-        t.problem
-    else if (playing) |p|
-        std.fmt.bufPrint(&say_buf, "Playing song {d}. The arrows change it.", .{p.number}) catch ""
-    else
-        "Pick a song, then Play.");
-    return y + kButtonH;
-}
-
-fn drawMsu(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window, pg: Page) f32 {
-    var y: f32 = kPageTop;
-    if (ui.field(pg.x, y, pg.w, "MSU-1 pack", st.get(.msu), "A pack's folder or .zip", mustTag(st.get(.msu), .either))) openDialog(window, .msu);
-    y += kFieldStep + 4;
-    const pack_ok = st.get(.msu).len != 0 and Must.either.satisfiedBy(st.get(.msu));
-    if (ui.buttons(pg.x, y, &.{.{ .label = "Check Pack", .enabled = !jobRunning() and pack_ok }}) != null) startJob(alloc, st, .check_msu);
-    statusLine(ui, pg.x + buttonsWidth(ui, &.{"Check Pack"}) + 20, y + 9, if (pack_ok) "Ready to look it over." else "Pick a pack's folder or .zip, or drop it on the window.");
-    return y + kButtonH;
-}
-
 // --------------------------------------------------------------- languages
 
 fn languageName(lang: Language) []const u8 {
@@ -1167,12 +1294,12 @@ fn drawLanguages(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_
     if (st.available_age == 0 or st.available_age > 60) st.refreshAvailable();
     st.available_age += 1;
 
-    var y: f32 = kPageTop;
-    if (ui.field(pg.x, y, pg.w, "Translated ROM", st.get(.lang_rom), "A German, French, Redux\u{2026} ROM", mustTag(st.get(.lang_rom), .file))) openDialog(window, .lang_rom);
+    var y: f32 = pg.top;
+    pathField(ui, window, st, pg.x, y, pg.w, "Translated ROM", .lang_rom, "A German, French, Redux\u{2026} ROM", mustTag(st.get(.lang_rom), .file));
     y += kFieldStep;
-    if (ui.field(pg.x, y, pg.w, "Work folder", st.get(.folder), "Where the extracted text goes", folderTag(st.get(.folder)))) openDialog(window, .folder);
+    pathField(ui, window, st, pg.x, y, pg.w, "Work folder", .folder, "Where the extracted text goes", folderTag(st.get(.folder)));
     y += kFieldStep;
-    if (ui.field(pg.x, y, pg.w, "Your US ROM", st.get(.rom), "The build needs it too", romTag(st))) openDialog(window, .rom);
+    pathField(ui, window, st, pg.x, y, pg.w, "Your US ROM", .rom, "The build needs it too", romTag(st));
     y += kFieldStep - 4;
 
     // Only the languages the folder has text for, which are the ones there
@@ -1232,14 +1359,14 @@ fn drawExtras(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Win
     const dialogue_ok = st.get(.dialogue).len != 0 and Must.file.satisfiedBy(st.get(.dialogue));
     const field_w = pg.w - 180;
 
-    var y: f32 = kPageTop;
-    if (ui.field(pg.x, y, field_w, "Input log from a snapshot", st.get(.snapshot), "A .sav from the saves folder", mustTag(st.get(.snapshot), .file))) openDialog(window, .snapshot);
+    var y: f32 = pg.top;
+    pathField(ui, window, st, pg.x, y, field_w, "Input log from a snapshot", .snapshot, "A .sav from the saves folder", mustTag(st.get(.snapshot), .file));
     if (ui.buttons(pg.x + field_w + 16, y + 25, &.{.{ .label = "Save Input Log", .enabled = idle and snapshot_ok, .main = false }}) != null) startJob(alloc, st, .input_log);
     y += kFieldStep;
     ui.p.text(.small, pg.x, y - 14, kTextDim, "Writes the buttons pressed since the snapshot as text, beside it.");
     y += 16;
 
-    if (ui.field(pg.x, y, field_w, "Dictionary for the dialogue", st.get(.dialogue), "A dialogue.txt, as Export writes", mustTag(st.get(.dialogue), .file))) openDialog(window, .dialogue);
+    pathField(ui, window, st, pg.x, y, field_w, "Dictionary for the dialogue", .dialogue, "A dialogue.txt, as Export writes", mustTag(st.get(.dialogue), .file));
     if (ui.buttons(pg.x + field_w + 16, y + 25, &.{.{ .label = "Find Dictionary", .enabled = idle and dialogue_ok, .main = false }}) != null) startJob(alloc, st, .text_dict);
     y += kFieldStep;
     ui.p.text(.small, pg.x, y - 14, kTextDim, "Searches for the best text compression dictionary. Takes a few minutes.");
@@ -1252,13 +1379,6 @@ fn drawExtras(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Win
 // ------------------------------------------------------------- the frame
 
 /// The update offer shows in the sidebar while there is one.
-fn updateShown() bool {
-    return switch (updater.phase()) {
-        .available, .downloading, .installing, .ready, .failed => true,
-        else => false,
-    };
-}
-
 /// The updater's labels are capitals, for the start menu's font: "V1.9",
 /// "NIGHTLY 1A2B3C4". Here they read "v1.9" and "Nightly 1a2b3c4".
 fn softLabel(label: []const u8, buf: []u8) []const u8 {
@@ -1267,46 +1387,37 @@ fn softLabel(label: []const u8, buf: []u8) []const u8 {
     return s;
 }
 
-/// The game's name, and a small gold triangle of three.
+/// The Triforce by the window's name, as the start menu's screens have it.
 fn drawBrand(ui: *Ui) void {
-    const x: f32 = 22;
-    const y: f32 = 26;
-    const s: f32 = 22;
-    const col = kBrand;
-    const fc = c.SDL_FColor{ .r = @as(f32, @floatFromInt(col.r)) / 255, .g = @as(f32, @floatFromInt(col.g)) / 255, .b = @as(f32, @floatFromInt(col.b)) / 255, .a = 1 };
-    const h = s * 0.866;
-    const pts = [_][2]f32{
-        .{ x + s / 2, y },            .{ x + s * 0.75, y + h / 2 }, .{ x + s / 4, y + h / 2 },
-        .{ x + s / 4, y + h / 2 },    .{ x + s / 2, y + h },        .{ x, y + h },
-        .{ x + s * 0.75, y + h / 2 }, .{ x + s, y + h },            .{ x + s / 2, y + h },
-    };
-    var verts: [9]c.SDL_Vertex = undefined;
-    for (pts, &verts) |p, *v| v.* = .{ .position = .{ .x = p[0], .y = p[1] }, .color = fc, .tex_coord = .{ .x = 0, .y = 0 } };
-    _ = c.SDL_RenderGeometry(ui.p.r, null, &verts, verts.len, null, 0);
-    ui.p.text(.brand, x + s + 12, y - 5, kText, "A Link to the Past DX");
-    ui.p.text(.small, x + s + 12, y + 16, kTextDim, "Tools");
+    ui.night.crest(36, 24, 26, ui.t);
+    ui.p.textEx(.headline, 66, 16, kAccentHi, start_page.kGoldDeep, 3, "Tools");
+    ui.p.textEx(.small, 68, 52, kTextFaint, kTextFaint, 1.6, "A LINK TO THE PAST DX");
 }
 
-/// Down the left: the pages, then the update offer, how the assets stand,
-/// Play and the version.
+/// Down the left: the pages, then how the assets stand, Play and the
+/// version.
 fn drawSidebar(ui: *Ui, alloc: std.mem.Allocator, st: *State) void {
     ui.p.fill(.{ .x = 0, .y = 0, .w = kSideW, .h = ui.h }, kSide);
-    ui.p.fill(.{ .x = kSideW - 1, .y = 0, .w = 1, .h = ui.h }, kBorder);
+    // Its edge, gold fading out at both ends.
+    ui.night.fade(.{ .x = kSideW - 1, .y = 0, .w = 1, .h = ui.h / 2 }, kAccent.alpha(0), kAccent.alpha(70), false);
+    ui.night.fade(.{ .x = kSideW - 1, .y = ui.h / 2, .w = 1, .h = ui.h / 2 }, kAccent.alpha(70), kAccent.alpha(0), false);
     drawBrand(ui);
+    ui.night.fade(.{ .x = 20, .y = 78, .w = kSideW - 40, .h = 1 }, kAccent.alpha(90), kAccent.alpha(0), true);
 
-    var y: f32 = 84;
+    var y: f32 = 92;
     for (std.enums.values(Screen)) |screen| {
         const row = Rect{ .x = 12, .y = y, .w = kSideW - 24, .h = 36 };
         const hit = ui.item(row, true);
         const current = st.screen == screen;
         if (hit.ring) ui.ring(row, kRadius, kSide);
+        // The start menu's own pick: a band of teal light, a gold edge and
+        // a diamond. Under the pointer, just the light.
         if (current) {
-            ui.p.fillRound(row, kRadius, kSurfaceHi);
-            ui.p.fillRound(.{ .x = row.x + 6, .y = row.y + 10, .w = 3, .h = 16 }, 1.5, kAccent);
+            ui.night.band(kr(row), true, ui.t);
         } else if (hit.lit) {
-            ui.p.fillRound(row, kRadius, kSurface);
+            ui.night.fade(kr(row), kTeal.alpha(26), kTeal.alpha(0), true);
         }
-        ui.p.text(if (current) .strong else .body, row.x + 20, row.y + 8, if (current or hit.lit) kText else kTextDim, screen.label());
+        ui.p.text(.item, row.x + 28, row.y + (row.h - ui.p.lineHeight(.item)) / 2, if (current) kText else if (hit.lit) Color.hex(0xd9cfb6) else kTextDim, screen.label());
         if (hit.pressed) st.open(screen);
         y += 38;
     }
@@ -1317,13 +1428,18 @@ fn drawSidebar(ui: *Ui, alloc: std.mem.Allocator, st: *State) void {
     const ver = if (updater.installed == .dev) "Dev build" else softLabel(updater.installedLabel(&buf), &soft);
     ui.p.text(.small, 22, ui.h - 30, kTextFaint, ver);
 
+    // The start menu's Play, gold, or a dim outline of it with nothing to
+    // play yet.
     const can_play = st.canPlay();
-    const play_rect = Rect{ .x = 16, .y = ui.h - 44 - 44, .w = kSideW - 32, .h = 44 };
+    const play_rect = Rect{ .x = 28, .y = ui.h - 44 - 46, .w = kSideW - 56, .h = 44 };
     const hit = ui.item(play_rect, can_play);
-    if (hit.ring) ui.ring(play_rect, 10, kSide);
-    ui.p.fillRound(play_rect, 10, if (!can_play) kSurface else if (hit.lit) kPlayHi else kPlay);
-    ui.p.textCentered(.strong, play_rect.x + play_rect.w / 2, play_rect.y + 12, if (can_play) kOnPlay else kTextFaint, "\u{25b6}  Play");
-    if (hit.pressed) play(alloc, st);
+    if (can_play) {
+        ui.night.playButton(kr(play_rect), "Play", hit.lit, ui.t);
+    } else {
+        ui.p.box(play_rect, play_rect.h / 2, 1, kBorder, kSurface);
+        ui.p.textEx(.button, play_rect.x + play_rect.w / 2 - ui.p.textWidthTracked(.button, "PLAY", 7) / 2, play_rect.y + (play_rect.h - ui.p.lineHeight(.button)) / 2 + 1, kTextFaint, kTextFaint, 7, "PLAY");
+    }
+    if (hit.pressed) play(alloc, ui, st);
 
     const line: struct { []const u8, []const u8, Color } = switch (st.assetsNow(alloc)) {
         .standard => .{ "Assets ready", "Built from your US ROM", kOk },
@@ -1331,48 +1447,45 @@ fn drawSidebar(ui: *Ui, alloc: std.mem.Allocator, st: *State) void {
         .missing => .{ "No assets yet", "Build them from your ROM", kWarn },
         .old => .{ "Assets out of date", "Build them again", kWarn },
     };
-    const status = Rect{ .x = 12, .y = play_rect.y - 56, .w = kSideW - 24, .h = 46 };
+    const status = Rect{ .x = 12, .y = play_rect.y - 60, .w = kSideW - 24, .h = 46 };
     // Clicking it when there's something to do goes and does it.
     const fixable = st.assets == .missing or st.assets == .old;
     const shit = ui.item(status, fixable);
     if (shit.ring) ui.ring(status, kRadius, kSide);
-    if (shit.lit) ui.p.fillRound(status, kRadius, kSurface);
+    if (shit.lit) ui.night.fade(kr(status), kTeal.alpha(26), kTeal.alpha(0), true);
     ui.p.disc(status.x + 16, status.y + 15, 4, line[2]);
     ui.p.text(.strong, status.x + 28, status.y + 5, kText, line[0]);
-    ui.p.text(.small, status.x + 28, status.y + 24, kTextDim, if (can_play) line[1] else "Keep the tools by the game");
+    ui.p.text(.small, status.x + 28, status.y + 24, kTextDim, line[1]);
     if (shit.pressed) st.open(.assets);
 
-    if (updateShown()) {
-        var lbuf: [64]u8 = undefined;
-        var sbuf: [40]u8 = undefined;
-        const label = std.fmt.bufPrint(&lbuf, "Update to {s}", .{softLabel(updater.offerLabel(), &sbuf)}) catch "Update";
-        const u = Rect{ .x = 16, .y = status.y - 48, .w = kSideW - 32, .h = 36 };
-        const uhit = ui.item(u, true);
-        if (uhit.ring) ui.ring(u, kRadius, kSide);
-        ui.p.box(u, kRadius, 1, kAccent, if (uhit.lit) kSurfaceHi else kSide);
-        ui.p.textCentered(.strong, u.x + u.w / 2, u.y + 8, kAccentHi, label);
-        if (uhit.pressed) st.openModal(ui, .update, 0);
-    }
+    // The way back to the start menu, above how the assets stand, a pill
+    // like the start menu's own Back.
+    const back = Rect{ .x = 28, .y = status.y - 46, .w = kSideW - 56, .h = 32 };
+    const bhit = ui.item(back, true);
+    if (bhit.ring) ui.ring(back, back.h / 2, kSide);
+    ui.p.box(back, back.h / 2, 1, if (bhit.lit) kAccent else kBorder, if (bhit.lit) kSurfaceHi else kSurface);
+    ui.p.textCentered(.strong, back.x + back.w / 2, back.y + (back.h - ui.p.lineHeight(.strong)) / 2, if (bhit.lit) kAccentHi else kText, "\u{2190}  Start Menu");
+    if (bhit.pressed) st.close(ui, .menu);
 }
 
 /// What the last job said, filling the rest of the page, once there's
 /// something to show.
-fn drawLog(ui: *Ui, rect: Rect) void {
+fn drawLog(ui: *Ui, rect: Rect, always: bool) void {
     if (rect.h < 80) return;
-    if (g_log_count == 0 and !jobRunning()) return;
-    ui.p.text(.strong, rect.x, rect.y, kTextDim, "Activity");
+    if (g_log_count == 0 and !jobRunning() and !always) return;
+    // Copy Log at the heading's end, saying Copied for a moment after.
+    const copied = g_copied_at != 0 and c.SDL_GetTicks() -| g_copied_at < 1500;
+    const copy_label = if (copied) "\u{2713}  Copied" else "Copy Log";
+    const copy_w = ui.p.textWidth(.small, copy_label) + 26;
+    ui.night.heading(rect.x, rect.y, rect.w - copy_w - 12, 18, "Activity");
+    const copy = Rect{ .x = rect.x + rect.w - copy_w, .y = rect.y - 4, .w = copy_w, .h = 26 };
+    const chit = ui.item(copy, g_log_count != 0);
+    if (chit.ring) ui.ring(copy, copy.h / 2, kBg);
+    ui.p.box(copy, copy.h / 2, 1, if (chit.lit) kAccent else kBorder, if (chit.lit) kSurfaceHi else kSurface);
+    ui.p.textCentered(.small, copy.x + copy.w / 2, copy.y + (copy.h - ui.p.lineHeight(.small)) / 2, if (copied) kOk else if (chit.lit) kAccentHi else kTextDim, copy_label);
+    if (chit.pressed) copyLog();
     const panel = Rect{ .x = rect.x, .y = rect.y + 26, .w = rect.w, .h = rect.h - 26 };
-    ui.p.box(panel, 10, 1, kBorder, kSurface);
-    // While a job runs, a bar slides along the top of the panel.
-    if (jobRunning()) {
-        const track = panel.w - 32;
-        const seg: f32 = 120;
-        const t: f32 = @floatFromInt(c.SDL_GetTicks() % 1400);
-        const at = (t / 1400) * (track + seg) - seg;
-        const from = @max(0, at);
-        const to = @min(track, at + seg);
-        if (to > from) ui.p.fillRound(.{ .x = panel.x + 16 + from, .y = panel.y + 1, .w = to - from, .h = 2 }, 1, kAccent);
-    }
+    ui.night.panel(kr(panel));
 
     c.SDL_LockMutex(g_log_lock);
     defer c.SDL_UnlockMutex(g_log_lock);
@@ -1416,6 +1529,10 @@ fn drawLog(ui: *Ui, rect: Rect) void {
     }
     // Scrolled further up than there is: back off to the top.
     g_log_scroll -= skip;
+    if (count == 0) {
+        ui.p.text(.small, inner.x, inner.y, kTextFaint, ui.p.fit(.small, "What a job has to say shows up here.", inner.w, &g_fit_buf));
+        return;
+    }
 
     var y = inner.y;
     var j = count;
@@ -1429,6 +1546,148 @@ fn drawLog(ui: *Ui, rect: Rect) void {
         ui.p.text(.small, inner.x, y, col, segs[j].text);
         y += kLogLineH;
     }
+}
+
+// --------------------------------------------------------------- the card
+
+/// Something to do once a job's done, on its card.
+const Step = struct {
+    label: []const u8,
+    act: enum { play, play_in, show_out, show_folder, show_snapshot, show_dialogue },
+    main: bool = false,
+};
+
+/// What makes sense after a job: play what was built, look at what was
+/// written, use the pack that was checked. After a failure, the way to
+/// what needs fixing, where there's one.
+fn nextSteps(d: *const Done, buf: *[2]Step, name_buf: []u8) []const Step {
+    if (!d.ok) {
+        buf[0] = switch (d.job) {
+            .build_from_files => .{ .label = "Show Folder", .act = .show_folder },
+            else => return buf[0..0],
+        };
+        return buf[0..1];
+    }
+    switch (d.job) {
+        .build => {
+            buf[0] = if (d.language) |l|
+                .{ .label = std.fmt.bufPrint(name_buf, "Play in {s}", .{languageName(l)}) catch "Play", .act = .play_in, .main = true }
+            else
+                .{ .label = "Play Now", .act = .play, .main = true };
+            buf[1] = .{ .label = "Show File", .act = .show_out };
+            return buf[0..2];
+        },
+        .build_from_files => {
+            buf[0] = .{ .label = "Play Now", .act = .play, .main = true };
+            buf[1] = .{ .label = "Show Folder", .act = .show_folder };
+            return buf[0..2];
+        },
+        .export_files, .extract_dialogue => buf[0] = .{ .label = "Show Folder", .act = .show_folder, .main = true },
+        .input_log => buf[0] = .{ .label = "Show File", .act = .show_snapshot, .main = true },
+        .text_dict => buf[0] = .{ .label = "Show File", .act = .show_dialogue, .main = true },
+    }
+    return buf[0..1];
+}
+
+fn doStep(alloc: std.mem.Allocator, ui: *Ui, st: *State, d: *const Done, step: Step) void {
+    switch (step.act) {
+        .play => play(alloc, ui, st),
+        .play_in => {
+            st.exit_language = d.language;
+            play(alloc, ui, st);
+        },
+        .show_out => reveal(st.get(.out)),
+        .show_folder => reveal(st.get(.folder)),
+        .show_snapshot => reveal(st.get(.snapshot)),
+        .show_dialogue => reveal(st.get(.dialogue)),
+    }
+}
+
+/// Under the page's buttons, on the page the job was started from: while it
+/// runs, what it's doing and for how long; after, whether it worked, the
+/// line that says so, what to try if it didn't, and what to do next.
+/// Returns how far down it drew.
+fn drawCard(ui: *Ui, alloc: std.mem.Allocator, st: *State, pg: Page, bottom: f32) f32 {
+    if (st.screen != g_job_screen) return bottom;
+    const running = jobRunning();
+    c.SDL_LockMutex(g_log_lock);
+    const done = g_done;
+    c.SDL_UnlockMutex(g_log_lock);
+    if (!running and done == null) return bottom;
+
+    const top = bottom + 22;
+    const failed = !running and !done.?.ok;
+    const box = Rect{ .x = pg.x, .y = top, .w = pg.w, .h = if (failed) 94 else 72 };
+    ui.night.panel(kr(box));
+    const x = box.x + 20;
+    var buf: [128]u8 = undefined;
+
+    if (running) {
+        const now = c.SDL_GetTicks();
+        // Three dots, brightening in turn, then what it's doing.
+        const t: f32 = @floatFromInt(now % 900);
+        for (0..3) |i| {
+            const phase = @mod(t / 300 - @as(f32, @floatFromInt(i)), 3);
+            ui.p.disc(x + 4 + @as(f32, @floatFromInt(i)) * 10, box.y + 25, 3, kAccent.alpha(if (phase < 1) 255 else 90));
+        }
+        ui.p.text(.strong, x + 38, box.y + 15, kAccentHi, std.fmt.bufPrint(&buf, "{s}\u{2026}", .{g_job.doing()}) catch "");
+        const secs = (now -| g_job_started) / 1000;
+        var sub_buf: [128]u8 = undefined;
+        const sub = switch (g_job) {
+            .export_files => std.fmt.bufPrint(&sub_buf, "{d}s so far, {d} files written", .{ secs, ops.exportedSoFar() }),
+            .text_dict => std.fmt.bufPrint(&sub_buf, "{d}s so far. This one takes a few minutes.", .{secs}),
+            else => std.fmt.bufPrint(&sub_buf, "{d}s so far", .{secs}),
+        } catch "";
+        ui.p.text(.small, x + 38, box.y + 40, kTextDim, sub);
+        // A bar sliding along the card's foot.
+        const track = box.w - 40;
+        const seg: f32 = 140;
+        const ft: f32 = @floatFromInt(now % 1400);
+        const at = (ft / 1400) * (track + seg) - seg;
+        const from = @max(0, at);
+        const to = @min(track, at + seg);
+        ui.p.fillRound(.{ .x = x, .y = box.y + box.h - 8, .w = track, .h = 2 }, 1, kBorder);
+        if (to > from) ui.p.fillRound(.{ .x = x + from, .y = box.y + box.h - 8, .w = to - from, .h = 2 }, 1, kTeal);
+        return box.y + box.h;
+    }
+
+    const d = &done.?;
+    // The buttons first, from the right, so the words know their room.
+    var steps_buf: [2]Step = undefined;
+    var name_buf: [48]u8 = undefined;
+    const steps = nextSteps(d, &steps_buf, &name_buf);
+    var actions: [2]Action = undefined;
+    var labels: [2][]const u8 = undefined;
+    for (steps, 0..) |s, i| {
+        const enabled = switch (s.act) {
+            .play, .play_in => st.canPlay(),
+            else => true,
+        };
+        actions[i] = .{ .label = s.label, .enabled = enabled, .main = s.main };
+        labels[i] = s.label;
+    }
+    const bw = if (steps.len == 0) 0 else buttonsWidth(ui, labels[0..steps.len]);
+    const bx = box.x + box.w - 20 - bw;
+    if (steps.len != 0) if (ui.buttons(bx, box.y + (box.h - kButtonH) / 2, actions[0..steps.len])) |i| doStep(alloc, ui, st, d, steps[i]);
+
+    // A tick or a mark in a disc, then what happened.
+    const col = if (d.ok) kOk else kWarn;
+    ui.p.disc(x + 11, box.y + 25, 11, col);
+    ui.p.textCentered(.strong, x + 11, box.y + 25 - ui.p.lineHeight(.strong) / 2, Color.hex(0x07140f), if (d.ok) "\u{2713}" else "!");
+    const tx = x + 34;
+    const room = bx - 20 - tx;
+    const title = if (d.ok) "Done" else "That didn't work";
+    ui.p.text(.strong, tx, box.y + 15, kText, title);
+    const tw = ui.p.textWidth(.strong, title);
+    const secs: f32 = @as(f32, @floatFromInt(d.ms)) / 1000;
+    ui.p.text(.small, tx + tw + 10, box.y + 17, kTextFaint, std.fmt.bufPrint(&buf, "in {d:.1}s", .{secs}) catch "");
+    var fit_buf: [400]u8 = undefined;
+    ui.p.text(.body, tx, box.y + 40, if (d.ok) kTextDim else kWarn, ui.p.fit(.body, d.line.get(), room, &fit_buf));
+    if (failed) {
+        var hint_buf: [200]u8 = undefined;
+        ui.p.text(.small, tx, box.y + 64, kTextDim, ui.p.fit(.small, d.job.hint(), room, &hint_buf));
+    }
+    return box.y + box.h;
 }
 
 fn modalRect(ui: *const Ui) Rect {
@@ -1451,13 +1710,14 @@ fn drawChoices(ui: *Ui, st: *State, labels: [2][]const u8) ?usize {
         x -= 12;
         const hit = ui.item(r, true);
         if (hit.focused) st.choice = i;
-        if (hit.ring) ui.ring(r, kRadius, kSurface);
-        if (i == 0) {
-            ui.p.fillRound(r, kRadius, if (hit.lit) kAccentHi else kAccent);
-            ui.p.textCentered(.strong, r.x + r.w / 2, r.y + 8, kOnAccent, label);
+        if (hit.ring) ui.ring(r, r.h / 2, kSurface);
+        // The start menu's answers: the picked one gold.
+        if (hit.focused or hit.lit) {
+            ui.p.box(r, r.h / 2, 1.5, kAccentHi, kButton);
+            ui.p.textCentered(.strong, r.x + r.w / 2, r.y + 9, kOnAccent, label);
         } else {
-            ui.p.box(r, kRadius, 1, kBorder, if (hit.lit) kSurfaceHi else kSurface);
-            ui.p.textCentered(.strong, r.x + r.w / 2, r.y + 8, kText, label);
+            ui.p.box(r, r.h / 2, 1, kBorder, kSurface);
+            ui.p.textCentered(.strong, r.x + r.w / 2, r.y + 9, kTextDim, label);
         }
         if (hit.pressed) pressed = i;
     }
@@ -1468,79 +1728,139 @@ fn drawModal(ui: *Ui, st: *State) void {
     ui.p.fill(.{ .x = 0, .y = 0, .w = ui.w, .h = ui.h }, Color.hex(0x000000).alpha(150));
     const box = modalRect(ui);
     ui.p.shadow(box, 14);
-    ui.p.box(box, 14, 1, kBorder, kSurface);
+    // A dark card edged in gold, with a diamond on its top like a clasp.
+    ui.p.box(box, 14, 1, kAccent.alpha(110), Color.hex(0x0c161c));
+    start_page.diamond(ui.p.r, box.x + box.w / 2, box.y, 5, kAccent);
     const x = box.x + 24;
     const title_y = box.y + 22;
     const body_y = box.y + 60;
     var buf: [96]u8 = undefined;
-    var soft: [40]u8 = undefined;
     switch (st.modal) {
-        .quit => {
-            ui.p.text(.brand, x, title_y, kText, "Quit the tools?");
-            ui.p.text(.body, x, body_y, if (jobRunning()) kWarn else kTextDim, if (jobRunning()) "A job is still running. Quitting stops it." else "Anything you've built is saved.");
-            if (drawChoices(ui, st, .{ "Quit", "Stay" })) |i| {
-                if (i == 0) st.quit = true else st.closeModal(ui);
+        .leave => {
+            // Up only while a job runs: leaving would cut it off halfway.
+            const where = switch (st.leave orelse .menu) {
+                .menu => "the start menu",
+                .play => "the game",
+                .quit => "quitting",
+            };
+            if (st.waiting) {
+                ui.p.textEx(.subtitle, x, title_y, kAccentHi, kAccent, 2, "Finishing the job\u{2026}");
+                ui.p.text(.body, x, body_y, kTextDim, std.fmt.bufPrint(&buf, "Then it's on to {s}. Esc stays here.", .{where}) catch "");
+            } else {
+                ui.p.textEx(.subtitle, x, title_y, kAccentHi, kAccent, 2, "A job is still running");
+                ui.p.text(.body, x, body_y, kTextDim, std.fmt.bufPrint(&buf, "Leaving now would cut it off. Wait, then go to {s}?", .{where}) catch "");
+                if (drawChoices(ui, st, .{ "Wait, Then Go", "Stay" })) |i| {
+                    if (i == 0) st.waiting = true else st.stay(ui);
+                }
             }
-        },
-        .update => switch (updater.phase()) {
-            .downloading, .installing, .ready => |p| {
-                const title = switch (p) {
-                    .downloading => std.fmt.bufPrint(&buf, "Downloading {s}", .{softLabel(updater.offerLabel(), &soft)}) catch "Downloading",
-                    .installing => "Installing\u{2026}",
-                    else => if (jobRunning()) "Restarting when the job's done\u{2026}" else "Restarting\u{2026}",
-                };
-                ui.p.text(.brand, x, title_y, kText, title);
-
-                const pr = updater.progress();
-                const frac: f32 = if (p != .downloading) 1 else if (pr.total == 0) 0 else @min(1, @as(f32, @floatFromInt(pr.done)) / @as(f32, @floatFromInt(pr.total)));
-                const bar = Rect{ .x = x, .y = body_y + 8, .w = box.w - 48, .h = 8 };
-                ui.p.fillRound(bar, 4, kSurfaceHi);
-                if (frac > 0) ui.p.fillRound(.{ .x = bar.x, .y = bar.y, .w = @max(bar.w * frac, 8), .h = bar.h }, 4, kAccent);
-                const mb = 1024.0 * 1024.0;
-                if (p == .downloading) {
-                    const size = std.fmt.bufPrint(&buf, "{d:.1} of {d:.1} MB. Esc cancels.", .{ @as(f32, @floatFromInt(pr.done)) / mb, @as(f32, @floatFromInt(pr.total)) / mb }) catch "";
-                    ui.p.text(.small, x, bar.y + 20, kTextDim, size);
-                }
-            },
-            .failed => {
-                ui.p.text(.brand, x, title_y, kWarn, "Couldn't update");
-                ui.p.text(.body, x, body_y, kText, updater.message());
-                ui.p.text(.body, x, body_y + 24, kTextDim, "You can get it by hand from the release page.");
-                if (drawChoices(ui, st, .{ "Open Page", "Close" })) |i| {
-                    if (i == 0) _ = c.SDL_OpenURL(updater.pageUrl().ptr);
-                    updater.dismiss();
-                    st.closeModal(ui);
-                }
-            },
-            else => {
-                ui.p.text(.brand, x, title_y, kText, std.fmt.bufPrint(&buf, "Update the tools to {s}?", .{softLabel(updater.offerLabel(), &soft)}) catch "Update?");
-                var mine: [40]u8 = undefined;
-                var mine_soft: [40]u8 = undefined;
-                var line_buf: [64]u8 = undefined;
-                ui.p.text(.body, x, body_y, kText, std.fmt.bufPrint(&line_buf, "You have {s} now.", .{softLabel(updater.installedLabel(&mine), &mine_soft)}) catch "");
-                ui.p.text(.body, x, body_y + 24, kTextDim, "It downloads from GitHub, then restarts the tools.");
-                if (drawChoices(ui, st, .{ "Update", "Not Now" })) |i| {
-                    if (i == 0) updater.install() else st.closeModal(ui);
-                }
-            },
         },
         .none => {},
     }
 }
 
-fn initialState(alloc: std.mem.Allocator) State {
+fn initialState(alloc: std.mem.Allocator, opts: Options) State {
     var st = State{};
-    st.game = game.find(&st.game_buf);
-    // Sensible starting points: a ROM in the game's folder or the current
-    // one, and the asset file where the game will look for it.
-    for ([_][]const u8{ inGameDir(alloc, "zelda3.sfc"), "zelda3.sfc", inGameDir(alloc, "zelda3.smc"), "zelda3.smc" }) |p| {
-        if (st.get(.rom).len == 0 and exists(alloc, p)) st.set(alloc, .rom, p);
-    }
-    st.set(alloc, .out, gameAssetPath(alloc, &st));
+    // Sensible starting points: the asset file where the game will look for
+    // it, and a work folder beside it.
+    st.set(alloc, .out, gameAssetPath(alloc));
     const folder = inGameDir(alloc, "zelda3_files");
     st.set(alloc, .folder, folder);
     st.set(alloc, .dialogue, std.fmt.allocPrint(alloc, "{s}{s}dialogue.txt", .{ folder, std.fs.path.sep_str }) catch "");
+    // Then whatever was picked last time.
+    if (opts.remember) loadRemembered(alloc, &st);
+    // A remembered ROM that's gone is no use; the one the start menu has,
+    // or one in the game's folder, is.
+    if (st.get(.rom).len != 0 and !exists(alloc, st.get(.rom))) st.set(alloc, .rom, "");
+    if (st.get(.rom).len == 0) {
+        if (opts.rom) |r| if (exists(alloc, r)) st.set(alloc, .rom, r);
+    }
+    for ([_][]const u8{ inGameDir(alloc, "zelda3.sfc"), "zelda3.sfc", inGameDir(alloc, "zelda3.smc"), "zelda3.smc" }) |p| {
+        if (st.get(.rom).len == 0 and exists(alloc, p)) st.set(alloc, .rom, p);
+    }
     return st;
+}
+
+/// Where the window keeps what was picked, beside zelda3.ini: a file of its
+/// own, since the start menu holds zelda3.ini open to edit and would write
+/// over anything put in it meanwhile.
+const kRememberPath = "zelda3_tools.ini";
+
+/// Every path, the ticked options and the page that was open, as `key =
+/// value` lines a person could read and fix.
+fn saveRemembered(st: *const State) void {
+    var buf: [16 * 1024]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    writeRemembered(st, &w) catch return;
+    fileio.writeWholeFile(kRememberPath, w.buffered()) catch {};
+}
+
+fn writeRemembered(st: *const State, w: *std.Io.Writer) !void {
+    try w.writeAll("# What the Tools window had picked when it was last closed.\n# Delete this file to start afresh.\n");
+    try w.print("page = {s}\n", .{@tagName(st.screen)});
+    for (std.enums.values(Field)) |f| try w.print("{s} = {s}\n", .{ @tagName(f), st.get(f) });
+    try w.print("sprites_from_png = {d}\n", .{@intFromBool(st.sprites_from_png)});
+    try w.writeAll("languages =");
+    var first = true;
+    for (st.picked, 0..) |on, i| {
+        if (!on) continue;
+        try w.print("{s}{s}", .{ if (first) " " else ",", langs.get(@fromBackingInt(@intCast(i))).code });
+        first = false;
+    }
+    try w.writeAll("\n");
+}
+
+fn loadRemembered(alloc: std.mem.Allocator, st: *State) void {
+    const text = fileio.readWholeFile(alloc, kRememberPath) catch return;
+    defer alloc.free(text);
+    readRemembered(alloc, st, text);
+}
+
+fn readRemembered(alloc: std.mem.Allocator, st: *State, text: []const u8) void {
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        const value = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        if (std.meta.stringToEnum(Field, key)) |f| {
+            if (value.len != 0) st.set(alloc, f, value);
+        } else if (std.mem.eql(u8, key, "page")) {
+            st.screen = std.meta.stringToEnum(Screen, value) orelse st.screen;
+        } else if (std.mem.eql(u8, key, "sprites_from_png")) {
+            st.sprites_from_png = std.mem.eql(u8, value, "1");
+        } else if (std.mem.eql(u8, key, "languages")) {
+            var codes = std.mem.tokenizeAny(u8, value, ", ");
+            while (codes.next()) |code| {
+                if (langs.fromCode(code)) |l| st.picked[@backingInt(l)] = true;
+            }
+        }
+    }
+}
+
+test "what the window remembers comes back as it was" {
+    const alloc = std.testing.allocator;
+    var a = State{};
+    defer a.deinit(alloc);
+    a.screen = .languages;
+    a.set(alloc, .rom, "/games/Zelda (USA).sfc");
+    a.set(alloc, .folder, "C:\\mods\\zelda = mine");
+    a.sprites_from_png = true;
+    a.picked[@backingInt(Language.de)] = true;
+    a.picked[@backingInt(Language.fr_c)] = true;
+    var buf: [4096]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    try writeRemembered(&a, &w);
+
+    var b = State{};
+    defer b.deinit(alloc);
+    readRemembered(alloc, &b, w.buffered());
+    try std.testing.expectEqual(Screen.languages, b.screen);
+    try std.testing.expectEqualStrings("/games/Zelda (USA).sfc", b.get(.rom));
+    try std.testing.expectEqualStrings("C:\\mods\\zelda = mine", b.get(.folder));
+    try std.testing.expect(b.sprites_from_png);
+    try std.testing.expect(b.picked[@backingInt(Language.de)] and b.picked[@backingInt(Language.fr_c)]);
+    try std.testing.expect(!b.picked[@backingInt(Language.es)]);
 }
 
 /// Whether the asset file at `path` is there, whether it's the one this
@@ -1575,9 +1895,9 @@ fn dropped(alloc: std.mem.Allocator, st: *State, path: []const u8) void {
         st.set(alloc, .zspr, path);
         st.gfx.index = 0;
         st.open(.graphics);
-    } else if (is(ext, ".zip") or (is_dir and st.screen == .msu)) {
-        st.set(alloc, .msu, path);
-        st.open(.msu);
+    } else if (is(ext, ".zip") or is(ext, ".7z")) {
+        // MSU-1 packs have moved to the start menu's Music screen.
+        g_logger.info("MSU-1 packs go in from Music on the start menu now: drop it there.", .{});
     } else if (is(ext, ".sav")) {
         st.set(alloc, .snapshot, path);
         st.open(.extras);
@@ -1596,41 +1916,44 @@ fn dropped(alloc: std.mem.Allocator, st: *State, path: []const u8) void {
     }
 }
 
-/// A dialog's answer, into its field. A track picked for an MSU-1 pack
-/// means the folder it's in.
+/// A dialog's answer, into its field.
 fn picked(alloc: std.mem.Allocator, st: *State, field: Field, path: []const u8) void {
-    if (field == .msu and !std.ascii.endsWithIgnoreCase(path, ".zip")) {
-        st.set(alloc, .msu, std.fs.path.dirname(path) orelse path);
-        return;
-    }
     st.set(alloc, field, path);
 }
 
+/// The page being drawn, for what draws differently on a job's own page.
+var g_drawing: Screen = .assets;
+
 fn drawFrame(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window) void {
+    g_drawing = st.screen;
     ui.begin();
     // Under a modal the window is still drawn, but only the modal takes input.
     ui.blocked = st.modal != .none;
-    ui.p.fill(.{ .x = 0, .y = 0, .w = ui.w, .h = ui.h }, kBg);
+    ui.night.night(ui.t, ui.w, ui.h, 0.5);
     // The sidebar first, so its entries keep their places in the focus order
     // whichever page is open.
     drawSidebar(ui, alloc, st);
 
     const left = kSideW + kPad;
     const pg = Page{ .x = left, .w = @min(kMaxPageW, ui.w - left - kPad), .bottom = ui.h - 28 };
-    ui.p.text(.heading, pg.x, 32, kText, st.screen.label());
+    // The page's name in the start menu's gold, what it's for, and the gold
+    // rule under both.
+    ui.p.textEx(.headline, pg.x, 18, kAccentHi, start_page.kGoldDeep, 3, st.screen.label());
     var buf: [256]u8 = undefined;
-    ui.p.text(.body, pg.x, 70, kTextDim, ui.p.fit(.body, st.screen.about(), pg.w, &buf));
+    ui.p.text(.body, pg.x, 62, kTextDim, ui.p.fit(.body, st.screen.about(), pg.w, &buf));
+    ui.night.goldRule(pg.x, 94, pg.w);
 
     const bottom = switch (st.screen) {
         .assets => drawAssets(ui, alloc, st, window, pg),
         .modding => drawModding(ui, alloc, st, window, pg),
         .graphics => drawGraphics(ui, alloc, st, window, pg),
-        .music => drawMusic(ui, alloc, st, pg),
-        .msu => drawMsu(ui, alloc, st, window, pg),
         .languages => drawLanguages(ui, alloc, st, window, pg),
         .extras => drawExtras(ui, alloc, st, window, pg),
     };
-    if (st.screen != .graphics) drawLog(ui, .{ .x = pg.x, .y = bottom + 32, .w = pg.w, .h = pg.bottom - bottom - 32 });
+    if (st.screen != .graphics) {
+        const below = drawCard(ui, alloc, st, pg, bottom);
+        drawLog(ui, .{ .x = pg.x, .y = below + 32, .w = pg.w, .h = pg.bottom - below - 32 }, false);
+    }
     if (st.modal != .none) {
         ui.blocked = false;
         drawModal(ui, st);
@@ -1638,7 +1961,7 @@ fn drawFrame(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Wind
 }
 
 /// Draws one frame of a page into a BMP with no window, for looking at the
-/// layout while working on it: `zelda3-tools gui-screenshot out.bmp [page]`,
+/// layout while working on it: `zelda3 tools gui-screenshot out.bmp [page]`,
 /// the page being assets, modding, graphics, music, msu, languages or
 /// extras.
 /// `log` lines are fed through the real log first, so it shows populated;
@@ -1647,8 +1970,9 @@ fn drawFrame(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Wind
 /// "@watch" turns on rebuilding, "@picture=N" and "@song=N" pick from those
 /// lists, "@focus=N" puts the focus on the Nth thing that can have it and
 /// shows it as the keys would, "@busy=build" shows a job running,
-/// "@update=available" (or downloading, failed...) an update on offer,
-/// "@modal=quit" or "@modal=update" a question up, "@us=path" takes path to
+/// "@done=build" and "@failed=build" that job's card as it ends (its line
+/// the first + or ! log line, "@lang=de" the language it built in),
+/// "@modal=leave" the question leaving mid-job asks, "@us=path" takes path to
 /// be a US ROM, "@scale=2" draws it as a Retina screen would, and
 /// "@size=WxH" sizes the window.
 pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]const u8, log_lines: []const [:0]const u8) !void {
@@ -1667,14 +1991,16 @@ pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]co
     defer c.SDL_DestroySurface(surface);
     const renderer = c.SDL_CreateSoftwareRenderer(surface) orelse return error.SdlRenderer;
     defer c.SDL_DestroyRenderer(renderer);
-    var paint = Paint.init(renderer, scale);
-    defer paint.deinit();
-    var st = initialState(alloc);
-    var ui = Ui{ .p = &paint, .w = w, .h = h, .focus = kMaxItems };
+    var night = Night.initFor(renderer, scale, draw.kToolStyles);
+    defer night.deinit();
+    const paint = &night.paint;
+    var st = initialState(alloc, .{ .remember = false });
+    var ui = Ui{ .p = paint, .night = &night, .w = w, .h = h, .focus = kMaxItems, .t = 4 };
     if (page_name) |name| {
         st.screen = std.meta.stringToEnum(Screen, name) orelse .assets;
     }
     var picks: ?[]const u8 = null;
+    var done_job: ?struct { Job, bool } = null;
     // Settings first, then the log.
     for (log_lines) |line| {
         if (std.mem.startsWith(u8, line, "@")) {
@@ -1690,18 +2016,23 @@ pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]co
                 st.watch = true;
             } else if (std.mem.eql(u8, key, "picture")) {
                 st.gfx.index = number;
-            } else if (std.mem.eql(u8, key, "song")) {
-                st.tunes.index = number;
             } else if (std.mem.eql(u8, key, "focus")) {
                 ui.focus = number;
                 ui.keys = true;
             } else if (std.mem.eql(u8, key, "busy")) {
                 g_job = std.meta.stringToEnum(Job, value) orelse .build;
+                g_job_screen = st.screen;
+                g_job_started = c.SDL_GetTicks() -| 7400;
                 g_job_running.store(true, .release);
-            } else if (std.mem.eql(u8, key, "update")) {
-                updater.pretend(std.meta.stringToEnum(updater.Phase, value) orelse .available, "V1.9");
+            } else if (std.mem.eql(u8, key, "done") or std.mem.eql(u8, key, "failed")) {
+                g_job_screen = st.screen;
+                done_job = .{ std.meta.stringToEnum(Job, value) orelse .build, key[0] == 'd' };
+            } else if (std.mem.eql(u8, key, "lang")) {
+                g_job_language = langs.fromCode(value);
             } else if (std.mem.eql(u8, key, "modal")) {
                 st.modal = std.meta.stringToEnum(Modal, value) orelse .none;
+                // Its second answer has the focus, as when it opens.
+                ui.focus = 1;
             } else if (std.mem.eql(u8, key, "us")) {
                 // A US ROM to build from, for a machine without one.
                 st.set(alloc, .rom, value);
@@ -1714,6 +2045,19 @@ pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]co
         if (std.mem.startsWith(u8, line, "@")) continue;
         const level: ops.Log.Level = if (std.mem.startsWith(u8, line, "!")) .err else if (std.mem.startsWith(u8, line, "+")) .ok else .info;
         logWrite(&g_log_dummy, level, if (level == .info) line else line[1..]);
+    }
+    if (done_job) |dj| {
+        // As though it ran, and logged as it went.
+        g_job_running.store(true, .release);
+        for (log_lines) |line| {
+            if (line.len > 1 and (line[0] == '+' or line[0] == '!')) {
+                if (line[0] == '!' and g_first_err.len == 0) g_first_err.set(line[1..]);
+                if (line[0] == '+' and g_first_ok.len == 0) g_first_ok.set(line[1..]);
+            }
+        }
+        g_job_started = c.SDL_GetTicks() -| 3200;
+        g_job_running.store(false, .release);
+        finishJob(dj[0], dj[1]);
     }
     st.refreshAvailable();
     if (picks) |p| {
@@ -1729,54 +2073,288 @@ pub fn screenshot(alloc: std.mem.Allocator, path: [:0]const u8, page_name: ?[]co
     if (!c.SDL_SaveBMP(surface, path.ptr)) return error.SaveFailed;
 }
 
-/// Asks GitHub about a newer version of the tools, on the channel the game's
-/// settings pick, unless they've turned checking off. The tools have no
-/// settings of their own; next to the game they share its zelda3.ini, and on
-/// their own the defaults stand: check, for releases.
-fn checkForUpdates(alloc: std.mem.Allocator) void {
-    const path = inGameDir(alloc, "zelda3.ini");
-    const z = alloc.dupeSentinel(u8, path, 0) catch return;
-    defer alloc.free(z);
-    var ini = menu.Ini.load(alloc, z.ptr) catch {
-        updater.check(.releases);
-        return;
-    };
-    defer ini.deinit();
-    if (menu.updatesOnIn(&ini)) updater.check(menu.updateChannelIn(&ini));
-}
-
 /// How many of the screen's pixels a point is, for the window where it is
 /// now: 2 on a Retina screen, 1.5 on a Windows one at 150%.
+/// What a frame does with its input once it's been read, whoever read it:
+/// moving the focus or answering the modal, taking what a file dialog
+/// picked, and noticing a job's end or the work folder changing.
+fn afterInput(alloc: std.mem.Allocator, st: *State, ui: *Ui, move_v: i32, move_h: i32, back: bool, now: u64, was_running: *bool) void {
+    switch (st.modal) {
+        .none => {
+            if (move_v != 0) ui.move(0, @floatFromInt(move_v));
+            // A chooser keeps left and right for itself.
+            if (move_h != 0) {
+                if (ui.focusAdjusts()) {
+                    ui.adjust = move_h;
+                    ui.keys = true;
+                } else ui.move(@floatFromInt(move_h), 0);
+            }
+            if (back) st.close(ui, .menu);
+        },
+        .leave => {
+            if (move_h != 0) ui.move(@floatFromInt(move_h), 0);
+            if (back) st.stay(ui);
+        },
+    }
+    c.SDL_LockMutex(g_dialog_lock);
+    if (g_dialog_result) |path| {
+        picked(alloc, st, g_dialog_field, path);
+        alloc.free(path);
+        g_dialog_result = null;
+    }
+    c.SDL_UnlockMutex(g_dialog_lock);
+
+    // A job just finished: it may have made the folder's languages, or
+    // written the folder, which isn't an edit to rebuild for.
+    const running = jobRunning();
+    if (was_running.* and !running) {
+        st.refreshAvailable();
+        // It may have built the assets the sidebar says how stand.
+        st.assets_age = 0;
+        if (g_job.writesFolder() and st.watch) {
+            st.watch_built = folderStamp(st);
+            st.watch_seen = st.watch_built;
+        }
+    }
+    was_running.* = running;
+    watchFolder(alloc, st, now);
+}
+
+// ------------------------------------------------------ in the start menu
+
+/// The tools as one of the modern start menu's screens, rather than a
+/// window of their own: the menu draws its header and footer and reads the
+/// input, and hands the tools what it read and the room between. They lay
+/// out in the window's points, as their own window did, since the menu's
+/// zoomed-up drawing has too little room for them.
+const Embedded = struct {
+    alloc: std.mem.Allocator,
+    window: ?*c.SDL_Window,
+    st: State,
+    night: Night,
+    ui: Ui = undefined,
+    was_running: bool = false,
+};
+
+var g_embedded: ?*Embedded = null;
+
+/// The room they get under the menu's header and over its footer, and the
+/// columns in it: the pages' list, the page, and what the jobs say.
+const kEmbedTop: f32 = 134;
+const kEmbedBottom: f32 = 656;
+const kEmbedLeft: f32 = 54;
+const kEmbedRight: f32 = 1226;
+const kListW: f32 = 250;
+const kActivityW: f32 = 300;
+const kGap: f32 = 24;
+
+/// Opens them in the menu's window, drawing at `scale` pixels a point.
+pub fn embedOpen(alloc: std.mem.Allocator, window: ?*c.SDL_Window, renderer: *c.SDL_Renderer, scale: f32, opts: Options) void {
+    if (g_embedded != null) return;
+    if (g_dialog_lock == null) g_dialog_lock = c.SDL_CreateMutex();
+    if (g_log_lock == null) g_log_lock = c.SDL_CreateMutex();
+    const e = alloc.create(Embedded) catch return;
+    // Baking the text sets the render scale; the menu's own is put back.
+    var sx: f32 = 1;
+    var sy: f32 = 1;
+    _ = c.SDL_GetRenderScale(renderer, &sx, &sy);
+    e.* = .{
+        .alloc = alloc,
+        .window = window,
+        .st = initialState(alloc, opts),
+        .night = Night.initFor(renderer, scale, draw.kToolStyles),
+    };
+    _ = c.SDL_SetRenderScale(renderer, sx, sy);
+    e.ui = .{ .p = &e.night.paint, .night = &e.night, .w = kEmbedRight + kEmbedLeft, .h = kEmbedBottom + 64 };
+    e.was_running = jobRunning();
+    g_embedded = e;
+}
+
+pub fn embedClose() void {
+    const e = g_embedded orelse return;
+    saveRemembered(&e.st);
+    if (e.st.gfx.tex) |t| c.SDL_DestroyTexture(t);
+    e.st.deinit(e.alloc);
+    e.night.deinit();
+    e.alloc.destroy(e);
+    g_embedded = null;
+}
+
+pub fn embedOpenNow() bool {
+    return g_embedded != null;
+}
+
+/// A frame's input, as the menu read it. Positions are in the window's
+/// points; `wheel` is in rows, up positive.
+pub const Input = struct {
+    move_v: i32 = 0,
+    move_h: i32 = 0,
+    confirm: bool = false,
+    back: bool = false,
+    clicked: bool = false,
+    moved: bool = false,
+    x: f32 = -1,
+    y: f32 = -1,
+    wheel: i32 = 0,
+};
+
+/// Takes a frame's input, before it's drawn. Says where to go once they've
+/// been left and nothing's halfway through.
+pub fn embedInput(in: Input) ?Exit {
+    const e = g_embedded orelse return .{ .to = .menu };
+    const ui = &e.ui;
+    if (in.moved or in.clicked) {
+        ui.mouse_x = in.x;
+        ui.mouse_y = in.y;
+        ui.keys = false;
+    }
+    ui.moved = in.moved;
+    ui.clicked = in.clicked;
+    ui.confirm = in.confirm;
+    if (in.confirm) ui.keys = true;
+    ui.adjust = 0;
+    if (in.wheel != 0) scrollLog(in.wheel * 3);
+    afterInput(e.alloc, &e.st, ui, in.move_v, in.move_h, in.back, c.SDL_GetTicks(), &e.was_running);
+    if (e.st.leave) |to| if (!jobRunning()) return .{
+        .to = to,
+        .language = if (to == .play) e.st.exit_language else null,
+    };
+    return null;
+}
+
+/// The system's Quit while they're up: true when they'll see to it, once
+/// the job running is done, rather than the menu going now.
+pub fn embedQuit() bool {
+    const e = g_embedded orelse return false;
+    if (!jobRunning()) return false;
+    e.st.close(&e.ui, .quit);
+    return true;
+}
+
+/// A file dropped on the window while they're up.
+pub fn embedDrop(path: []const u8) void {
+    const e = g_embedded orelse return;
+    dropped(e.alloc, &e.st, path);
+}
+
+/// Opens one of the pages by its name, for a menu screenshot.
+pub fn embedShow(name: []const u8) void {
+    const e = g_embedded orelse return;
+    if (std.meta.stringToEnum(Screen, name)) |screen| e.st.screen = screen;
+}
+
+/// Draws them, at `scale` pixels a point, and puts the menu's render scale
+/// back after.
+pub fn embedDraw(t: f32, scale: f32) void {
+    const e = g_embedded orelse return;
+    const r = e.night.paint.r;
+    var sx: f32 = 1;
+    var sy: f32 = 1;
+    _ = c.SDL_GetRenderScale(r, &sx, &sy);
+    defer _ = c.SDL_SetRenderScale(r, sx, sy);
+    e.night.paint.setScale(scale);
+    _ = c.SDL_SetRenderScale(r, scale, scale);
+    const ui = &e.ui;
+    ui.t = t;
+    drawEmbedded(ui, e.alloc, &e.st, e.window);
+    // Each press is for the frame it came in.
+    ui.clicked = false;
+    ui.confirm = false;
+    ui.moved = false;
+    ui.adjust = 0;
+}
+
+fn drawEmbedded(ui: *Ui, alloc: std.mem.Allocator, st: *State, window: ?*c.SDL_Window) void {
+    g_drawing = st.screen;
+    ui.begin();
+    ui.blocked = st.modal != .none;
+
+    // The pages down the left, each with a few words on it, the way the
+    // Music screen lists its packs; how the assets stand at the foot.
+    const list = Rect{ .x = kEmbedLeft, .y = kEmbedTop, .w = kListW, .h = kEmbedBottom - kEmbedTop };
+    ui.night.panel(kr(list));
+    var y = list.y + 14;
+    for (std.enums.values(Screen)) |screen| {
+        const row = Rect{ .x = list.x + 10, .y = y, .w = list.w - 20, .h = 56 };
+        const hit = ui.item(row, true);
+        const current = st.screen == screen;
+        if (hit.ring) ui.ring(row, kRadius, kSurface);
+        if (current) {
+            ui.night.band(kr(row), true, ui.t);
+        } else if (hit.lit) {
+            ui.night.fade(kr(row), kTeal.alpha(26), kTeal.alpha(0), true);
+        }
+        ui.p.text(.item, row.x + 30, row.y + 8, if (current) kText else if (hit.lit) Color.hex(0xd9cfb6) else kTextDim, screen.label());
+        ui.p.text(.small, row.x + 30, row.y + 32, kTextFaint, screen.short());
+        if (hit.pressed) st.open(screen);
+        y += 60;
+    }
+    const line: struct { []const u8, []const u8, Color } = switch (st.assetsNow(alloc)) {
+        .standard => .{ "Assets ready", "Built from your US ROM", kOk },
+        .custom => .{ "Custom assets", "From a mod or translation", kOk },
+        .missing => .{ "No assets yet", "Build them from your ROM", kWarn },
+        .old => .{ "Assets out of date", "Build them again", kWarn },
+    };
+    const status = Rect{ .x = list.x + 10, .y = list.y + list.h - 60, .w = list.w - 20, .h = 46 };
+    ui.night.fade(.{ .x = status.x + 10, .y = status.y - 10, .w = status.w - 20, .h = 1 }, kAccent.alpha(70), kAccent.alpha(0), true);
+    // Clicking it when there's something to do goes and does it.
+    const fixable = st.assets == .missing or st.assets == .old;
+    const shit = ui.item(status, fixable);
+    if (shit.ring) ui.ring(status, kRadius, kSurface);
+    if (shit.lit) ui.night.fade(kr(status), kTeal.alpha(26), kTeal.alpha(0), true);
+    ui.p.disc(status.x + 16, status.y + 15, 4, line[2]);
+    ui.p.text(.strong, status.x + 30, status.y + 5, kText, line[0]);
+    ui.p.text(.small, status.x + 30, status.y + 24, kTextDim, line[1]);
+    if (shit.pressed) st.open(.assets);
+
+    // The page, with what it's for over it; what the jobs say beside it,
+    // except beside the pictures, which want all the room there is.
+    const x = list.x + list.w + kGap;
+    const wide = st.screen == .graphics;
+    const w = (if (wide) kEmbedRight else kEmbedRight - kActivityW - kGap) - x;
+    const about = st.screen.about();
+    const cut = ui.p.breakAt(.body, about, w);
+    ui.p.text(.body, x, kEmbedTop, kTextDim, about[0..cut]);
+    const rest = std.mem.trimStart(u8, about[cut..], " ");
+    var buf: [256]u8 = undefined;
+    var rule = kEmbedTop + 32;
+    if (rest.len != 0) {
+        ui.p.text(.body, x, kEmbedTop + 20, kTextDim, ui.p.fit(.body, rest, w, &buf));
+        rule += 20;
+    }
+    ui.night.goldRule(x, rule, w);
+    const pg = Page{ .x = x, .w = w, .bottom = kEmbedBottom, .top = rule + 18 };
+    const bottom = switch (st.screen) {
+        .assets => drawAssets(ui, alloc, st, window, pg),
+        .modding => drawModding(ui, alloc, st, window, pg),
+        .graphics => drawGraphics(ui, alloc, st, window, pg),
+        .languages => drawLanguages(ui, alloc, st, window, pg),
+        .extras => drawExtras(ui, alloc, st, window, pg),
+    };
+    if (!wide) {
+        _ = drawCard(ui, alloc, st, pg, bottom);
+        // Its Copy Log pill stands a little proud of the heading.
+        drawLog(ui, .{ .x = kEmbedRight - kActivityW, .y = kEmbedTop + 4, .w = kActivityW, .h = kEmbedBottom - kEmbedTop - 4 }, true);
+    }
+    if (st.modal != .none) {
+        ui.blocked = false;
+        drawModal(ui, st);
+    }
+}
+
 fn windowScale(window: *c.SDL_Window) f32 {
     const s = c.SDL_GetWindowDisplayScale(window);
     return if (s > 0) s else 1;
 }
 
-pub fn run(alloc: std.mem.Allocator) !void {
-    kit.configureJoysticks();
-    if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_GAMEPAD | c.SDL_INIT_AUDIO)) {
-        std.debug.print("Could not start SDL: {s}\n", .{c.SDL_GetError()});
-        return error.SdlInit;
-    }
-    defer c.SDL_Quit();
-    // Windows sizes a window in pixels and says how big its points are on
-    // the side; a Mac or Wayland sizes it in points already, and says 1.
-    const content = c.SDL_GetDisplayContentScale(c.SDL_GetPrimaryDisplay());
-    const start: f32 = if (content > 0) content else 1;
-    const window = c.SDL_CreateWindow(
-        "ALttP DX Tools",
-        @intFromFloat(kWindowW * start),
-        @intFromFloat(kWindowH * start),
-        c.SDL_WINDOW_HIGH_PIXEL_DENSITY | c.SDL_WINDOW_RESIZABLE,
-    ) orelse return error.SdlWindow;
-    defer c.SDL_DestroyWindow(window);
-    _ = c.SDL_SetWindowMinimumSize(window, @intFromFloat(kMinW * start), @intFromFloat(kMinH * start));
-    const renderer = c.SDL_CreateRenderer(window, null) orelse return error.SdlRenderer;
-    defer c.SDL_DestroyRenderer(renderer);
-    _ = c.SDL_SetRenderVSync(renderer, 1);
-    g_dialog_lock = c.SDL_CreateMutex();
-    defer c.SDL_DestroyMutex(g_dialog_lock);
-    g_log_lock = c.SDL_CreateMutex();
+/// Runs the tools in the start menu's window until they're closed, and says
+/// where to go next. The window is the menu's: it comes in sized for the
+/// tools and goes back to the menu as it was, render scale aside, which
+/// the menu sets again.
+pub fn runIn(alloc: std.mem.Allocator, window: *c.SDL_Window, renderer: *c.SDL_Renderer, opts: Options) Exit {
+    // Made once and kept: a file dialog can answer after the tools close.
+    if (g_dialog_lock == null) g_dialog_lock = c.SDL_CreateMutex();
+    if (g_log_lock == null) g_log_lock = c.SDL_CreateMutex();
 
     const arrow = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT);
     const hand = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER);
@@ -1785,18 +2363,11 @@ pub fn run(alloc: std.mem.Allocator) !void {
         if (hand) |h| c.SDL_DestroyCursor(h);
     }
 
-    // On Windows the updater names the tools' files from their own folder,
-    // as the game does from its.
-    if (builtin.os.tag == .windows) {
-        if (c.SDL_GetBasePath()) |base| fileio.setWorkingDirectory(base) catch {};
-    }
-    updater.cleanUp();
-    checkForUpdates(alloc);
-
-    var st = initialState(alloc);
+    var st = initialState(alloc, opts);
     defer {
-        st.tunes.drop(alloc);
+        saveRemembered(&st);
         if (st.gfx.tex) |t| c.SDL_DestroyTexture(t);
+        _ = c.SDL_SetCursor(c.SDL_GetDefaultCursor());
     }
 
     // Any pad can drive the window, and one plugged in later works too.
@@ -1811,12 +2382,18 @@ pub fn run(alloc: std.mem.Allocator) !void {
     var vrepeat = kit.Repeat{};
     var hrepeat = kit.Repeat{};
 
-    var paint = Paint.init(renderer, windowScale(window));
-    defer paint.deinit();
-    var ui = Ui{ .p = &paint };
+    var night = Night.initFor(renderer, windowScale(window), draw.kToolStyles);
+    defer night.deinit();
+    const paint = &night.paint;
+    var ui = Ui{ .p = paint, .night = &night };
     var was_running = false;
     var cursor_hand = false;
-    while (!st.quit) {
+    while (true) {
+        // Told to go, and nothing's halfway through: go.
+        if (st.leave) |to| if (!jobRunning()) return .{
+            .to = to,
+            .language = if (to == .play) st.exit_language else null,
+        };
         const now = c.SDL_GetTicks();
         ui.moved = false;
         ui.clicked = false;
@@ -1827,13 +2404,20 @@ pub fn run(alloc: std.mem.Allocator) !void {
         // counts; the poll below only decides when a held direction repeats.
         var tap_v: i32 = 0;
         var tap_h: i32 = 0;
+        // The close button means back to the menu; the system's Quit, which
+        // also follows a last window closing, means out.
+        var closed = false;
 
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event)) {
             // Mouse positions in points, as everything's laid out.
             _ = c.SDL_ConvertEventToRenderCoordinates(renderer, &event);
             switch (event.type) {
-                c.SDL_EVENT_QUIT => st.quit = true,
+                c.SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
+                    closed = true;
+                    st.close(&ui, .menu);
+                },
+                c.SDL_EVENT_QUIT => if (!closed) st.close(&ui, .quit),
                 c.SDL_EVENT_GAMEPAD_ADDED => pads.open(event.gdevice.which),
                 c.SDL_EVENT_GAMEPAD_REMOVED => pads.close(event.gdevice.which),
                 c.SDL_EVENT_MOUSE_MOTION => {
@@ -1913,58 +2497,12 @@ pub fn run(alloc: std.mem.Allocator) !void {
             hrepeat.arm(move_h, now);
         } else move_h = hrepeat.step(hdir, now);
 
-        switch (st.modal) {
-            .none => {
-                if (move_v != 0) ui.move(0, @floatFromInt(move_v));
-                // A chooser keeps left and right for itself.
-                if (move_h != 0) {
-                    if (ui.focusAdjusts()) {
-                        ui.adjust = move_h;
-                        ui.keys = true;
-                    } else ui.move(@floatFromInt(move_h), 0);
-                }
-                if (back) st.openModal(&ui, .quit, 1);
-            },
-            .quit => {
-                if (move_h != 0) ui.move(@floatFromInt(move_h), 0);
-                if (back) st.closeModal(&ui);
-            },
-            .update => switch (updater.phase()) {
-                .downloading => if (back) updater.cancel(),
-                .installing, .ready => {},
-                else => {
-                    if (move_h != 0) ui.move(@floatFromInt(move_h), 0);
-                    if (back) {
-                        updater.dismiss();
-                        st.closeModal(&ui);
-                    }
-                },
-            },
-        }
-        c.SDL_LockMutex(g_dialog_lock);
-        if (g_dialog_result) |path| {
-            picked(alloc, &st, g_dialog_field, path);
-            alloc.free(path);
-            g_dialog_result = null;
-        }
-        c.SDL_UnlockMutex(g_dialog_lock);
-
-        // A job just finished: it may have made the folder's languages, or
-        // written the folder, which isn't an edit to rebuild for.
-        const running = jobRunning();
-        if (was_running and !running) {
-            st.refreshAvailable();
-            if (g_job.writesFolder() and st.watch) {
-                st.watch_built = folderStamp(&st);
-                st.watch_seen = st.watch_built;
-            }
-        }
-        was_running = running;
-        watchFolder(alloc, &st, now);
+        afterInput(alloc, &st, &ui, move_v, move_h, back, now, &was_running);
 
         // The window may have moved to a screen with other pixels, or been
         // resized.
         paint.setScale(windowScale(window));
+        ui.t = @as(f32, @floatFromInt(now)) / 1000;
         var pw: c_int = 0;
         var ph: c_int = 0;
         _ = c.SDL_GetCurrentRenderOutputSize(renderer, &pw, &ph);
@@ -1976,12 +2514,6 @@ pub fn run(alloc: std.mem.Allocator) !void {
         if (ui.over_any != cursor_hand) {
             cursor_hand = ui.over_any;
             _ = c.SDL_SetCursor(if (cursor_hand) hand else arrow);
-        }
-
-        // Installed: start the new tools, once no job is halfway through.
-        if (updater.phase() == .ready and !running) {
-            _ = updater.restart();
-            st.quit = true;
         }
     }
 }

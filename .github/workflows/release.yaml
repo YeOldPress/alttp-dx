@@ -89,9 +89,8 @@ jobs:
     # An explicit target also means a baseline CPU rather than the runner's.
     - name: Build
       run: zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-macos.11.0 --prefix out -Dsdl-include="$PWD/sdl3/include" -Dsdl-lib="$PWD/sdl3/lib" -Dversion=${{ needs.plan.outputs.name }} -Dcommit=${{ needs.plan.outputs.ref }}
-    # The game and the asset tools each get a bundle; both keep their
-    # files in the same data directory.
-    - name: Make the app bundles
+    # One bundle: the asset tools are in the game.
+    - name: Make the app bundle
       env:
         VERSION: ${{ needs.plan.outputs.name }}
       run: |
@@ -120,7 +119,6 @@ jobs:
           done
         }
         bundle ALTTP-DX zelda3 Info.plist
-        bundle zelda3-tools zelda3-tools ToolsInfo.plist
     - name: Check the bundle starts
       run: |
         # It should settle in the data directory and write its ini there.
@@ -131,21 +129,13 @@ jobs:
         # The updater compares this with what's released, so it had better be right.
         ALTTP-DX.app/Contents/MacOS/zelda3 --version 2>&1 | grep -F "${{ needs.plan.outputs.name }} ${{ needs.plan.outputs.ref }}"
     - name: Check the tools start
-      run: |
-        zelda3-tools.app/Contents/MacOS/zelda3-tools help
-        # The tools update themselves too, from the version they report.
-        zelda3-tools.app/Contents/MacOS/zelda3-tools version 2>&1 | grep -F "${{ needs.plan.outputs.name }} ${{ needs.plan.outputs.ref }}"
-    # Two downloads: the game, and the tools for modding and languages.
+      run: ALTTP-DX.app/Contents/MacOS/zelda3 tools help
     - name: Archive
-      run: |
-        ditto -c -k --keepParent ALTTP-DX.app alttp-dx-${{ needs.plan.outputs.name }}-macos-arm64.zip
-        ditto -c -k --keepParent zelda3-tools.app zelda3-tools-${{ needs.plan.outputs.name }}-macos-arm64.zip
+      run: ditto -c -k --keepParent ALTTP-DX.app alttp-dx-${{ needs.plan.outputs.name }}-macos-arm64.zip
     - uses: actions/upload-artifact@v7
       with:
         name: Mac
-        path: |
-          alttp-dx-${{ needs.plan.outputs.name }}-macos-arm64.zip
-          zelda3-tools-${{ needs.plan.outputs.name }}-macos-arm64.zip
+        path: alttp-dx-${{ needs.plan.outputs.name }}-macos-arm64.zip
 
   # Built in an Ubuntu 22.04 container so the AppImage asks for no newer glibc
   # than 2.35. Distro SDL3 packages link against a newer one, so SDL3 is built
@@ -185,8 +175,7 @@ jobs:
     # An explicit target also means a baseline CPU rather than the runner's.
     - name: Build
       run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux-gnu.2.35 --prefix out -Dsdl-include="$PWD/sdl3/include" -Dsdl-lib="$PWD/sdl3/lib" -Dversion=${{ needs.plan.outputs.name }} -Dcommit=${{ needs.plan.outputs.ref }}
-    # Two AppImages from the one build: the game, and the tools.
-    - name: Make the AppImages
+    - name: Make the AppImage
       run: |
         curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
         echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool" | sha256sum -c -
@@ -204,8 +193,7 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool $dir $1-${{ needs.plan.outputs.name }}-x86_64.AppImage
         }
         appimage alttp-dx zelda3 src/platform/linux
-        appimage zelda3-tools zelda3-tools src/platform/linux/tools
-    - name: Check the AppImages start
+    - name: Check the AppImage starts
       run: |
         # The game should settle in the data directory and write its ini there.
         dir=$(APPIMAGE_EXTRACT_AND_RUN=1 ./alttp-dx-${{ needs.plan.outputs.name }}-x86_64.AppImage --data-dir)
@@ -213,14 +201,11 @@ jobs:
         case "$dir" in *".local/share/alttp-dx") ;; *) exit 1 ;; esac
         test -f "$dir/zelda3.ini"
         APPIMAGE_EXTRACT_AND_RUN=1 ./alttp-dx-${{ needs.plan.outputs.name }}-x86_64.AppImage --version 2>&1 | grep -F "${{ needs.plan.outputs.name }} ${{ needs.plan.outputs.ref }}"
-        APPIMAGE_EXTRACT_AND_RUN=1 ./zelda3-tools-${{ needs.plan.outputs.name }}-x86_64.AppImage help
-        APPIMAGE_EXTRACT_AND_RUN=1 ./zelda3-tools-${{ needs.plan.outputs.name }}-x86_64.AppImage version 2>&1 | grep -F "${{ needs.plan.outputs.name }} ${{ needs.plan.outputs.ref }}"
+        APPIMAGE_EXTRACT_AND_RUN=1 ./alttp-dx-${{ needs.plan.outputs.name }}-x86_64.AppImage tools help
     - uses: actions/upload-artifact@v7
       with:
         name: Linux
-        path: |
-          alttp-dx-${{ needs.plan.outputs.name }}-x86_64.AppImage
-          zelda3-tools-${{ needs.plan.outputs.name }}-x86_64.AppImage
+        path: alttp-dx-${{ needs.plan.outputs.name }}-x86_64.AppImage
 
   package-windows:
     name: package for Windows
@@ -248,25 +233,22 @@ jobs:
     - name: Package
       shell: pwsh
       run: |
-        New-Item -ItemType Directory pkg\alttp-dx, pkg\zelda3-tools | Out-Null
+        New-Item -ItemType Directory pkg\alttp-dx | Out-Null
         Copy-Item out\bin\zelda3.exe, "$env:SDL3_ROOT\bin\SDL3.dll", zelda3.ini, README.md, LICENSE.txt pkg\alttp-dx\
-        Copy-Item out\bin\zelda3-tools.exe, "$env:SDL3_ROOT\bin\SDL3.dll", LICENSE.txt pkg\zelda3-tools\
         Compress-Archive pkg\alttp-dx "alttp-dx-${{ needs.plan.outputs.name }}-windows-x86_64.zip"
-        Compress-Archive pkg\zelda3-tools "zelda3-tools-${{ needs.plan.outputs.name }}-windows-x86_64.zip"
-    - name: Check the tools start
+    - name: Check the game starts
       shell: pwsh
       run: |
-        pkg\zelda3-tools\zelda3-tools.exe help
+        pkg\alttp-dx\zelda3.exe tools help
         if ($LASTEXITCODE -ne 0) { exit 1 }
-        # Through cmd, which hands back stderr as plain text.
-        $ver = (cmd /c "pkg\zelda3-tools\zelda3-tools.exe version 2>&1" | Out-String)
+        # Through cmd, which hands back stderr as plain text. The updater
+        # compares this with what's released, so it had better be right.
+        $ver = (cmd /c "pkg\alttp-dx\zelda3.exe --version 2>&1" | Out-String)
         if (-not $ver.Contains("${{ needs.plan.outputs.name }} ${{ needs.plan.outputs.ref }}")) { Write-Output $ver; exit 1 }
     - uses: actions/upload-artifact@v7
       with:
         name: Windows
-        path: |
-          alttp-dx-${{ needs.plan.outputs.name }}-windows-x86_64.zip
-          zelda3-tools-${{ needs.plan.outputs.name }}-windows-x86_64.zip
+        path: alttp-dx-${{ needs.plan.outputs.name }}-windows-x86_64.zip
 
   release:
     name: publish
