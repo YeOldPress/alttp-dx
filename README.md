@@ -138,6 +138,9 @@ Settings. Shadows, glow and HD Water/Lava need a GPU.
 building the assets, and Play. Press Y or I on any setting to see what it
 does. Turn the menu off with **Start Menu** in Settings.
 
+The menu plays the file select's music softly while it's open (the MSU
+pack's when MSU is on); turn it off with **Menu Music** under General.
+
 **In the game**, press Select. The menu slides down with Continue, Save and
 Continue, and Save and Quit, and the settings on the pages after it, L and R
 to move between them. Select again puts it away. The player select screen has

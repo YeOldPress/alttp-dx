@@ -8,6 +8,7 @@ const util = @import("util.zig");
 const audio = @import("audio.zig");
 const rumble = @import("rumble.zig");
 const menu = @import("menu.zig");
+const preview_boot = @import("preview_boot.zig");
 const msu_import = @import("msu_import.zig");
 /// config.h's kMsuEnabled_MsuDeluxe.
 const kMsuEnabledDeluxe: u8 = 2;
@@ -416,6 +417,46 @@ fn emuRenderToFile(rom: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u8
     return 0;
 }
 
+/// `--preview <options> <script> <out.bmp>`: --render from power-on with its
+/// options as an argument rather than the environment, "ROOM=4|CRT=off|
+/// SCALE=2|SET=Graphics.Particles=0;Graphics.HdWater=1", which is how the
+/// start menu asks for its pictures of the settings (setting_previews.zig).
+var g_preview_spec: ?[]const u8 = null;
+var g_preview_dash = "-".*;
+var g_preview_argv: [3][*:0]u8 = undefined;
+
+/// One of --render's options: from --preview's argument when there is one,
+/// or else the environment.
+fn renderOpt(comptime name: []const u8, buf: []u8) ?[]const u8 {
+    if (g_preview_spec) |spec| {
+        var it = std.mem.splitScalar(u8, spec, '|');
+        while (it.next()) |kv| {
+            if (kv.len > name.len and std.mem.startsWith(u8, kv, name) and kv[name.len] == '=') {
+                const v = kv[name.len + 1 ..];
+                const n = @min(v.len, buf.len);
+                @memcpy(buf[0..n], v[0..n]);
+                return buf[0..n];
+            }
+        }
+        return null;
+    }
+    return if (std.c.getenv(name ++ "")) |v| std.mem.span(v) else null;
+}
+
+/// SET="Graphics.Particles=0;Graphics.HdWater=1": settings over zelda3.ini's
+/// for a picture, applied before the game's set up so even the screen's
+/// shape follows them.
+fn applyRenderSets() void {
+    var buf: [512]u8 = undefined;
+    const sets = renderOpt("SET", &buf) orelse return;
+    var it = std.mem.tokenizeScalar(u8, sets, ';');
+    while (it.next()) |kv| {
+        const dot = std.mem.indexOfScalar(u8, kv, '.') orelse continue;
+        const eq = std.mem.indexOfScalar(u8, kv, '=') orelse continue;
+        if (eq < dot or !config.applySetting(kv[0..dot], kv[dot + 1 .. eq], kv[eq + 1 ..])) std.debug.print("--render: SET {s}?\n", .{kv});
+    }
+}
+
 /// The --render path: load a chapter snapshot, play the script, and write the
 /// frame it ends on. Runs before SDL is started, so no window ever opens.
 fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u8) c_int {
@@ -435,6 +476,20 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
         };
         SaveLoadSlot(kSaveLoad_Load, 256 + ref);
     }
+    // ROOM=n (with "-") boots from power-on straight into dungeon entrance
+    // n, the way the start menu's pictures of the settings are taken.
+    var opt_buf: [512]u8 = undefined;
+    if (renderOpt("ROOM", &opt_buf)) |e| preview_boot.entrance = std.fmt.parseInt(u8, e, 0) catch null;
+    // DARK=1 makes it a Dark World file, for that world's dungeons, and
+    // ROOMID=n puts it in room n of the entrance's dungeon instead.
+    preview_boot.dark_world = renderOpt("DARK", &opt_buf) != null;
+    if (renderOpt("ROOMID", &opt_buf)) |rid| preview_boot.room = std.fmt.parseInt(u16, rid, 0) catch null;
+    // OUTSIDE=n boots onto the overworld where room n's exit comes out.
+    if (renderOpt("OUTSIDE", &opt_buf)) |o| preview_boot.outside = std.fmt.parseInt(u16, o, 0) catch null;
+    // BIRD=k boots onto the overworld at the flute's spot k, 0 to 7, and
+    // SPOT=lake at one of preview_boot's own.
+    if (renderOpt("BIRD", &opt_buf)) |o| preview_boot.bird = std.fmt.parseInt(c_int, o, 0) catch null;
+    if (renderOpt("SPOT", &opt_buf)) |o| preview_boot.spot = preview_boot.spotNamed(o);
     // ENTRANCE=n goes in through dungeon entrance n first (0x.. for hex), the
     // way continuing a save made in a dungeon does: a way to any room.
     if (std.c.getenv("ENTRANCE")) |e| {
@@ -479,9 +534,10 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
         }
     }
 
-    if (std.c.getenv("ENTRANCE") != null) std.debug.print("room 0x{x:0>3}, lights out {d}, lantern {d}, lit torches {d}\n", .{
+    if (std.c.getenv("ENTRANCE") != null or renderOpt("ROOM", &opt_buf) != null) std.debug.print("room 0x{x:0>3}, lights out {d}, lantern {d}, lit torches {d}, layers 0x{x:0>2}/0x{x:0>2}\n", .{
         vars.dungeon_room_index.*,            vars.dung_want_lights_out.*,
         vars.hdr_dungeon_dark_with_lantern.*, vars.dung_num_lit_torches.*,
+        vars.TM_copy.*,                       vars.TS_copy.*,
     });
 
     const width: usize = @intCast(g_snes_width);
@@ -490,14 +546,15 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
     defer std.heap.c_allocator.free(pixels);
     // One pixel per SNES pixel, so no 4x Mode 7. With CRT=, the frame's lit
     // by the GPU, as the window does it.
-    const crt_name = std.c.getenv("CRT");
+    var crt_buf: [32]u8 = undefined;
+    const crt_name = renderOpt("CRT", &crt_buf);
     lighting.g_gpu = crt_name != null;
     ZeldaDrawPpuFrame(@ptrCast(pixels.ptr), width * 4, g_ppu_render_flags & ~kPpuRenderFlags_4x4Mode7);
     title_dx.drawOver(@ptrCast(pixels.ptr), width * 4, width, height, 1);
     settings_menu.drawOver(@ptrCast(pixels.ptr), width * 4, width, height, 1);
     lighting.g_gpu = false;
     const light = lighting.takeGpuFrame(@ptrCast(pixels.ptr), width * 4);
-    if (crt_name) |name| return crtShot(pixels, width, height, std.mem.span(name), out, light);
+    if (crt_name) |name| return crtShot(pixels, width, height, name, out, light);
     frame_capture.writeBmp(out, pixels, width, height) catch |err| {
         std.debug.print("--render: could not write {s}: {s}\n", .{ out, @errorName(err) });
         return 1;
@@ -515,9 +572,13 @@ fn crtShot(pixels: []u32, width: usize, height: usize, name: []const u8, out: [*
         std.debug.print("--render: CRT={s}? off, scanlines, arcade, soft, tv, composite or lcd\n", .{name});
         return 1;
     };
-    const scale: usize = if (std.c.getenv("SCALE")) |s| std.fmt.parseInt(usize, std.mem.span(s), 10) catch 3 else 3;
+    var scale_buf: [16]u8 = undefined;
+    const scale: usize = if (renderOpt("SCALE", &scale_buf)) |s| std.fmt.parseInt(usize, s, 10) catch 3 else 3;
     const out_w: c_int = @intCast(width * scale);
     const out_h: c_int = @intCast(height * scale);
+    // No Dock icon on a Mac for a window nobody sees, which matters when the
+    // start menu is making pictures this way one after another.
+    _ = c.SDL_SetHint(c.SDL_HINT_MAC_BACKGROUND_APP, "1");
     if (!c.SDL_Init(c.SDL_INIT_VIDEO)) return 1;
     defer c.SDL_Quit();
     g_window = c.SDL_CreateWindow("CRT", out_w, out_h, c.SDL_WINDOW_HIDDEN) orelse return 1;
@@ -1059,6 +1120,13 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         argc = 0;
         menu.enterDataDirectory();
     }
+    if (argc == 4 and strcmp(argv[0], "--preview") == 0) {
+        g_preview_spec = std.mem.span(argv[1]);
+        g_preview_argv = .{ &g_preview_dash, argv[2], argv[3] };
+        render_request = &g_preview_argv;
+        argc = 0;
+        menu.enterDataDirectory();
+    }
 
     // Flags that do one job and exit rather than starting the game.
     if (argc == 1) {
@@ -1129,6 +1197,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         }
     }
     ParseConfigFile(config_file);
+    if (render_request != null) applyRenderSets();
     if (rando_rom) |path| {
         // A seed needs none of the port: no asset file, no game state.
         const mode = tracker.Mode.fromName(config.g_tracker) orelse .panel;

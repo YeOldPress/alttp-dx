@@ -3,6 +3,7 @@
 const std = @import("std");
 const vars = @import("variables.zig");
 const messaging = @import("messaging.zig");
+const preview_boot = @import("preview_boot.zig");
 const rtl = @import("zelda_rtl.zig");
 const audio = @import("audio.zig");
 const select_file = @import("select_file.zig");
@@ -657,6 +658,22 @@ pub export fn Module05_LoadFile() callconv(.c) void { // 828136
     vars.sprite_gfx_subset_3.* = 70;
     vars.word_7E02CD.* = 0x200;
     vars.virq_trigger.* = 48;
+    // Booting onto the overworld for a picture: where the room's exit leads,
+    // the way a Dark World file saved outdoors loads.
+    if (preview_boot.outside != null or preview_boot.bird != null or preview_boot.spot != null) {
+        const r = preview_boot.outside orelse 0;
+        Hud_SearchForEquippedItem();
+        Hud_Rebuild();
+        Hud_UpdateEquippedItem();
+        vars.player_is_indoors.* = 0;
+        vars.death_var5.* = 0;
+        vars.death_var4.* = 0;
+        vars.dungeon_room_index.* = r;
+        vars.main_module_index.* = 8;
+        vars.submodule_index.* = 0;
+        vars.subsubmodule_index.* = 0;
+        return;
+    }
     // Saved inside a dungeon: back in through its entrance, as after falling
     // in battle there, rather than the choice of places to start.
     if (messaging.dungeonContinueEntrance()) |entrance| {

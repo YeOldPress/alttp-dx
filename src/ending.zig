@@ -7,6 +7,7 @@ const vars = @import("variables.zig");
 const rtl = @import("zelda_rtl.zig");
 const rtl_types = @import("zelda_rtl_types.zig");
 const features = @import("features.zig");
+const preview_boot = @import("preview_boot.zig");
 const main_mod = @import("main.zig");
 const tables = @import("ending_tables.zig");
 const load_gfx = @import("load_gfx.zig");
@@ -628,6 +629,12 @@ pub export fn Polyhedral_InitializeThread() callconv(.c) void {
 pub export fn Module00_Intro() callconv(.c) void {
     const skip_at: u8 = if (features.enhanced_features0.* & features.kFeatures0_SkipIntroOnKeypress != 0) 4 else 8;
 
+    // Booting into a room for a picture: on to the file select as soon as
+    // memory's set up.
+    if (preview_boot.active() and vars.submodule_index.* >= 2) {
+        FadeMusicAndResetSRAMMirror();
+        return;
+    }
     if (vars.submodule_index.* >= skip_at and
         ((vars.filtered_joypad_L.* & 0xc0 | vars.filtered_joypad_H.*) & 0xd0) != 0)
     {

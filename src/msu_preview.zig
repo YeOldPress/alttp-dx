@@ -76,6 +76,11 @@ pub const Preview = struct {
         if (self.stream) |s| _ = c.SDL_ResumeAudioStreamDevice(s);
     }
 
+    /// Turns it down, 0 to 1.
+    pub fn setGain(self: *Preview, gain: f32) void {
+        if (self.stream) |s| _ = c.SDL_SetAudioStreamGain(s, gain);
+    }
+
     pub fn stop(self: *Preview) void {
         const s = self.stream orelse return;
         _ = c.SDL_PauseAudioStreamDevice(s);

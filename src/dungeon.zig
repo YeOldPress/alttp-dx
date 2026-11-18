@@ -13,6 +13,7 @@ const std = @import("std");
 const v = @import("variables.zig");
 const t = @import("dungeon_tables.zig");
 const main = @import("main.zig");
+const preview_boot = @import("preview_boot.zig");
 const c = @import("dungeon_abi.zig");
 const overworld = @import("overworld.zig");
 const dungeon_wide = @import("dungeon_wide.zig");
@@ -9052,6 +9053,8 @@ pub export fn Dungeon_LoadEntrance() callconv(.c) void { // 82d8b3
         v.link_quadrant_x.* = asset8_p6(25)[i] >> 4;
         v.link_quadrant_y.* = asset8_p6(25)[i] & 0xf;
 
+        // A picture of a room no entrance leads into: the same spot in it.
+        if (preview_boot.room) |r| previewShiftToRoom(r);
         if (v.dungeon_room_index.* >= 0x100)
             v.dung_cur_floor.* = 0;
     }
@@ -9072,6 +9075,27 @@ pub export fn Dungeon_LoadEntrance() callconv(.c) void { // 82d8b3
     @memset(@as([*]u8, @ptrCast(v.pots_revealed_in_room))[0..0x280], 0);
     v.orange_blue_barrier_state.* = 0;
     v.byte_7E04BC.* = 0;
+}
+
+/// Moves the entrance just loaded over to room `r`: Link, the camera, the
+/// scroll and the room's bounds, by however far apart the two rooms sit on
+/// the dungeon's grid of 512-pixel rooms. Only for preview_boot's pictures.
+fn previewShiftToRoom(r: u16) void {
+    const old = v.dungeon_room_index.*;
+    const dx: u16 = (((r & 15) -% (old & 15)) *% 512);
+    const dy: u16 = ((((r >> 4) & 15) -% ((old >> 4) & 15)) *% 512);
+    v.dungeon_room_index.* = r;
+    v.dungeon_room_index2.* = r;
+    for ([_]*align(1) u16{ v.BG2VOFS_copy2, v.BG1VOFS_copy2, v.BG2VOFS_copy, v.BG1VOFS_copy, v.link_y_coord, v.camera_y_coord_scroll_low, v.camera_y_coord_scroll_hi }) |p| p.* +%= dy;
+    for ([_]*align(1) u16{ v.BG2HOFS_copy2, v.BG1HOFS_copy2, v.BG2HOFS_copy, v.BG1HOFS_copy, v.link_x_coord, v.camera_x_coord_scroll_low, v.camera_x_coord_scroll_hi }) |p| p.* +%= dx;
+    v.room_bounds_y.named.a0 +%= dy;
+    v.room_bounds_y.named.b0 +%= dy;
+    v.room_bounds_y.named.a1 +%= dy;
+    v.room_bounds_y.named.b1 +%= dy;
+    v.room_bounds_x.named.a0 +%= dx;
+    v.room_bounds_x.named.b0 +%= dx;
+    v.room_bounds_x.named.a1 +%= dx;
+    v.room_bounds_x.named.b1 +%= dx;
 }
 
 pub export fn PushBlock_Slide(j: u8) callconv(.c) void { // 87edb5

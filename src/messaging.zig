@@ -6,6 +6,7 @@ const vars = @import("variables.zig");
 const rtl = @import("zelda_rtl.zig");
 const rtl_types = @import("zelda_rtl_types.zig");
 const features = @import("features.zig");
+const preview_boot = @import("preview_boot.zig");
 const main_mod = @import("main.zig");
 const util = @import("util.zig");
 const tables = @import("messaging_tables.zig");
@@ -362,6 +363,8 @@ fn noteDungeonSave(sram: [*]u8, slot: usize, checksum: u16) void {
 /// The entrance a file just loaded was saved in, if it was saved in a
 /// dungeon and that's to be where it continues.
 pub fn dungeonContinueEntrance() ?u8 {
+    // Booting into a room for a picture of it.
+    if (preview_boot.entrance) |e| return e;
     if (features.enhanced_features0.* & features.kFeatures0_ContinueFromDungeon == 0) return null;
     if (vars.sram_progress_indicator.* < 2 or vars.follower_indicator.* == 1) return null;
     const slot = (srm_var1().* >> 1) -% 1;

@@ -3,6 +3,7 @@
 //! tile interactions (bushes, rocks, bombs, secrets, entrances).
 const std = @import("std");
 const vars = @import("variables.zig");
+const preview_boot = @import("preview_boot.zig");
 const rtl = @import("zelda_rtl.zig");
 const rtl_types = @import("zelda_rtl_types.zig");
 const features = @import("features.zig");
@@ -2381,6 +2382,17 @@ pub export fn LoadOverworldFromDungeon() callconv(.c) void {
     vars.num_memorized_tiles.* = 0;
 
     const dr = vars.dungeon_room_index.*;
+    // Booting outdoors for a picture: where the flute's bird drops Link.
+    if (preview_boot.bird) |b| {
+        Overworld_LoadBirdTravelPos(b);
+        snapCameraX();
+        return;
+    }
+    if (preview_boot.spot) |sp| {
+        previewLoadSpot(sp);
+        snapCameraX();
+        return;
+    }
     if (dr != 0x104 and dr < 0x180 and dr >= 0x100) {
         LoadCachedEntranceProperties();
     } else {
@@ -2640,6 +2652,40 @@ pub export fn Overworld_LoadBirdTravelPos(k_in: c_int) callconv(.c) void {
     vars.camera_y_coord_scroll_hi.* = vars.camera_y_coord_scroll_low.* -% 2;
     vars.camera_x_coord_scroll_low.* = kBirdTravel_CameraXScroll()[k];
     vars.camera_x_coord_scroll_hi.* = vars.camera_x_coord_scroll_low.* -% 2;
+    vars.ow_entrance_value.* = 0;
+    vars.big_rock_starting_address.* = 0;
+    Overworld_LoadNewScreenProperties();
+    Sprite_ResetAll();
+    Sprite_ReloadAll_Overworld();
+    vars.is_standing_in_doorway.* = 0;
+    Dungeon_ResetTorchBackgroundAndPlayerInner();
+}
+
+/// Overworld_LoadBirdTravelPos for one of preview_boot's own spots.
+fn previewLoadSpot(sp: preview_boot.Spot) void {
+    vars.BG2VOFS_copy.* = sp.scroll_y;
+    vars.BG1VOFS_copy.* = sp.scroll_y;
+    vars.BG2VOFS_copy2.* = sp.scroll_y;
+    vars.BG1VOFS_copy2.* = sp.scroll_y;
+    vars.BG2HOFS_copy.* = sp.scroll_x;
+    vars.BG1HOFS_copy.* = sp.scroll_x;
+    vars.BG2HOFS_copy2.* = sp.scroll_x;
+    vars.BG1HOFS_copy2.* = sp.scroll_x;
+    vars.link_y_coord.* = sp.link_y;
+    vars.link_x_coord.* = sp.link_x;
+    vars.overworld_unk1.* = @bitCast(sp.unk1);
+    vars.overworld_unk3.* = @bitCast(sp.unk3);
+    vars.overworld_unk1_neg.* = 0 -% vars.overworld_unk1.*;
+    vars.overworld_unk3_neg.* = 0 -% vars.overworld_unk3.*;
+    vars.overworld_screen_index.* = sp.screen;
+    vars.overworld_area_index.* = sp.screen;
+    vars.map16_load_src_off.* = sp.map16;
+    vars.map16_load_var2.* = (vars.map16_load_src_off.* -% 0x400 & 0xf80) >> 7;
+    vars.map16_load_dst_off.* = (vars.map16_load_src_off.* -% 0x10 & 0x3e) >> 1;
+    vars.camera_y_coord_scroll_low.* = sp.camera_y;
+    vars.camera_y_coord_scroll_hi.* = sp.camera_y -% 2;
+    vars.camera_x_coord_scroll_low.* = sp.camera_x;
+    vars.camera_x_coord_scroll_hi.* = sp.camera_x -% 2;
     vars.ow_entrance_value.* = 0;
     vars.big_rock_starting_address.* = 0;
     Overworld_LoadNewScreenProperties();

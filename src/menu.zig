@@ -15,6 +15,11 @@ const builtin = @import("builtin");
 const fileio = @import("fileio.zig");
 const msu_import = @import("msu_import.zig");
 const menu_music = @import("menu_music.zig");
+const pad_names = @import("pad_names.zig");
+const menu_window = @import("menu_window.zig");
+const menu_news = @import("menu_news.zig");
+const setting_previews = @import("setting_previews.zig");
+const release_notes = @import("release_notes");
 const tools_ops = @import("tools_ops.zig");
 const updater = @import("updater.zig");
 const start_logo = @import("start_logo.zig");
@@ -126,6 +131,7 @@ pub const kSettings = [_]Setting{
         .values = &.{ "modern", "retro" },
         .labels = &.{ "Modern", "Retro" },
     } } },
+    .{ .section = "General", .key = "MenuMusic", .label = "Menu Music", .kind = .toggle },
     .{ .section = "General", .key = "StartBanner", .label = "40th Banner", .kind = .toggle },
     .{ .section = "General", .key = "CheckForUpdates", .label = "Check For Updates", .kind = .toggle },
     .{ .section = "General", .key = "UpdateChannel", .label = "Update Channel", .kind = .{ .choice = .{
@@ -706,6 +712,7 @@ fn firstSelectable(from: usize, to: usize) usize {
 pub fn describe(s: Setting) []const u8 {
     const kDescriptions = [_][2][]const u8{
         .{ "StartMenu", "Show the start menu, with settings and the ROM and assets, before the game begins. When off, the game starts straight away unless its assets need building." },
+        .{ "MenuMusic", "Plays the file select's music softly while this menu is open. It's your MSU pack's when MSU Audio is on and the pack has that track, or else the game's own. It stops while the Music screen plays something else, and when the game starts." },
         .{ "StartBanner", "Hangs Nintendo's own 40th anniversary banner small in the front page's corner. It's theirs, so it isn't shipped. Turning this on downloads it from their site once and keeps it beside the ini. Modern style only." },
         .{ "StartMenuStyle", "Modern is the front page made for the series' 40th anniversary, in real type with the Triforce and drifting light. Retro is the old one, all in the 8x8 debug font. Everything does the same either way." },
         .{ "CheckForUpdates", "When the start menu opens, ask GitHub whether there's a newer version. If there is, an Update button shows under the title. Nothing downloads until you press it. A game you built yourself never updates." },
@@ -809,7 +816,7 @@ const kQuitStay = 1;
 /// The launcher is a short menu and the screens it opens: the two lists of
 /// settings, and the randomizer's pages (a choice of randomizer, then the
 /// ALTTPR.COM page seeds are dropped on, and what a seed says about itself).
-const Screen = enum { main, settings, features, controls, achievements, hub, alttpr, details, music, tools };
+const Screen = enum { main, settings, features, controls, achievements, hub, alttpr, details, music, tools, news };
 
 /// Where the FEATURES heading sits, so the two lists are slices of the one
 /// schema instead of separate tables that could drift out of step with it.
@@ -849,7 +856,7 @@ fn screenRange(screen: Screen) struct { from: usize, to: usize } {
         .settings => .{ .from = 0, .to = kFeaturesStart },
         .features => .{ .from = kFeaturesStart, .to = kRandomizerStart },
         .alttpr => .{ .from = kRandomizerStart, .to = kControlsStart },
-        .main, .controls, .achievements, .hub, .details, .music, .tools => .{ .from = 0, .to = 0 },
+        .main, .controls, .achievements, .hub, .details, .music, .tools, .news => .{ .from = 0, .to = 0 },
     };
 }
 
@@ -1082,6 +1089,91 @@ fn resizeToDefault(window: *c.SDL_Window) void {
     resizeCentered(window, size[0], size[1]);
 }
 
+/// Where the modern front page shows the version, bottom right, which a
+/// click opens What's New from; nowhere without notes to show.
+fn versionRect() Rect {
+    const none = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    if (release_notes.text.len == 0 or updater.installed != .release) return none;
+    const page = modernPage() orelse return none;
+    var buf: [40]u8 = undefined;
+    const label = updater.installedLabel(&buf);
+    const w = page.paint.textWidthTracked(.small, label, 1.2);
+    return .{ .x = start_page.kW - 28 - w - 6, .y = start_page.kFooterY + 6, .w = w + 12, .h = 28 };
+}
+
+/// Whether What's New comes up by itself: in a release with notes, the
+/// first time the modern menu opens since updating to it. Someone new to
+/// the game has nothing to compare it to, and gets none.
+fn whatsNewDue(was: ?menu_window.Place, returning: bool) bool {
+    if (!g_modern or release_notes.text.len == 0 or updater.installed != .release) return false;
+    if (was) |p| if (std.mem.eql(u8, p.seen(), updater.version)) return false;
+    return returning;
+}
+
+/// The window as it'll be remembered: its ordinary place and size, kept up
+/// to date while it has them, and whether it's maximized or fullscreen.
+var g_place: menu_window.Place = .{};
+
+/// Opens the menu's window where it was last closed, at that size if it's
+/// the same style and there's room, maximized or fullscreen if it was; or
+/// at the default size, centered, the first time.
+fn createWindow(was: ?menu_window.Place) ?*c.SDL_Window {
+    const primary = c.SDL_GetPrimaryDisplay();
+    var size = defaultSize(primary);
+    const screen: ?c.SDL_Rect = if (was) |p| menu_window.screenFor(p) else null;
+    var flags: c.SDL_WindowFlags = c.SDL_WINDOW_HIGH_PIXEL_DENSITY | c.SDL_WINDOW_RESIZABLE;
+    const props = c.SDL_CreateProperties();
+    defer c.SDL_DestroyProperties(props);
+    if (was) |p| {
+        if (p.modern == g_modern) {
+            var room: c.SDL_Rect = undefined;
+            if (screen) |r| room = r else if (!c.SDL_GetDisplayUsableBounds(primary, &room)) room = .{ .x = 0, .y = 0, .w = p.w, .h = p.h };
+            size = .{ @min(p.w, room.w), @min(p.h, room.h) };
+        }
+        if (screen != null) {
+            _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_WINDOW_CREATE_X_NUMBER, p.x);
+            _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_WINDOW_CREATE_Y_NUMBER, p.y);
+        }
+        if (p.fullscreen) flags |= c.SDL_WINDOW_FULLSCREEN else if (p.maximized) flags |= c.SDL_WINDOW_MAXIMIZED;
+    }
+    _ = c.SDL_SetStringProperty(props, c.SDL_PROP_WINDOW_CREATE_TITLE_STRING, kWindowTitle);
+    _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, size[0]);
+    _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, size[1]);
+    _ = c.SDL_SetNumberProperty(props, c.SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, @intCast(flags));
+    const window = c.SDL_CreateWindowWithProperties(props) orelse return null;
+    // Its ordinary place, for if it never has one of its own this time
+    // (opened maximized, and closed that way).
+    g_place = .{ .modern = g_modern, .w = size[0], .h = size[1] };
+    // This version's notes count as seen once the menu's been up, whether
+    // they were shown or there was nothing new to anyone yet.
+    if (was) |p| g_place.setSeen(p.seen());
+    if (updater.installed == .release) g_place.setSeen(updater.version);
+    if (was) |p| if (screen != null) {
+        g_place.x = p.x;
+        g_place.y = p.y;
+    };
+    if (was == null or screen == null) _ = c.SDL_GetWindowPosition(window, &g_place.x, &g_place.y);
+    return window;
+}
+
+/// Once a frame: what to remember of the window.
+fn trackPlace(window: *c.SDL_Window) void {
+    const flags = c.SDL_GetWindowFlags(window);
+    g_place.modern = g_modern;
+    g_place.fullscreen = flags & c.SDL_WINDOW_FULLSCREEN != 0;
+    g_place.maximized = flags & c.SDL_WINDOW_MAXIMIZED != 0;
+    if (flags & (c.SDL_WINDOW_FULLSCREEN | c.SDL_WINDOW_MAXIMIZED | c.SDL_WINDOW_MINIMIZED | c.SDL_WINDOW_HIDDEN) != 0) return;
+    var x: c_int = 0;
+    var y: c_int = 0;
+    var w: c_int = 0;
+    var h: c_int = 0;
+    if (!c.SDL_GetWindowPosition(window, &x, &y) or !c.SDL_GetWindowSize(window, &w, &h) or w <= 0 or h <= 0) return;
+    g_place.x = x;
+    g_place.y = y;
+    g_place.w = w;
+    g_place.h = h;
+}
+
 fn toggleFullscreen(window: *c.SDL_Window) void {
     const full = (c.SDL_GetWindowFlags(window) & c.SDL_WINDOW_FULLSCREEN) != 0;
     _ = c.SDL_SetWindowFullscreen(window, !full);
@@ -1244,6 +1336,34 @@ fn msuOnIn(ini: *const Ini) bool {
     const i = settingIndex("Sound", "EnableMSU") orelse return false;
     const v = std.mem.trim(u8, ini.values[i] orelse "", " \t");
     return v.len != 0 and !std.mem.eql(u8, v, "0") and !std.ascii.eqlIgnoreCase(v, "false");
+}
+
+/// Whether the menu plays its music: MenuMusic, unless the game's sound is
+/// off altogether.
+fn menuMusicIn(ini: *const Ini) bool {
+    const on = struct {
+        fn get(in: *const Ini, section: []const u8, key: []const u8) bool {
+            const i = settingIndex(section, key) orelse return true;
+            const v = std.mem.trim(u8, in.values[i] orelse "1", " \t");
+            return !std.mem.eql(u8, v, "0") and !std.ascii.eqlIgnoreCase(v, "false");
+        }
+    }.get;
+    return on(ini, "General", "MenuMusic") and on(ini, "Sound", "EnableAudio");
+}
+
+/// How loud: soft, under the game's Volume (and MSU Volume, for a pack).
+fn menuMusicGain(ini: *const Ini) f32 {
+    const pct = struct {
+        fn get(in: *const Ini, key: []const u8) f32 {
+            const i = settingIndex("Sound", key) orelse return 1;
+            const v = std.mem.trim(u8, in.values[i] orelse "100", " \t%");
+            const n = std.fmt.parseInt(u32, v, 10) catch 100;
+            return @as(f32, @floatFromInt(@min(n, 100))) / 100;
+        }
+    }.get;
+    var g = 0.55 * pct(ini, "Volume");
+    if (g_msu_on) g *= pct(ini, "MSUVolume");
+    return g;
 }
 
 /// Packs used to be installed loose in msu/, before there could be more
@@ -1904,7 +2024,7 @@ const View = struct {
 
 fn listIndex(sc: Screen) usize {
     return switch (sc) {
-        .main, .settings, .controls, .achievements, .hub, .details, .music, .tools => 0,
+        .main, .settings, .controls, .achievements, .hub, .details, .music, .tools, .news => 0,
         .features => 1,
         .alttpr => 2,
     };
@@ -1995,6 +2115,34 @@ pub fn screenshot(alloc: std.mem.Allocator, which: []const u8, path: [*:0]const 
         if (std.c.getenv("TOOLS_PAGE")) |n| tools_gui.embedShow(std.mem.span(n));
     }
     defer if (screen == .tools) tools_gui.embedClose();
+    // PAD=playstation (or xbox, nintendo, generic) draws the hints and the
+    // Controls screen for that kind of pad, with its labels where they sit.
+    if (std.c.getenv("PAD")) |t| {
+        const style = std.meta.stringToEnum(pad_names.Style, std.mem.span(t)) orelse .keyboard;
+        pad_names.current = .{ .style = style, .faces = switch (style) {
+            .playstation => .{ .cross, .circle, .square, .triangle },
+            .nintendo => .{ .b, .a, .y, .x },
+            else => .{ .a, .b, .x, .y },
+        } };
+    } else pad_names.current = .{ .style = .xbox };
+    defer pad_names.current = .{};
+    // NEWS_FILE=notes.md shows those notes on the What's New screen (a dev
+    // build has none of its own); NEWS_TOP=n scrolls it down n rows.
+    if (screen == .news) {
+        var text: []const u8 = release_notes.text;
+        var owned: ?[]u8 = null;
+        if (std.c.getenv("NEWS_FILE")) |f| {
+            owned = fileio.readWholeFile(alloc, f) catch null;
+            if (owned) |o| text = o;
+        }
+        defer if (owned) |o| alloc.free(o);
+        menu_news.open(alloc, text);
+        if (std.c.getenv("NEWS_TOP")) |t| menu_news.scrollForShot(std.fmt.parseInt(usize, std.mem.span(t), 10) catch 0);
+    }
+    defer if (screen == .news) menu_news.close();
+    // PREVIEWS=1 shows the Settings pictures, waiting for any not yet taken.
+    if (std.c.getenv("PREVIEWS") != null and screen == .settings) setting_previews.startAndWait();
+    defer if (std.c.getenv("PREVIEWS") != null) setting_previews.stop();
     g_spoilers = std.c.getenv("SPOILERS") != null;
     if (std.c.getenv("DETAILS_TOP")) |t| g_details_top = std.fmt.parseInt(usize, std.mem.span(t), 10) catch 0;
     // CTL_ROW=n picks a row on the Controls screen; CAPTURE=1 has it waiting.
@@ -2077,7 +2225,7 @@ fn drawOnCanvas(renderer: *c.SDL_Renderer, ini: *const Ini, v: View) void {
 
     switch (v.screen) {
         // Music and the tools in the menu are the modern style's alone.
-        .main, .music, .tools => drawMain(renderer, v),
+        .main, .music, .tools, .news => drawMain(renderer, v),
         .hub => drawHub(renderer, v),
         .controls => drawControls(renderer, ini, v),
         .achievements => drawAchievements(renderer, v),
@@ -2150,14 +2298,14 @@ fn drawModernModal(page: *const start_page.Page, v: View) void {
                 d.lines = &.{
                     L{ .text = "Any .sfc file. The name doesn't matter, it's checked." },
                     L{ .text = "" },
-                    L{ .text = "Or press A / Enter to use", .tone = .plain },
+                    L{ .text = std.fmt.bufPrint(&buf, "Or press {s} to use", .{pad_names.current.hint("A / Enter", &buf2)}) catch "", .tone = .plain },
                     L{ .text = kRomPath, .tone = .accent },
                 };
             } else {
                 d.lines = &.{
                     L{ .text = "Any .sfc file. The name doesn't matter, it's checked." },
                     L{ .text = "" },
-                    L{ .text = "B / Esc to cancel" },
+                    L{ .text = std.fmt.bufPrint(&buf, "{s} to cancel", .{pad_names.current.hint("B / Esc", &buf2)}) catch "" },
                 };
             }
         },
@@ -2322,6 +2470,7 @@ fn drawModern(page: *const start_page.Page, ini: *const Ini, v: View) void {
         .details => "Seed Details",
         .music => "Music",
         .tools => "Tools",
+        .news => "What's New",
         .main => unreachable,
     }, g_back_hover);
     switch (v.screen) {
@@ -2329,7 +2478,7 @@ fn drawModern(page: *const start_page.Page, ini: *const Ini, v: View) void {
             drawModernList(page, ini, v);
             const at = rowAt(v.screen, v.cursor);
             page.panel(kModernPanel);
-            if (at < kSettings.len and !isSection(kSettings[at])) drawModernAbout(page, kModernPanel.inset(22), at, ini, true);
+            if (at < kSettings.len and !isSection(kSettings[at])) drawModernAbout(page, kModernPanel.inset(22), at, ini, true, v.screen == .settings);
         },
         .alttpr => {
             drawModernList(page, ini, v);
@@ -2345,6 +2494,7 @@ fn drawModern(page: *const start_page.Page, ini: *const Ini, v: View) void {
         .music => menu_music.draw(page, t, msuPathIn(ini)),
         // In the window's points rather than the menu's zoomed-up ones.
         .tools => tools_gui.embedDraw(t, page.paint.scale / kModernZoom),
+        .news => menu_news.draw(page),
         .main => unreachable,
     }
 
@@ -2377,6 +2527,7 @@ fn subHints(v: View, out: *[5]start_page.Hint) []const start_page.Hint {
     const save = H{ .key = "X / S", .action = "Save" };
     const back = H{ .key = "B / Esc", .action = "Back" };
     if (v.screen == .music) return menu_music.hints(out);
+    if (v.screen == .news) return menu_news.hints(out);
     const list: []const H = switch (v.screen) {
         .settings, .features => &.{ change, .{ .key = "Y / I", .action = "More info" }, save, back },
         .alttpr => &.{ change, .{ .key = "Start", .action = "Play" }, save, back },
@@ -2388,7 +2539,7 @@ fn subHints(v: View, out: *[5]start_page.Hint) []const start_page.Hint {
             &.{ .{ .key = "A / Enter", .action = "Change" }, save, back },
         .details => &.{ .{ .key = "\xe2\x86\x91 \xe2\x86\x93", .action = "Scroll" }, .{ .key = "A / Enter", .action = if (g_spoilers) "Hide spoilers" else "Show spoilers" }, back },
         .tools => &.{ .{ .key = "\xe2\x86\x91 \xe2\x86\x93 \xe2\x86\x90 \xe2\x86\x92", .action = "Move" }, .{ .key = "A / Enter", .action = "Pick" }, .{ .key = "Wheel", .action = "Scroll activity" }, back },
-        .main, .music => &.{},
+        .main, .music, .news => &.{},
     };
     @memcpy(out[0..list.len], list);
     return out[0..list.len];
@@ -2471,7 +2622,11 @@ fn drawModernList(page: *const start_page.Page, ini: *const Ini, v: View) void {
             const col = if (fixed) P.kDim else if (picked) P.kGoldHi else P.kTeal;
             p.text(.strong, right - vw, r.y + (r.h - p.lineHeight(.strong)) / 2, col, value);
             if (picked and !fixed) page.chevrons(right - vw - 14, right + 12, r.y + r.h / 2, P.kGold);
-            if (st.kind == .action) p.text(.small, right - p.textWidth(.small, "A / Enter"), r.y + (r.h - p.lineHeight(.small)) / 2, if (picked) P.kGold else P.kDim, "A / Enter");
+            if (st.kind == .action) {
+                var kb: [32]u8 = undefined;
+                const key = pad_names.current.hint("A / Enter", &kb);
+                start_page.padText(p, .small, right - start_page.padTextWidth(p, .small, key), r.y + (r.h - p.lineHeight(.small)) / 2, if (picked) P.kGold else P.kDim, key);
+            }
         }
     }
     if (n > shown) {
@@ -2493,8 +2648,7 @@ fn sectionOf(at: usize) []const u8 {
 
 /// What a setting does: its section, its name, the description, what its
 /// note warns of, and what it was to start with.
-fn drawModernAbout(page: *const start_page.Page, box: Rect, at: usize, ini: *const Ini, show_default: bool) void {
-    _ = ini;
+fn drawModernAbout(page: *const start_page.Page, box: Rect, at: usize, ini: *const Ini, show_default_in: bool, picture: bool) void {
     const p = &page.paint;
     const st = kSettings[at];
     const x = box.x;
@@ -2505,6 +2659,16 @@ fn drawModernAbout(page: *const start_page.Page, box: Rect, at: usize, ini: *con
     p.textEx(.eyebrow, x, y, P.kGold, P.kGold, 3, sec);
     y += 22;
     y = page.wrap(.subtitle, x, y, w, 24, P.kCream, st.label, 2) + 8;
+    // What it does, in a picture, where there's one: in place of the
+    // default, which the info box still says.
+    var show_default = show_default_in;
+    if (picture and setting_previews.has(st.key)) {
+        setting_previews.want(st.key);
+        const ph = setting_previews.height(w);
+        setting_previews.draw(page, .{ .x = x, .y = y + 2, .w = w, .h = ph }, st.key, ini.values[at] orelse defaultValue(st.section, st.key) orelse "", g_pointer.x, g_pointer.y, pageTime());
+        y += ph + 16;
+        show_default = false;
+    }
     const bottom = box.y + box.h - if (show_default) @as(f32, 46) else 0;
     var note_buf: [80]u8 = undefined;
     const note = if (st.note.len != 0) soft(&note_buf, st.note) else "";
@@ -2539,7 +2703,7 @@ fn drawModernInfo(page: *const start_page.Page, ini: *const Ini, v: View) void {
     p.shadow(r, 14);
     p.box(r, 14, 1, P.kGold.alpha(110), ui.Color.hex(0x0c161c));
     start_page.diamond(p.r, r.x + r.w / 2, r.y, 5, P.kGold);
-    drawModernAbout(page, box.inset(28), at, ini, true);
+    drawModernAbout(page, box.inset(28), at, ini, true, false);
 }
 
 fn modernInfoRect() Rect {
@@ -2699,7 +2863,7 @@ fn drawModernControls(page: *const start_page.Page, ini: *const Ini, v: View) vo
             p.text(.body, in.x, y, P.kMuted, "Keyboard");
             p.text(.strong, in.x + 110, y, P.kCream, controls.keyLabel(&kb, keys.get(v.cursor)));
             p.text(.body, in.x, y + 22, P.kMuted, "Controller");
-            p.text(.strong, in.x + 110, y + 22, P.kCream, controls.padLabel(pads.get(v.cursor)));
+            start_page.padText(p, .strong, in.x + 110, y + 22, P.kCream, pad_names.current.place(controls.padLabel(pads.get(v.cursor))));
         }
     } else {
         p.textEx(.eyebrow, in.x, y, P.kGold, P.kGold, 3, "RESET");
@@ -2733,8 +2897,8 @@ fn drawModernControls(page: *const start_page.Page, ini: *const Ini, v: View) vo
         var kb: [8]u8 = undefined;
         var fbuf: [48]u8 = undefined;
         p.text(.strong, key_x, vy, if (picked) P.kGoldHi else P.kTeal, p.fit(.strong, controls.keyLabel(&kb, keys.get(row)), pad_x - key_x - 12, &fbuf));
-        var fbuf2: [48]u8 = undefined;
-        p.text(.strong, pad_x, vy, if (picked) P.kGoldHi else P.kTeal, p.fit(.strong, controls.padLabel(pads.get(row)), r.x + r.w - 12 - pad_x, &fbuf2));
+        // What the pad in hand has printed there.
+        start_page.padText(p, .strong, pad_x, vy, if (picked) P.kGoldHi else P.kTeal, pad_names.current.place(controls.padLabel(pads.get(row))));
     }
 }
 
@@ -2816,7 +2980,7 @@ fn drawHeader(renderer: *c.SDL_Renderer, screen: Screen) void {
         .achievements => "ACHIEVEMENTS",
         .alttpr => "ALTTPR.COM",
         .details => "SEED DETAILS",
-        .main, .music, .tools => unreachable,
+        .main, .music, .tools, .news => unreachable,
     };
     drawText(renderer, 40, 36, kColorSelect, name);
     drawTextScaled(renderer, kWindowW - 40 - textWidth("ESC BACK", kScale), 36, kColorTextDim, "ESC BACK", kScale);
@@ -3369,7 +3533,7 @@ fn detailLines(out: []DetailLine, bufs: [][40]u8) []DetailLine {
 
     add(out, &n, .{ .label = "SPOILERS", .color = kColorWarn, .heading = true });
     if (!g_spoilers) {
-        add(out, &n, .{ .label = "Hidden - A/ENTER shows them", .color = kColorTextDim });
+        add(out, &n, .{ .label = retroHint("Hidden - A/ENTER shows them"), .color = kColorTextDim });
         return out[0..n];
     }
     add(out, &n, .{ .label = "Misery Mire", .value = up(bufs, &b, seed_info.medallionName(info.misery_mire)) });
@@ -3567,10 +3731,10 @@ fn drawModal(renderer: *c.SDL_Renderer, v: View) void {
 
             // Offer the one already sitting beside the game, if there is one.
             if (g_rom_path != null) {
-                drawTextCentered(renderer, cx, box.y + 120, kColorText, "OR PRESS A/ENTER TO USE", kScale);
+                drawTextCentered(renderer, cx, box.y + 120, kColorText, retroHint("OR PRESS A/ENTER TO USE"), kScale);
                 drawTextCentered(renderer, cx, box.y + 120 + kRowH, kColorValue, kRomPath, kScale);
             } else {
-                drawTextCentered(renderer, cx, box.y + 130, kColorTextDim, "B/ESC TO CANCEL", kScale);
+                drawTextCentered(renderer, cx, box.y + 130, kColorTextDim, retroHint("B/ESC TO CANCEL"), kScale);
             }
         },
         .msu => {
@@ -3685,29 +3849,29 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
         switch (v.modal) {
             .quit => {
                 drawText(renderer, 40, footer_y, kColorTextDim, "LEFT/RIGHT CHOOSE");
-                drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "A/ENTER CONFIRM   B/ESC CANCEL");
+                drawText(renderer, 40, footer_y + kRowH, kColorTextDim, retroHint("A/ENTER CONFIRM   B/ESC CANCEL"));
             },
             .rom => {
                 drawText(renderer, 40, footer_y, kColorTextDim, "DROP A FILE ON THE WINDOW");
-                drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "B/ESC CANCEL");
+                drawText(renderer, 40, footer_y + kRowH, kColorTextDim, retroHint("B/ESC CANCEL"));
             },
             .info => drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "A OR B TO CLOSE"),
             .msu => {
                 drawText(renderer, 40, footer_y, kColorTextDim, "LEFT/RIGHT CHOOSE");
-                drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "A/ENTER BROWSE   B/ESC CANCEL");
+                drawText(renderer, 40, footer_y + kRowH, kColorTextDim, retroHint("A/ENTER BROWSE   B/ESC CANCEL"));
             },
             .msu_name => {
                 drawText(renderer, 40, footer_y, kColorTextDim, if (g_msu_pcm != 0) "TYPE A NAME   DOWN+SPACE FLAC" else "TYPE A NAME FOR IT");
                 drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "ENTER IMPORT   ESC CANCEL");
             },
-            .msu_progress => drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "B/ESC STOP"),
+            .msu_progress => drawText(renderer, 40, footer_y + kRowH, kColorTextDim, retroHint("B/ESC STOP")),
             .pack_rename, .pack_delete => {},
             .update => switch (updater.phase()) {
-                .downloading => drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "B/ESC CANCEL"),
+                .downloading => drawText(renderer, 40, footer_y + kRowH, kColorTextDim, retroHint("B/ESC CANCEL")),
                 .installing, .ready => {},
                 else => {
                     drawText(renderer, 40, footer_y, kColorTextDim, "LEFT/RIGHT CHOOSE");
-                    drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "A/ENTER CONFIRM   B/ESC CANCEL");
+                    drawText(renderer, 40, footer_y + kRowH, kColorTextDim, retroHint("A/ENTER CONFIRM   B/ESC CANCEL"));
                 },
             },
             .none => {},
@@ -3718,40 +3882,40 @@ fn drawFooter(renderer: *c.SDL_Renderer, v: View) void {
     }
 
     switch (v.screen) {
-        .main, .music, .tools => {
-            drawText(renderer, 40, footer_y, kColorTextDim, "SELECT A/ENTER   SAVE X/S");
-            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "QUIT B/ESC");
+        .main, .music, .tools, .news => {
+            drawText(renderer, 40, footer_y, kColorTextDim, retroHint("SELECT A/ENTER   SAVE X/S"));
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, retroHint("QUIT B/ESC"));
             // Which version this is, out of the way in the corner.
             var buf: [40]u8 = undefined;
             const ver = if (updater.installed == .dev) "DEV BUILD" else updater.installedLabel(&buf);
             drawTextScaled(renderer, kWindowW - 40 - textWidth(ver, kScale), footer_y + kRowH, kColorTextDim, ver, kScale);
         },
         .settings, .features => {
-            drawText(renderer, 40, footer_y, kColorTextDim, "CHANGE  LEFT/RIGHT OR A");
-            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "INFO Y/I   SAVE X/S   BACK B/ESC");
+            drawText(renderer, 40, footer_y, kColorTextDim, retroHint("CHANGE  LEFT/RIGHT OR A"));
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, retroHint("INFO Y/I   SAVE X/S   BACK B/ESC"));
         },
         .achievements => {
             drawText(renderer, 40, footer_y, kColorTextDim, "CHOOSE UP/DOWN");
-            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "BACK B/ESC");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, retroHint("BACK B/ESC"));
         },
         .hub => {
-            drawText(renderer, 40, footer_y, kColorTextDim, "SELECT A/ENTER");
-            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "BACK B/ESC");
+            drawText(renderer, 40, footer_y, kColorTextDim, retroHint("SELECT A/ENTER"));
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, retroHint("BACK B/ESC"));
         },
         .controls => if (g_ctl_capture != null) {
             drawText(renderer, 40, footer_y, kColorTextDim, "PRESS ANY KEY OR PAD BUTTON");
             drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "ESC OR WAIT TO CANCEL");
         } else {
-            drawText(renderer, 40, footer_y, kColorTextDim, "CHANGE A/ENTER");
-            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "SAVE X/S   BACK B/ESC");
+            drawText(renderer, 40, footer_y, kColorTextDim, retroHint("CHANGE A/ENTER"));
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, retroHint("SAVE X/S   BACK B/ESC"));
         },
         .alttpr => {
-            drawText(renderer, 40, footer_y, kColorTextDim, "CHANGE  LEFT/RIGHT OR A");
-            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "PLAY START  SAVE X/S  BACK B");
+            drawText(renderer, 40, footer_y, kColorTextDim, retroHint("CHANGE  LEFT/RIGHT OR A"));
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, retroHint("PLAY START  SAVE X/S  BACK B"));
         },
         .details => {
             drawText(renderer, 40, footer_y, kColorTextDim, "SCROLL UP/DOWN");
-            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, "SPOILERS A/ENTER   BACK B/ESC");
+            drawText(renderer, 40, footer_y + kRowH, kColorTextDim, retroHint("SPOILERS A/ENTER   BACK B/ESC"));
         },
     }
 
@@ -3866,6 +4030,34 @@ fn buildAssets(alloc: std.mem.Allocator) []const u8 {
 }
 
 const kAssetsBuilt = "ASSETS BUILT";
+
+/// A retro footer's line in the words of the pad in hand (pad_names.retro),
+/// good until the next one.
+fn retroHint(text: []const u8) []const u8 {
+    const S = struct {
+        var buf: [96]u8 = undefined;
+    };
+    return pad_names.current.retro(text, &S.buf);
+}
+
+/// The pad the hints are for: the last one pressed, or the first plugged in.
+var g_pad_in_hand: ?c.SDL_JoystickID = null;
+
+/// Makes pad `id` the one in hand, or with null, the first still plugged in,
+/// or none, which leaves the hints naming keys.
+fn padInHand(pads: *const Pads, id: ?c.SDL_JoystickID) void {
+    var pad: ?*c.SDL_Gamepad = if (id) |i| c.SDL_GetGamepadFromID(i) else null;
+    if (pad == null) {
+        for (pads.items) |slot| {
+            if (slot) |sp| {
+                pad = sp;
+                break;
+            }
+        }
+    }
+    g_pad_in_hand = if (pad) |pp| c.SDL_GetGamepadID(pp) else null;
+    pad_names.current = pad_names.Names.of(pad);
+}
 
 /// Prints what SDL makes of every pad plugged in: its name, and which label
 /// is printed on each face button. Face buttons are routed by label, so this
@@ -4202,12 +4394,17 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     // tools', which open in this same window, come out sharp on Retina.
     // Sized for the screen's own scale, and free to be resized, maximized
     // or made fullscreen: the menu fills whatever it's given.
-    const size = defaultSize(c.SDL_GetPrimaryDisplay());
-    const window = c.SDL_CreateWindow(kWindowTitle, size[0], size[1], c.SDL_WINDOW_HIGH_PIXEL_DENSITY | c.SDL_WINDOW_RESIZABLE) orelse {
+    // Where it was last time, if that's still on a screen.
+    const remembered = menu_window.load(alloc);
+    // Whoever's played before, from before the window's remembered.
+    const returning = remembered != null or fileio.exists(kAssetsPath) or fileio.exists("saves/sram.dat");
+    const window = createWindow(remembered) orelse {
         std.debug.print("Failed to create window: {s}\n", .{c.SDL_GetError()});
         return error.SdlWindow;
     };
     defer c.SDL_DestroyWindow(window);
+    // Kept for next time, before the window goes.
+    defer if (g_place.w > 0) menu_window.save(g_place);
     {
         const cs = c.SDL_GetDisplayContentScale(c.SDL_GetPrimaryDisplay());
         const k: f32 = if (cs > 0) cs else 1;
@@ -4242,6 +4439,10 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
         for (ids[0..@intCast(pad_count)]) |id| pads.open(id);
         c.SDL_free(ids);
     }
+    // The hints name the buttons of the pad in hand, and only the keys
+    // without one.
+    defer pad_names.current = .{};
+    padInHand(&pads, null);
 
     var vrepeat = Repeat{};
     var hrepeat = Repeat{};
@@ -4275,6 +4476,15 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
     // make some.
     var open_tools = g_open_tools;
     g_open_tools = false;
+    // Just updated: what's new, once, before anything else. A ROM wanted
+    // for new assets is asked for after.
+    defer menu_news.close();
+    defer setting_previews.stop();
+    if (seed == null and !open_tools and whatsNewDue(remembered, returning)) {
+        menu_news.open(alloc, release_notes.text);
+        screen = .news;
+        modal = .none;
+    }
     if (open_tools) {
         screen = .main;
         modal = .none;
@@ -4339,6 +4549,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                     },
                     c.SDL_EVENT_GAMEPAD_BUTTON_DOWN => {
                         _ = held.setButton(event.gbutton.button, true);
+                        if (g_pad_in_hand != event.gbutton.which) padInHand(&pads, event.gbutton.which);
                         const b = config.gamepadButtonFromSdl(event.gbutton.button);
                         if (b >= 0) status = ctlFinish(&ini, .gamepad, config.gamepadButtonName(b), &dirty);
                         continue;
@@ -4388,8 +4599,14 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 c.SDL_EVENT_QUIT => if (!(screen == .tools and tools_gui.embedQuit())) {
                     running = false;
                 },
-                c.SDL_EVENT_GAMEPAD_ADDED => pads.open(event.gdevice.which),
-                c.SDL_EVENT_GAMEPAD_REMOVED => pads.close(event.gdevice.which),
+                c.SDL_EVENT_GAMEPAD_ADDED => {
+                    pads.open(event.gdevice.which);
+                    if (g_pad_in_hand == null) padInHand(&pads, event.gdevice.which);
+                },
+                c.SDL_EVENT_GAMEPAD_REMOVED => {
+                    pads.close(event.gdevice.which);
+                    if (g_pad_in_hand == event.gdevice.which) padInHand(&pads, null);
+                },
 
                 // A ROM dropped on the window is the quickest path from a
                 // fresh checkout to a playable game.
@@ -4514,6 +4731,7 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                     // The d-pad and Start mean the same thing everywhere, so
                     // they go by position; the face buttons go by label.
                     _ = held.setButton(event.gbutton.button, true);
+                    if (g_pad_in_hand != event.gbutton.which) padInHand(&pads, event.gbutton.which);
                     switch (event.gbutton.button) {
                         c.SDL_GAMEPAD_BUTTON_START => {
                             confirm = true;
@@ -4608,6 +4826,9 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
         // other pixels.
         fitWindow(window);
         if (g_page) |*pg| pg.paint.setScale(canvasScale());
+        trackPlace(window);
+        // The menu's music, everywhere but the screens that play their own.
+        menu_music.ambient(alloc, menuMusicIn(&ini) and screen != .music and screen != .tools, if (g_msu_on) msuPathIn(&ini) else null, menuMusicGain(&ini), now);
         if (!mainShown(main_cursor)) main_cursor = kMainLaunch;
         if (modal == .msu and !g_msu_on and screen != .music) modal = .none;
         // The pack going in, once it's in.
@@ -4881,6 +5102,13 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                 }
                 if (g_pointer.enters(under)) main_cursor = under.?;
             }
+            // The version in the corner: what's new in it.
+            if (clicked and versionRect().contains(hover_x, hover_y)) {
+                menu_news.open(alloc, release_notes.text);
+                screen = .news;
+                status = "";
+                continue;
+            }
             if (clicked) {
                 var over = false;
                 for (0..kMainItems.len) |i| {
@@ -4909,6 +5137,9 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                     0 => {
                         screen = .settings;
                         status = "";
+                        // Pictures of what the graphics settings do,
+                        // taken in the background the first time.
+                        setting_previews.start();
                     },
                     1 => {
                         screen = .features;
@@ -4953,6 +5184,8 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         screen = .tools;
                         status = "";
                     } else {
+                        // They have music of their own to play.
+                        menu_music.ambient(alloc, false, null, 0, now);
                         const exit = runTools(alloc, window, renderer);
                         // What was held when they opened was let go in them.
                         held = .{};
@@ -5121,6 +5354,14 @@ pub fn run(alloc: std.mem.Allocator, seed: ?[]const u8) !Outcome {
                         status = "COULD NOT START SHRINKING";
                     }
                 },
+            }
+        } else if (screen == .news) {
+            if (menu_news.input(.{ .move = move, .adjust = adjust, .confirm = confirm, .back = back, .wheel = wheel }) == .leave) {
+                screen = .main;
+                status = "";
+                menu_news.close();
+                // New assets wanted after an update: asked for now.
+                if (!assets.playable()) modal = .rom;
             }
         } else if (screen == .tools) tools: {
             if (!g_modern) {

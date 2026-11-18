@@ -9,6 +9,7 @@ const std = @import("std");
 const c = @import("sdl.zig").c;
 const ui = @import("tools_draw.zig");
 const kit = @import("menu_kit.zig");
+const pad_names = @import("pad_names.zig");
 
 const Color = ui.Color;
 const Paint = ui.Paint;
@@ -499,9 +500,12 @@ pub const Page = struct {
         var x: f32 = 28;
         const y: f32 = kFooterY + 12;
         for (hints) |h| {
-            const kw = @max(p.textWidth(.small, h.key) + 12, 20);
+            // In the words of the pad in hand, or the keys alone without one.
+            var key_buf: [48]u8 = undefined;
+            const key = pad_names.current.hint(h.key, &key_buf);
+            const kw = @max(padTextWidth(p, .small, key) + 12, 20);
             p.box(.{ .x = x, .y = y, .w = kw, .h = 18 }, 5, 1, kChipLine, kChip);
-            p.textCentered(.small, x + kw / 2, y, kCream, h.key);
+            padText(p, .small, x + kw / 2 - padTextWidth(p, .small, key) / 2, y, kCream, key);
             x += kw + 6;
             p.text(.small, x, y, kMuted, h.action);
             x += p.textWidth(.small, h.action) + 18;
@@ -838,8 +842,8 @@ pub const Page = struct {
         var yy = y;
         var n: usize = 0;
         while (rest.len != 0 and n < max_lines) : (n += 1) {
-            const cut = p.breakAt(style, rest, w);
-            p.text(style, x, yy, col, std.mem.trimEnd(u8, rest[0..cut], " "));
+            const cut = padBreakAt(p, style, rest, w);
+            padText(p, style, x, yy, col, std.mem.trimEnd(u8, rest[0..cut], " "));
             rest = std.mem.trimStart(u8, rest[cut..], " ");
             yy += line_h;
         }
@@ -931,7 +935,7 @@ pub const Page = struct {
                 .warn => kWarn,
                 .accent => kTeal,
             };
-            p.textCentered(.body, cx, y, col, line.text);
+            padText(p, .body, cx - padTextWidth(p, .body, line.text) / 2, y, col, line.text);
             y += 21;
         }
 
@@ -1076,6 +1080,96 @@ fn triforceTurned(r: *c.SDL_Renderer, x: f32, y: f32, h: f32, a: f32, top: Color
         }
     }
     _ = c.SDL_RenderGeometry(r, null, &v, v.len, null, 0);
+}
+
+/// How wide text draws that may hold a PlayStation pad's shapes, which
+/// stand in it as the bytes 1 to 4 (pad_names.zig).
+pub fn padTextWidth(p: *const ui.Paint, style: ui.Style, s: []const u8) f32 {
+    var w: f32 = 0;
+    var from: usize = 0;
+    for (s, 0..) |ch, i| {
+        if (!pad_names.isShape(ch)) continue;
+        w += p.textWidth(style, s[from..i]) + shapeWidth(p, style);
+        from = i + 1;
+    }
+    return w + p.textWidth(style, s[from..]);
+}
+
+/// Draws such text, the shapes in their own colors as the pads have them.
+pub fn padText(p: *const ui.Paint, style: ui.Style, x: f32, y: f32, col: Color, s: []const u8) void {
+    var at = x;
+    var from: usize = 0;
+    for (s, 0..) |ch, i| {
+        if (!pad_names.isShape(ch)) continue;
+        const seg = s[from..i];
+        p.text(style, at, y, col, seg);
+        at += p.textWidth(style, seg);
+        const sw = shapeWidth(p, style);
+        padShape(p, ch, at + sw / 2, y + p.lineHeight(style) / 2, sw * 0.78);
+        at += sw;
+        from = i + 1;
+    }
+    p.text(style, at, y, col, s[from..]);
+}
+
+/// Where to break such text to fit `w`, as Paint.breakAt does: after the
+/// last space that fits, or mid-word for a word longer than the line. Text
+/// with no shapes in it breaks the same either way.
+pub fn padBreakAt(p: *const ui.Paint, style: ui.Style, s: []const u8, w: f32) usize {
+    if (std.mem.indexOfAny(u8, s, "\x01\x02\x03\x04") == null) return p.breakAt(style, s, w);
+    if (padTextWidth(p, style, s) <= w) return s.len;
+    var best: usize = 0;
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        if (s[i] != ' ') continue;
+        if (padTextWidth(p, style, s[0..i]) > w) break;
+        best = i + 1;
+    }
+    return if (best != 0) best else p.breakAt(style, s, w);
+}
+
+fn shapeWidth(p: *const ui.Paint, style: ui.Style) f32 {
+    return @round(p.lineHeight(style) * 0.85);
+}
+
+/// ✕, ○, □ or △, `s` across, centered on (cx, cy).
+fn padShape(p: *const ui.Paint, which: u8, cx: f32, cy: f32, s: f32) void {
+    const t = @max(s * 0.15, 1.2);
+    const h = s / 2;
+    switch (which) {
+        1 => {
+            const col = Color.hex(0x8fb1ff);
+            const d = h * 0.78;
+            stroke(p, cx - d, cy - d, cx + d, cy + d, t, col);
+            stroke(p, cx - d, cy + d, cx + d, cy - d, t, col);
+        },
+        2 => ring(p.r, cx, cy, h * 0.82, t, 32, Color.hex(0xff7d7d)),
+        3 => {
+            const col = Color.hex(0xf39bd4);
+            const d = h * 0.72;
+            stroke(p, cx - d, cy - d, cx + d, cy - d, t, col);
+            stroke(p, cx + d, cy - d, cx + d, cy + d, t, col);
+            stroke(p, cx + d, cy + d, cx - d, cy + d, t, col);
+            stroke(p, cx - d, cy + d, cx - d, cy - d, t, col);
+        },
+        4 => {
+            const col = Color.hex(0x5fd3ad);
+            const top = [2]f32{ cx, cy - h * 0.86 };
+            const left = [2]f32{ cx - h * 0.9, cy + h * 0.66 };
+            const right = [2]f32{ cx + h * 0.9, cy + h * 0.66 };
+            stroke(p, top[0], top[1], right[0], right[1], t, col);
+            stroke(p, right[0], right[1], left[0], left[1], t, col);
+            stroke(p, left[0], left[1], top[0], top[1], t, col);
+        },
+        else => {},
+    }
+}
+
+/// A line `t` thick with round ends, so lines meeting at a corner join.
+fn stroke(p: *const ui.Paint, ax: f32, ay: f32, bx: f32, by: f32, t: f32, col: Color) void {
+    const dx = bx - ax;
+    const dy = by - ay;
+    slantPill(p, (ax + bx) / 2, (ay + by) / 2, @sqrt(dx * dx + dy * dy) + t, t, std.math.atan2(dy, dx), col);
 }
 
 fn triangle(r: *c.SDL_Renderer, a: [2]f32, b: [2]f32, d: [2]f32, col: Color) void {

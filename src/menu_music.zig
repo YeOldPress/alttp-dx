@@ -17,6 +17,7 @@ const kit = @import("menu_kit.zig");
 const Rect = kit.Rect;
 const msu_import = @import("msu_import.zig");
 const msu_preview = @import("msu_preview.zig");
+const pad_names = @import("pad_names.zig");
 const tools_music = @import("tools_music.zig");
 const tools_ops = @import("tools_ops.zig");
 const tools_gui = @import("tools_gui.zig");
@@ -198,6 +199,90 @@ fn stopAll() void {
     if (g_spc) |p| p.stop();
     g_now = null;
     g_paused = false;
+    g_ambient = .off;
+}
+
+// ------------------------------------------------------------ menu music
+
+/// The file select's song, the game's own music for choosing what to play,
+/// which loops: the title's plays once and hands over to the story.
+const kMenuTrack: u16 = 11;
+/// How long it takes to come up from silence, in milliseconds.
+const kAmbientFadeMs: f64 = 2000;
+
+/// What's playing under the menu, when something is: on the same players as
+/// the screen's, which takes them over when it plays something itself.
+var g_ambient: enum { off, spc, pack } = .off;
+var g_ambient_since: u64 = 0;
+/// What it was started for (a pack's path, or empty for the game's own),
+/// so a change of pack or of MSU starts it again.
+var g_ambient_for: [1024]u8 = undefined;
+var g_ambient_for_len: usize = 0;
+/// Nothing would play for that, so it isn't tried again every frame.
+var g_ambient_failed = false;
+
+/// Once a frame from the menu: the menu's music playing while `want`, from
+/// the pack at `msu_path` when there is one and it has the track, or else
+/// the game's own, at `gain` (0 to 1) after fading in. Stops when not.
+pub fn ambient(alloc: std.mem.Allocator, want: bool, msu_path: ?[]const u8, gain: f32, now_ms: u64) void {
+    const source = msu_path orelse "";
+    const same = std.mem.eql(u8, g_ambient_for[0..g_ambient_for_len], source);
+    if (!want or !same) {
+        if (g_ambient != .off) {
+            g_preview.stop();
+            if (g_spc) |p| p.stop();
+            g_ambient = .off;
+        }
+        if (!same) {
+            g_ambient_failed = false;
+            g_ambient_for_len = @min(source.len, g_ambient_for.len);
+            @memcpy(g_ambient_for[0..g_ambient_for_len], source[0..g_ambient_for_len]);
+        }
+        if (!want) return;
+    }
+    // The screen's playing something of its own.
+    if (g_now != null) return;
+    if (g_ambient == .off) {
+        if (g_ambient_failed) return;
+        startAmbient(alloc, msu_path);
+        if (g_ambient == .off) {
+            g_ambient_failed = true;
+            return;
+        }
+        g_ambient_since = now_ms;
+    }
+    const up: f64 = @min(1, @as(f64, @floatFromInt(now_ms -| g_ambient_since)) / kAmbientFadeMs);
+    const g: f32 = gain * @as(f32, @floatCast(up * up));
+    switch (g_ambient) {
+        .pack => g_preview.setGain(g),
+        .spc => if (g_spc) |p| p.setGain(g),
+        .off => {},
+    }
+}
+
+fn startAmbient(alloc: std.mem.Allocator, msu_path: ?[]const u8) void {
+    if (!g_audio) g_audio = c.SDL_InitSubSystem(c.SDL_INIT_AUDIO);
+    if (!g_audio) return;
+    if (msu_path) |path| {
+        if (g_preview.play(path, kMenuTrack, true)) {
+            g_preview.setGain(0);
+            g_ambient = .pack;
+            return;
+        }
+        g_preview.stop();
+    }
+    if (g_spc == null and !g_spc_tried) {
+        g_spc_tried = true;
+        g_spc = tools_music.Player.init(alloc, kAssets) catch null;
+    }
+    const player = g_spc orelse return;
+    for (player.songs) |sg| {
+        if (sg.number != kMenuTrack) continue;
+        if (!player.play(sg)) return;
+        player.setGain(0);
+        g_ambient = .spc;
+        return;
+    }
 }
 
 /// Starts track `number` of source `source` (0, or a pack by index + 1).
@@ -707,7 +792,9 @@ pub fn draw(page: *const P.Page, t: f32, current: []const u8) void {
     const rows = trackRows(&rows_buf);
     if (importPicked()) {
         p.text(.subtitle, x, kRight.y + 18, P.kGoldHi, "Import a Pack");
-        _ = page.wrap(.body, x, kRight.y + 60, kRight.w - 44, 22, P.kMuted, "Drop a pack's folder, .zip or .7z on this window, or press A to browse for one. It's kept beside your other packs, in a folder of its own, and plays from then on.", 5);
+        var say_buf: [200]u8 = undefined;
+        const say = std.fmt.bufPrint(&say_buf, "Drop a pack's folder, .zip or .7z on this window, or press {s} to browse for one. It's kept beside your other packs, in a folder of its own, and plays from then on.", .{pad_names.current.confirm()}) catch "";
+        _ = page.wrap(.body, x, kRight.y + 60, kRight.w - 44, 22, P.kMuted, say, 5);
         return;
     }
     const pk_opt = pickedPack();
@@ -832,7 +919,9 @@ fn drawPlayer(page: *const P.Page) void {
         };
         p.text(.strong, kPlayer.x + kPlayer.w - 24 - p.textWidth(.strong, time), kPlayer.y + (kPlayer.h - p.lineHeight(.strong)) / 2, P.kTeal, time);
     } else {
-        p.text(.body, x, kPlayer.y + (kPlayer.h - p.lineHeight(.body)) / 2, P.kDim, "Nothing playing. Pick a track and press A, or click it twice.");
+        var say_buf: [80]u8 = undefined;
+        const say = std.fmt.bufPrint(&say_buf, "Nothing playing. Pick a track and press {s}, or click it twice.", .{pad_names.current.confirm()}) catch "";
+        P.padText(p, .body, x, kPlayer.y + (kPlayer.h - p.lineHeight(.body)) / 2, P.kDim, say);
     }
 }
 

@@ -62,7 +62,8 @@ pub fn build(b: *std.Build) void {
     // fills these in. A build nobody named is "dev" and never offers to
     // replace itself with something off GitHub.
     const build_info = b.addOptions();
-    build_info.addOption([]const u8, "version", b.option([]const u8, "version", "The release tag, or nightly (default: dev)") orelse "dev");
+    const version = b.option([]const u8, "version", "The release tag, or nightly (default: dev)") orelse "dev";
+    build_info.addOption([]const u8, "version", version);
     build_info.addOption([]const u8, "commit", b.option([]const u8, "commit", "The commit this was built from") orelse "");
 
     // The SNES emulation is its own module so that nothing under src/ has to
@@ -121,6 +122,16 @@ pub fn build(b: *std.Build) void {
         .root_source_file = default_ini_files.add("default_ini.zig", "pub const text = @embedFile(\"zelda3.ini\");\n"),
     });
 
+    // A release's own notes, .github/release-notes/<tag>.md, which the start
+    // menu shows once after an update to it. Nightly and dev builds have
+    // none.
+    const notes_files = b.addWriteFiles();
+    const notes_src: []const u8 = if (std.mem.startsWith(u8, version, "v")) blk: {
+        _ = notes_files.addCopyFile(b.path(b.fmt(".github/release-notes/{s}.md", .{version})), "notes.md");
+        break :blk "pub const text = @embedFile(\"notes.md\");\n";
+    } else "pub const text = \"\";\n";
+    const release_notes = b.createModule(.{ .root_source_file = notes_files.add("release_notes.zig", notes_src) });
+
     // The fonts the tools window and the start menu draw with, embedded the
     // same way as the ini: Inter, cut down to Latin, and Cinzel, the start
     // page's titles, cut down to ASCII.
@@ -152,6 +163,7 @@ pub fn build(b: *std.Build) void {
     zig_obj.root_module.addImport("snes", snes_mod);
     zig_obj.root_module.addImport("sdl_c", sdl_c_mod);
     zig_obj.root_module.addImport("default_ini", default_ini);
+    zig_obj.root_module.addImport("release_notes", release_notes);
     zig_obj.root_module.addImport("tools_fonts", tools_fonts);
     zig_obj.root_module.addOptions("build_info", build_info);
     exe.root_module.addObject(zig_obj);
@@ -169,6 +181,7 @@ pub fn build(b: *std.Build) void {
     tests.root_module.addImport("snes", snes_mod);
     tests.root_module.addImport("sdl_c", sdl_c_mod);
     tests.root_module.addImport("default_ini", default_ini);
+    tests.root_module.addImport("release_notes", release_notes);
     tests.root_module.addImport("tools_fonts", tools_fonts);
     tests.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
     tests.root_module.addOptions("build_info", build_info);
@@ -226,6 +239,7 @@ pub fn build(b: *std.Build) void {
     });
     menu_tests.root_module.addIncludePath(b.path("."));
     menu_tests.root_module.addImport("default_ini", default_ini);
+    menu_tests.root_module.addImport("release_notes", release_notes);
     menu_tests.root_module.addImport("tools_fonts", tools_fonts);
     menu_tests.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });
     // The tools convert MSU packs to FLAC, check the result decodes, and play
@@ -306,6 +320,7 @@ pub fn build(b: *std.Build) void {
     tools_tests.root_module.addImport("sdl_c", sdl_c_mod);
     tools_tests.root_module.addOptions("build_info", build_info);
     tools_tests.root_module.addImport("default_ini", default_ini);
+    tools_tests.root_module.addImport("release_notes", release_notes);
     tools_tests.root_module.addImport("snes", snes_dsp_mod);
     tools_tests.root_module.addImport("tools_fonts", tools_fonts);
     tools_tests.root_module.addCSourceFile(.{ .file = b.path("src/tools_truetype.c"), .flags = &c_flags });

@@ -23,6 +23,21 @@ For working on ALTTP-DX rather than playing it.
   and prints the room it lands in, as a way into any room. `POKE=addr:value`
   (comma-separated, `0x` for hex) writes bytes of the game's RAM after that,
   to set something up: `POKE=0x202:6` puts the fire rod in Link's hands.
+  With `-` for the chapter, `ROOM=n` boots from power-on straight into
+  dungeon entrance n on a made-up file, no snapshot needed (4 is Hyrule
+  Castle's torchlit hall). `ROOMID=n` with it moves over to room n of that
+  dungeon (`ROOM=53 DARK=1 ROOMID=0x14` is Turtle Rock's lava pipe room;
+  `DARK=1` makes it a Dark World file). `BIRD=k` boots onto the overworld
+  where the flute's bird drops Link instead (0 to 7; 7 is Lake Hylia), and
+  `OUTSIDE=n` where dungeon room n's exit comes out, or `SPOT=lake` out in
+  Lake Hylia by the island. And
+  `SET="Graphics.Particles=0;General.ExtendedAspectRatio=16:9"` overrides
+  settings from the ini for that picture.
+- `zelda3 --preview "<options>" <script> <out.bmp>` is the same from
+  power-on with the options in one argument instead of the environment,
+  `ROOM=4|CRT=off|SCALE=2|SET=Graphics.DynamicLighting=0`. It's how the start
+  menu takes its pictures of the graphics settings, into `previews/` beside
+  the ini.
 - `zelda3 --menu-shot <screen> <out.bmp> [seed]` draws a start menu screen
   (`main`, `settings`, `features`, `controls`, `achievements`, `hub`,
   `alttpr`, `details`) with no window. `LIST_ROW=n` picks a row on the lists, `INFO=1` opens the
