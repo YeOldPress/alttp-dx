@@ -135,7 +135,10 @@ pub const kReceiveItem_Tab0 = [3]u8{
     5, 1, 4,
 };
 
-pub const kReceiveItemMsgs = [76]i16{
+/// Each receipt number's text, -1 for none. The last five are the
+/// randomizer's (rando/receipt.zig): only its Master Sword says anything,
+/// the Tempered Sword's "Your sword is stronger!".
+pub const kReceiveItemMsgs = [81]i16{
     -1, 112, 119, 82, -1, 120, 120, 98,
     97, 102, 105, 83, 82, 86, -1, 100,
     99, 101, 81, 84, 103, 104, 107, 119,
@@ -145,7 +148,8 @@ pub const kReceiveItemMsgs = [76]i16{
     115, 106, 108, 96, -1, -1, -1, 89,
     132, 90, -1, -1, -1, -1, -1, 345,
     -1, -1, -1, -1, -1, -1, -1, -1,
-    -1, 219, 103, 124,
+    -1, 219, 103, 124, -1, -1, -1, -1,
+    119,
 };
 
 pub const kReceiveItemMsgs2 = [2]i16{

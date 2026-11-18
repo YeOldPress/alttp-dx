@@ -30,7 +30,18 @@ For working on ALTTP-DX rather than playing it.
   `DARK=1` makes it a Dark World file). `BIRD=k` boots onto the overworld
   where the flute's bird drops Link instead (0 to 7; 7 is Lake Hylia), and
   `OUTSIDE=n` where dungeon room n's exit comes out, or `SPOT=lake` out in
-  Lake Hylia by the island. And
+  Lake Hylia by the island. `NEWFILE=1` makes the made-up file a brand-new
+  one instead, as naming a file makes it; with `RANDO=n` it's set up for the
+  randomizer's Open mode, so on its own it stops at the menu of places to
+  start (`NEWFILE=1|RANDO=5` with `200,5:a,150,120:down,150` picks Link's
+  House and walks out the door), and with `ROOM`, `BIRD` or `OUTSIDE` it
+  starts there on that new file. `RECEIVE=item@frame` hands Link an item
+  that many frames into the script, as an NPC would, or as a chest would
+  with `item@frame:chest`: an item receipt number (`0x50`) or a randomizer
+  item's name (`progressive_sword`, worked out from what Link has then), up
+  to eight separated by `;`. It's a way to see what a receipt shows and does
+  (`ROOM=4|RANDO=5|RECEIVE=0x4e@100:chest` with `215` is half magic and
+  its HUD). And
   `SET="Graphics.Particles=0;General.ExtendedAspectRatio=16:9"` overrides
   settings from the ini for that picture.
 - `zelda3 --preview "<options>" <script> <out.bmp>` is the same from

@@ -9,6 +9,9 @@
 //! (messaging.dungeonContinueEntrance). Graphics, the HUD and Link are all
 //! loaded the game's own way, so the room looks as it does in play.
 const std = @import("std");
+const open_mode = @import("rando/open_mode.zig");
+const rando_game = @import("rando/game.zig");
+const rando_save = @import("rando/save.zig");
 
 /// The dungeon entrance to go into, while booting for a picture.
 pub var entrance: ?u8 = null;
@@ -65,14 +68,39 @@ pub fn spotNamed(name: []const u8) ?Spot {
     return null;
 }
 
+/// A brand-new file instead, as the game makes one when it's named, set up
+/// for the randomizer's Open mode (rando/open_mode.zig) when a seed's being
+/// played: it starts the way a new file does, at the menu of places to start.
+pub var new_file = false;
+
 /// Whether the game's booting for a picture.
 pub fn active() bool {
-    return entrance != null or outside != null or bird != null or spot != null;
+    return entrance != null or outside != null or bird != null or spot != null or new_file;
+}
+
+/// What NameFile_DoTheNaming (select_file.zig) puts in a new file: the
+/// Kakariko bomb hut and brewery walls open, the death counter, three
+/// hearts and the abilities Link starts with. Then Open mode's bytes, and
+/// the seed's marker, when a seed's being played.
+fn newFileSave(block: []u8) void {
+    @memset(block[0..0x500], 0);
+    std.mem.writeInt(u16, block[0x20c..][0..2], 0xf000, .little);
+    std.mem.writeInt(u16, block[0x20e..][0..2], 0xf000, .little);
+    std.mem.writeInt(u16, block[0x405..][0..2], 0xffff, .little);
+    block[0x36c] = 0x18;
+    block[0x36d] = 0x18;
+    block[0x379] = 0xf8;
+    if (rando_game.active()) {
+        rando_save.write(block, .{ .seed = rando_game.seed() });
+        open_mode.applyNewFile(block);
+    }
+    std.mem.writeInt(u16, block[0x3e5..][0..2], 0x55aa, .little);
 }
 
 /// Ten hearts, the Master Sword and a shield, full magic, partway through
 /// the story: a file that looks lived in, for the HUD.
 pub fn fillSave(block: []u8) void {
+    if (new_file) return newFileSave(block);
     @memset(block[0..0x500], 0);
     block[0x359] = 2; // Master Sword
     block[0x35a] = 2; // Fire Shield
@@ -81,6 +109,7 @@ pub fn fillSave(block: []u8) void {
     block[0x36e] = 0x80; // magic
     block[0x343] = 10; // bombs
     block[0x356] = 1; // Flippers, to swim out into a lake
+    block[0x379] = 0xf8; // what A can do: read, talk, pull, open chests
     block[0x362] = 0x2c; // rupees, 300
     block[0x363] = 0x01;
     block[0x360] = 0x2c;

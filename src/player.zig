@@ -14,6 +14,7 @@ const tagalong = @import("tagalong.zig");
 const tile_detect = @import("tile_detect.zig");
 const player_oam = @import("player_oam.zig");
 const rtl = @import("zelda_rtl.zig");
+const rando_game = @import("rando/game.zig");
 
 const g_ram = &vars.g_ram;
 const OamEnt = vars.OamEnt;
@@ -4545,7 +4546,10 @@ pub export fn Link_PerformOpenChest() callconv(.c) void {
         return;
     }
     vars.item_receipt_method.* = 1;
-    const alt = kReceiveItemAlternates[item];
+    // A randomized file's chests give what was placed in them: no lamp turns
+    // into rupees for being the second, and no boomerang into arrows or
+    // rupees for Link having the other one.
+    const alt = if (rando_game.active()) 0xff else kReceiveItemAlternates[item];
     if (alt != 0xff) {
         const ram_addr = misc.kMemoryLocationToGiveItemTo[item];
         if (rtl.g_ram[ram_addr] != 0)
@@ -5185,7 +5189,7 @@ pub export fn HandlePushingBonkingSnaps_Y() callconv(.c) void {
                 if ((vars.R14.* & 2) == 0) {
                     if (vars.link_x_coord.* & 7 != 0) {
                         // C adds the byte as a signed displacement.
-                        vars.link_x_coord.* +%=@bitCast(@as(i16, @as(i8, @bitCast(r0))));
+                        vars.link_x_coord.* +%= @bitCast(@as(i16, @as(i8, @bitCast(r0))));
                         HandleNudging(@bitCast(r0));
                         return;
                     }

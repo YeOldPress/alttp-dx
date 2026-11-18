@@ -7,6 +7,8 @@ const preview_boot = @import("preview_boot.zig");
 const rtl = @import("zelda_rtl.zig");
 const audio = @import("audio.zig");
 const select_file = @import("select_file.zig");
+const rando_game = @import("rando/game.zig");
+const rando_receipt = @import("rando/receipt.zig");
 
 const g_ram = &vars.g_ram;
 
@@ -112,35 +114,45 @@ extern fn Module19_TriforceRoom() void;
 extern fn Module1A_Credits() void;
 extern fn Module1B_SpawnSelect() void;
 
-pub export const kReceiveItem_Tab1 = [76]u8{
+// The item receipt tables, one entry per receipt number. The game's own run
+// 0x00 to 0x4b; the five after are the randomizer's, in z3randomizer's
+// numbering (rando/receipt.zig): 0x4c bomb capacity 50, 0x4d arrow capacity
+// 70, 0x4e half magic, 0x4f quarter magic, 0x50 the Master Sword from
+// anywhere but the pedestal (0x01 plays the pedestal's cutscene). Nothing the
+// game does itself hands those five over.
+pub export const kReceiveItem_Tab1 = [rando_receipt.kReceiptCount]u8{
     0, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 2, 2, 2,
     2, 2, 2, 0, 2, 0, 2, 2, 0, 2, 2, 2, 2, 2, 2, 2,
     2, 2, 2, 2, 0, 2, 2, 2, 2, 2, 0, 2, 2, 2, 2, 2,
     2, 2, 2, 2, 0, 0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    2, 2, 0, 0, 2, 0, 2, 2, 2, 0, 2, 2,
+    2, 2, 0, 0, 2, 0, 2, 2, 2, 0, 2, 2, 2, 2, 0, 0,
+    0,
 };
-const kReceiveItem_Tab2 = [76]i8{
+const kReceiveItem_Tab2 = [rando_receipt.kReceiptCount]i8{
     -5, -5, -5, -5, -5, -4, -4, -5, -5, -4, -4, -4, -2, -4, -4, -4,
     -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4,
     -4, -4, -4, -5, -4, -4, -4, -4, -4, -4, -2, -4, -4, -4, -4, -4,
     -4, -4, -4, -4, -2, -2, -2, -4, -4, -4, -4, -4, -4, -4, -4, -4,
-    -4, -4, -2, -2, -4, -2, -4, -4, -4, -5, -4, -4,
+    -4, -4, -2, -2, -4, -2, -4, -4, -4, -5, -4, -4, -4, -4, -2, -2,
+    -5,
 };
-const kReceiveItem_Tab3 = [76]u8{
+const kReceiveItem_Tab3 = [rando_receipt.kReceiptCount]u8{
     4, 4, 4, 4, 4, 0, 0, 4, 4, 4, 4, 4, 5, 0, 0, 0,
     0, 0, 0, 4, 0, 4, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 4, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 4, 4, 0, 4, 0, 0, 0, 4, 0, 0,
+    0, 0, 4, 4, 0, 4, 0, 0, 0, 4, 0, 0, 0, 0, 4, 4,
+    4,
 };
-pub export const kReceiveItemGfx = [76]u8{
+pub export const kReceiveItemGfx = [rando_receipt.kReceiptCount]u8{
     6,    0x18, 0x18, 0x18, 0x2d, 0x20, 0x2e, 9,    9,    0xa,  8,    5,    0x10, 0xb,  0x2c, 0x1b,
     0x1a, 0x1c, 0x14, 0x19, 0xc,  7,    0x1d, 0x2f, 7,    0x15, 0x12, 0xd,  0xd,  0xe,  0x11, 0x17,
     0x28, 0x27, 4,    4,    0xf,  0x16, 3,    0x13, 1,    0x1e, 0x10, 0,    0,    0,    0,    0,
     0,    0x30, 0x22, 0x21, 0x24, 0x24, 0x24, 0x23, 0x23, 0x23, 0x29, 0x2a, 0x2c, 0x2b, 3,    3,
-    0x34, 0x35, 0x31, 0x33, 2,    0x32, 0x36, 0x37, 0x2c, 6,    0xc,  0x38,
+    0x34, 0x35, 0x31, 0x33, 2,    0x32, 0x36, 0x37, 0x2c, 6,    0xc,  0x38, 0x30, 2,    0x32, 0x32,
+    0x18,
 };
-pub export const kMemoryLocationToGiveItemTo = [76]u16{
+pub export const kMemoryLocationToGiveItemTo = [rando_receipt.kReceiptCount]u16{
     0xf359, 0xf359, 0xf359, 0xf359,
     0xf35a, 0xf35a, 0xf35a, 0xf345,
     0xf346, 0xf34b, 0xf342, 0xf340,
@@ -160,8 +172,10 @@ pub export const kMemoryLocationToGiveItemTo = [76]u16{
     0xf360, 0xf360, 0xf372, 0xf376,
     0xf376, 0xf373, 0xf360, 0xf360,
     0xf35c, 0xf359, 0xf34c, 0xf355,
+    0xf370, 0xf371, 0xf37b, 0xf37b,
+    0xf359,
 };
-const kValueToGiveItemTo = [76]i8{
+const kValueToGiveItemTo = [rando_receipt.kReceiptCount]i8{
     1,    2,   3,   4,
     1,    2,   3,   1,
     1,    1,   1,   1,
@@ -181,7 +195,12 @@ const kValueToGiveItemTo = [76]i8{
     -100, -50, -1,  1,
     10,   -1,  -1,  -1,
     -1,   1,   3,   1,
+    7,    7,   1,   2,
+    2,
 };
+/// kWishPond2_OamFlags (sprite_main_tables.zig) for the randomizer's five
+/// receipt numbers, past the game's 76: each one's palette.
+pub const kReceiveItemOamFlagsExtra = [rando_receipt.kReceiptCount - 76]u8{ 2, 2, 4, 4, 5 };
 const kDungeon_DefaultAttr = [384]u8{
     1,    1,    1,    0,    2,    1,    2,    0,    1,    1,    2,    2,    2,    2,    2,    2,
     2,    2,    2,    0,    0,    1,    0,    0,    2,    0,    0,    2,    2,    2,    2,    2,
@@ -854,7 +873,12 @@ pub export fn AncillaAdd_ItemReceipt(ain: u8, yin: u8, chest_pos: c_int) callcon
 
     const v: u8 = @bitCast(kValueToGiveItemTo[j]);
     const p: [*]u8 = g_ram[kMemoryLocationToGiveItemTo[j]..].ptr;
-    if (v & 0x80 == 0)
+    // A randomized file notes what's found of the items that share a slot,
+    // and never trades a slot's better item for a lesser one.
+    const rando = rando_game.active();
+    const sram = g_ram[0xf000..0xf500];
+    if (rando) rando_receipt.track(@intCast(j), sram);
+    if (v & 0x80 == 0 and !(rando and rando_receipt.keepsBetter(kMemoryLocationToGiveItemTo[j] - 0xf000, v, sram)))
         p[0] = v;
 
     if (j == 0x1f) {
@@ -923,6 +947,7 @@ pub export fn AncillaAdd_ItemReceipt(ain: u8, yin: u8, chest_pos: c_int) callcon
     } else {
         ItemReceipt_GiveBottledItem(@intCast(j));
     }
+    if (rando) rando_receipt.afterReceive(sram);
 
     var gfx = kReceiveItemGfx[j];
     if (gfx == 0xff) {
@@ -1134,16 +1159,21 @@ pub export fn HandleItemTileAction_Overworld(x: u16, y: u16) callconv(.c) u8 { /
 
 const testing = std.testing;
 
-test "the item receipt tables all cover the same 76 items" {
-    try testing.expectEqual(76, kReceiveItem_Tab1.len);
-    try testing.expectEqual(76, kReceiveItem_Tab2.len);
-    try testing.expectEqual(76, kReceiveItem_Tab3.len);
-    try testing.expectEqual(76, kReceiveItemGfx.len);
-    try testing.expectEqual(76, kMemoryLocationToGiveItemTo.len);
-    try testing.expectEqual(76, kValueToGiveItemTo.len);
-    // Every target address is inside the save-game block.
+test "the item receipt tables all cover the game's 76 items and the randomizer's 5" {
+    try testing.expectEqual(81, kReceiveItem_Tab1.len);
+    try testing.expectEqual(81, kReceiveItem_Tab2.len);
+    try testing.expectEqual(81, kReceiveItem_Tab3.len);
+    try testing.expectEqual(81, kReceiveItemGfx.len);
+    try testing.expectEqual(81, kMemoryLocationToGiveItemTo.len);
+    try testing.expectEqual(81, kValueToGiveItemTo.len);
+    try testing.expectEqual(81, 76 + kReceiveItemOamFlagsExtra.len);
+    // Every target address is inside the save-game block's inventory.
     for (kMemoryLocationToGiveItemTo) |addr|
-        try testing.expect(addr >= 0xf340 and addr <= 0xf37a);
+        try testing.expect(addr >= 0xf340 and addr <= 0xf37b);
+    // The Master Sword off the pedestal is the pedestal's, less the cutscene.
+    try testing.expectEqual(kMemoryLocationToGiveItemTo[1], kMemoryLocationToGiveItemTo[0x50]);
+    try testing.expectEqual(kValueToGiveItemTo[1], kValueToGiveItemTo[0x50]);
+    try testing.expectEqual(kReceiveItemGfx[1], kReceiveItemGfx[0x50]);
 }
 
 test "the dungeon default tile attributes fill both copied ranges" {

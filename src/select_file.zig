@@ -4,6 +4,7 @@ const vars = @import("variables.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const settings_menu = @import("settings_menu.zig");
 const preview_boot = @import("preview_boot.zig");
+const rando_save = @import("rando/save.zig");
 
 const OamEnt = vars.OamEnt;
 const g_ram = &vars.g_ram;
@@ -1169,6 +1170,9 @@ pub export fn NameFile_DoTheNaming() callconv(.c) void { // 8cda4d
     writeWord(srm + 0x20e, 0xf000);
     writeWord(srm + kSrmOffs_DiedCounter, 0xffff);
     @memcpy((srm + 0x340)[0..60], &kSramInit_Normal);
+    // A randomized game was asked for: this file carries its seed.
+    if (rando_save.setUpNewFile(srm[0..0x500]))
+        std.debug.print("Randomizer: file {d} is seed {d}\n", .{ selectfile_R16.* + 1, rando_save.read(srm[0..0x500]).?.seed });
     Intro_FixCksum(srm);
     ZeldaWriteSram();
     ReturnToFileSelect();

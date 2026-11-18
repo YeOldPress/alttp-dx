@@ -9,6 +9,10 @@ const audio = @import("audio.zig");
 const rumble = @import("rumble.zig");
 const menu = @import("menu.zig");
 const preview_boot = @import("preview_boot.zig");
+const rando_game = @import("rando/game.zig");
+const rando_save = @import("rando/save.zig");
+const rando_items = @import("rando/items.zig");
+const rando_receipt = @import("rando/receipt.zig");
 const msu_import = @import("msu_import.zig");
 /// config.h's kMsuEnabled_MsuDeluxe.
 const kMsuEnabledDeluxe: u8 = 2;
@@ -457,6 +461,55 @@ fn applyRenderSets() void {
     }
 }
 
+/// RECEIVE=item@frame for --render: hands Link item receipt `item` (0x.. for
+/// hex, or a randomizer item's name, progressive_sword, which is worked out
+/// from what Link has then) that many frames into the script, the way an NPC
+/// does, or with item@frame:chest as though from a chest just above him.
+/// Up to eight, separated by ';'. To see what a receipt shows and does.
+const render_receive = struct {
+    extern fn Link_ReceiveItem(item: u8, chest_position: c_int) void;
+    const Gift = struct { item: ?u8, rando: ?rando_items.Item, at: u32, chest: bool };
+    var gifts: [8]Gift = undefined;
+    var count: usize = 0;
+    var frame: u32 = 0;
+
+    fn parse(spec: []const u8) void {
+        var it = std.mem.tokenizeScalar(u8, spec, ';');
+        while (it.next()) |one| {
+            if (count == gifts.len) return;
+            const at_sign = std.mem.indexOfScalar(u8, one, '@') orelse one.len;
+            const rest = if (at_sign < one.len) one[at_sign + 1 ..] else "";
+            const colon = std.mem.indexOfScalar(u8, rest, ':') orelse rest.len;
+            const name = one[0..at_sign];
+            gifts[count] = .{
+                .item = std.fmt.parseInt(u8, name, 0) catch null,
+                .rando = std.meta.stringToEnum(rando_items.Item, name),
+                .at = std.fmt.parseInt(u32, rest[0..colon], 0) catch 0,
+                .chest = colon < rest.len,
+            };
+            count += 1;
+        }
+    }
+
+    fn tick() void {
+        defer frame += 1;
+        for (gifts[0..count]) |g| {
+            if (g.at != frame) continue;
+            const it = g.item orelse if (g.rando) |r| rando_receipt.byteFor(r) else continue;
+            if (!g.chest) {
+                vars.item_receipt_method.* = 0;
+                Link_ReceiveItem(it, 0);
+                continue;
+            }
+            // A chest's position is its tilemap word offset in the room.
+            const y = vars.link_y_coord.* -% (vars.dung_loade_bgoffs_v_copy.* & 0xff00) -% 16;
+            const x = vars.link_x_coord.* -% (vars.dung_loade_bgoffs_h_copy.* & 0xff00);
+            vars.item_receipt_method.* = 1;
+            Link_ReceiveItem(it, @as(c_int, (y << 4) & 0x1f80) | @as(c_int, (x >> 2) & 0x7e));
+        }
+    }
+};
+
 /// The --render path: load a chapter snapshot, play the script, and write the
 /// frame it ends on. Runs before SDL is started, so no window ever opens.
 fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u8) c_int {
@@ -484,12 +537,19 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
     // ROOMID=n puts it in room n of the entrance's dungeon instead.
     preview_boot.dark_world = renderOpt("DARK", &opt_buf) != null;
     if (renderOpt("ROOMID", &opt_buf)) |rid| preview_boot.room = std.fmt.parseInt(u16, rid, 0) catch null;
+    // RANDO=n plays the built-in randomizer's seed n.
+    if (renderOpt("RANDO", &opt_buf)) |s| {
+        const seed = std.fmt.parseInt(u64, s, 10) catch 0;
+        if (!rando_game.start(seed, .{})) std.debug.print("--render: seed {d} would not fill\n", .{seed});
+    }
     // OUTSIDE=n boots onto the overworld where room n's exit comes out.
     if (renderOpt("OUTSIDE", &opt_buf)) |o| preview_boot.outside = std.fmt.parseInt(u16, o, 0) catch null;
     // BIRD=k boots onto the overworld at the flute's spot k, 0 to 7, and
     // SPOT=lake at one of preview_boot's own.
     if (renderOpt("BIRD", &opt_buf)) |o| preview_boot.bird = std.fmt.parseInt(c_int, o, 0) catch null;
     if (renderOpt("SPOT", &opt_buf)) |o| preview_boot.spot = preview_boot.spotNamed(o);
+    // NEWFILE=1 starts a brand-new file instead (Open mode with RANDO=n).
+    preview_boot.new_file = renderOpt("NEWFILE", &opt_buf) != null;
     // ENTRANCE=n goes in through dungeon entrance n first (0x.. for hex), the
     // way continuing a save made in a dungeon does: a way to any room.
     if (std.c.getenv("ENTRANCE")) |e| {
@@ -514,6 +574,7 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
             vars.g_ram[addr] = std.fmt.parseInt(u8, poke[colon + 1 ..], 0) catch return 1;
         }
     }
+    if (renderOpt("RECEIVE", &opt_buf)) |r| render_receive.parse(r);
 
     // Every frame's drawn, as in the window, though only the last is kept:
     // the lighting and particles carry things over from one drawn frame to
@@ -528,6 +589,7 @@ fn renderToFile(ref_arg: [*:0]const u8, script: [*:0]const u8, out: [*:0]const u
             return 1;
         };
         for (0..step.frames) |_| {
+            render_receive.tick();
             _ = ZeldaRunFrame(step.buttons);
             rumble.reset();
             ZeldaDrawPpuFrame(@ptrCast(scratch.ptr), scratch_w * 4, g_ppu_render_flags & ~kPpuRenderFlags_4x4Mode7);
@@ -1104,6 +1166,23 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         return emuRenderToFile(argv[1], argv[2], argv[3]);
     }
 
+    // `--rando <seed|random>` plays the built-in randomizer, until the start
+    // menu has a screen for it: no start menu, and the next new file made at
+    // the file select is randomized with that seed. It can go before the
+    // other options too, as in `--rando 7 --render - <script> <out.bmp>`.
+    var built_in_rando = false;
+    if (argc >= 2 and strcmp(argv[0], "--rando") == 0) {
+        const seed = rando_save.parseSeed(std.mem.span(argv[1])) orelse {
+            std.debug.print("--rando: the seed is a number, or random\n", .{});
+            return 1;
+        };
+        rando_save.pending_seed = seed;
+        std.debug.print("Randomizer seed {d}: the next new file is randomized with it\n", .{seed});
+        built_in_rando = true;
+        argc -= 2;
+        argv += 2;
+    }
+
     // `--render <ref> <script> <out.bmp>` plays a script from a snapshot with
     // no window and saves the last frame. See frame_capture.zig.
     var render_request: ?[*]const [*:0]u8 = null;
@@ -1181,7 +1260,7 @@ fn zeldaMain(argc_in: c_int, argv_in: [*][*:0]u8) callconv(.c) c_int {
         // translation's are this version's, and go straight in. Comparing
         // against a ROM (zelda3 <rom>) is a developer tool and goes straight in.
         // A seed always gets its options screen first.
-        if (open_tools or rando_rom != null or (argc == 0 and (!menu.checkAssets(alloc).playable() or menu.wantsStartMenu(alloc)))) {
+        if (open_tools or rando_rom != null or (argc == 0 and (!menu.checkAssets(alloc).playable() or (!built_in_rando and menu.wantsStartMenu(alloc))))) {
             // `zelda3 tools` opens the menu on them.
             menu.g_open_tools = open_tools;
             const outcome = menu.run(alloc, rando_rom) catch |err| {

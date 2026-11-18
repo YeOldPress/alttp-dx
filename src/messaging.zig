@@ -4,9 +4,11 @@
 const std = @import("std");
 const vars = @import("variables.zig");
 const rtl = @import("zelda_rtl.zig");
+const rando_prizes = @import("rando/prizes.zig");
 const rtl_types = @import("zelda_rtl_types.zig");
 const features = @import("features.zig");
 const preview_boot = @import("preview_boot.zig");
+const rando_save = @import("rando/save.zig");
 const main_mod = @import("main.zig");
 const util = @import("util.zig");
 const tables = @import("messaging_tables.zig");
@@ -1431,7 +1433,9 @@ fn worldMapDrawMarker(
     }
     var pt: Point16U = undefined;
     if (WorldMap_CalculateOamCoordinates(&pt)) {
-        var info = tabs[k];
+        // While the map marks the pendants (indicator 3), a pendant marker
+        // takes the color of the pendant its dungeon holds.
+        var info = if (check_pendant and k == 3) rando_prizes.pendantMarkerSprite(@intCast(idx), tabs[k]) else tabs[k];
         var ext: u8 = 2;
         if (info >> 8 == 0) {
             info = @as(u16, tables.kOwMap_tab2[vars.frame_counter.* >> 3 & 3]) << 8 | 0x32;
@@ -1555,12 +1559,12 @@ fn WorldMap_AddSprite(spr: c_int, big_in: u8, flags_in: u8, ch_in: u8, x_in: u16
 
 pub export fn OverworldMap_CheckForPendant(k: c_int) callconv(.c) bool {
     return (vars.savegame_map_icons_indicator.* == 3) and
-        (vars.link_which_pendants.* & tables.kPendantBitMask[@intCast(k)]) != 0;
+        (vars.link_which_pendants.* & rando_prizes.pendantMarkerBit(@intCast(k), tables.kPendantBitMask[@intCast(k)])) != 0;
 }
 
 pub export fn OverworldMap_CheckForCrystal(k: c_int) callconv(.c) bool {
     return (vars.savegame_map_icons_indicator.* == 7) and
-        (vars.link_has_crystals.* & tables.kCrystalBitMask[@intCast(k)]) != 0;
+        (vars.link_has_crystals.* & rando_prizes.crystalMarkerBit(@intCast(k), tables.kCrystalBitMask[@intCast(k)])) != 0;
 }
 
 pub export fn Module0E_03_DungeonMap() callconv(.c) void {
@@ -2216,6 +2220,19 @@ pub export fn Death_InitializeGameOverLetters() callconv(.c) void {
     vars.hookshot_effect_index.* = 6;
 }
 
+/// Every file that's loaded switches the randomizer on with its seed, or off
+/// when it isn't a randomized file, so one file's seed never carries over to
+/// another. A made-up file for a picture keeps whatever --render asked for.
+fn syncRandomizerWithFile(block: []const u8) void {
+    if (preview_boot.active()) return;
+    switch (rando_save.syncWithFile(block)) {
+        .ordinary, .same_seed => {},
+        .stopped => std.debug.print("Randomizer: off, for an ordinary file\n", .{}),
+        .started => std.debug.print("Randomizer: playing seed {d}\n", .{rando_save.read(block).?.seed}),
+        .unplayable => std.debug.print("Randomizer: this file's seed can't be played here (made by another version?); it plays as the ordinary game\n", .{}),
+    }
+}
+
 pub export fn CopySaveToWRAM() callconv(.c) void {
     const k: usize = 0xf;
     vars.bird_travel_x_hi[k] = 0;
@@ -2227,6 +2244,7 @@ pub export fn CopySaveToWRAM() callconv(.c) void {
     const off = std.mem.readInt(u16, g_ram[0..2], .little);
     const dst: [*]u8 = @ptrCast(vars.save_dung_info);
     @memcpy(dst[0..0x500], (g_zenv.sram.? + off)[0..0x500]);
+    syncRandomizerWithFile(dst[0..0x500]);
 
     vars.bg_tile_animation_countdown.* = 7;
     vars.word_7EC013.* = 7;

@@ -34,6 +34,7 @@ comptime {
     _ = @import("src/menu_window.zig");
     _ = @import("src/menu_news.zig");
     _ = @import("src/setting_previews.zig");
+    _ = @import("src/rando/test_all.zig");
     _ = @import("src/zip.zig");
     _ = @import("src/updater.zig");
     _ = @import("src/title_dx.zig");

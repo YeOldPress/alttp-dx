@@ -18,6 +18,9 @@ const c = @import("dungeon_abi.zig");
 const overworld = @import("overworld.zig");
 const dungeon_wide = @import("dungeon_wide.zig");
 const particles = @import("particles.zig");
+const rando_game = @import("rando/game.zig");
+const rando_receipt = @import("rando/receipt.zig");
+const rando_prizes = @import("rando/prizes.zig");
 const Words = [*]align(1) u16;
 const Tiles = [*]align(1) const u16;
 const RoomBounds = v.RoomBounds;
@@ -5145,7 +5148,7 @@ pub export fn RoomTag_RoomTrigger_BlockDoor(k: c_int) callconv(.c) void { // 81c
 // Used for bosses
 pub export fn RoomTag_PrizeTriggerDoorDoor(k: c_int) callconv(.c) void { // 81c508
     const tt: u8 = if (v.savegame_is_darkworld.* != 0) v.link_has_crystals.* else v.link_which_pendants.*;
-    if (tt & rtl.kDungeonCrystalPendantBit[@as(u8, @truncate(v.cur_palace_index_x2.*)) >> 1] != 0) {
+    if (tt & rando_prizes.prizeBit(@as(u8, @truncate(v.cur_palace_index_x2.*)) >> 1) != 0) {
         v.dung_flag_trapdoors_down.* = 0;
         v.dung_cur_door_pos.* = 0;
         v.door_animation_step_indicator.* = 0;
@@ -5275,13 +5278,16 @@ pub export fn Dung_TagRoutine_BlastWallStuff(k: c_int) callconv(.c) void { // 81
 
 // Used for bosses
 pub export fn RoomTag_GetHeartForPrize(k: c_int) callconv(.c) void { // 81c709
-    const kBossFinishedFallingItem = [13]u8{ 0, 0, 1, 2, 0, 6, 6, 6, 6, 6, 3, 6, 6 };
+    // The dungeon's prize and what falls for it (the game's
+    // kBossFinishedFallingItem) come from rando/prizes.zig, which follows a
+    // randomized file's placement.
     if (v.dung_savegame_state_bits.* & 0x8000 == 0)
         return;
+    const palace: u8 = @as(u8, @truncate(v.cur_palace_index_x2.*)) >> 1;
     const tt: u8 = if (v.savegame_is_darkworld.* != 0) v.link_has_crystals.* else v.link_which_pendants.*;
-    if (tt & rtl.kDungeonCrystalPendantBit[@as(u8, @truncate(v.cur_palace_index_x2.*)) >> 1] == 0) {
+    if (tt & rando_prizes.prizeBit(palace) == 0) {
         v.byte_7E04C2.* = 128;
-        if (c.Ancilla_SpawnFallingPrize(kBossFinishedFallingItem[@as(u8, @truncate(v.cur_palace_index_x2.*)) >> 1]) < 0)
+        if (c.Ancilla_SpawnFallingPrize(rando_prizes.fallingItem(palace)) < 0)
             return; // Zelda bugfix. Price won't spawn if we're out of ancillas
     }
     v.dung_hdr_tag[index(k)] = 0;
@@ -6593,6 +6599,13 @@ pub export fn OpenChestForItem(tile: u8, chest_position: *c_int) callconv(.c) u8
                     break :blk chest_idx < 0;
                 }) {
                     data = chest_data[2];
+                    // The walk above stops at the room's chest_idx_org'th
+                    // table entry, the same count rando/chests.zig numbers
+                    // a room's chests by.
+                    if (rando_game.active()) {
+                        if (rando_game.chestItem(v.dungeon_room_index.*, @intCast(chest_idx_org))) |it|
+                            data = rando_receipt.byteFor(it);
+                    }
                     if ((chest_room & 0x8000) != 0) {
                         if (!((v.link_bigkey.* & rtl.kUpperBitmasks[index(v.cur_palace_index_x2.* >> 1)]) != 0)) {
                             v.dialogue_message_index.* = 0x7a;
@@ -7876,7 +7889,8 @@ pub export fn Module07_06_FatInterRoomStairs() callconv(.c) void { // 828c14
 }
 
 pub export fn Module07_0E_01_HandleMusicAndResetProps() callconv(.c) void { // 828c78
-    if ((v.dungeon_room_index.* == 7 or v.dungeon_room_index.* == 23 and !c.ZeldaIsPlayingMusicTrack(17)) and !(v.link_which_pendants.* & 1 != 0))
+    // Tower of Hera's boss music, until its prize (palace index 10) is taken.
+    if ((v.dungeon_room_index.* == 7 or v.dungeon_room_index.* == 23 and !c.ZeldaIsPlayingMusicTrack(17)) and !(v.link_which_pendants.* & rando_prizes.prizeBit(10) != 0))
         v.music_control.* = 0xf1;
     v.staircase_var1.* = if (v.which_staircase_index.* & 4 != 0) 106 else 88;
     v.overworld_map_state.* = 0;
@@ -8328,7 +8342,7 @@ pub export fn Dungeon_SetBossMusicUnorthodox() callconv(.c) void { // 829165
             if (v.dungeon_room_index.* != 23 or c.ZeldaIsPlayingMusicTrack(17))
                 return;
         }
-        if (v.music_unk1.* != 0xf1 and (v.link_which_pendants.* & 1) != 0)
+        if (v.music_unk1.* != 0xf1 and (v.link_which_pendants.* & rando_prizes.prizeBit(10)) != 0)
             return;
     }
     v.music_control.* = x;

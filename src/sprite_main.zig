@@ -13,6 +13,7 @@ const a = @import("sprite_main_abi.zig");
 const t = @import("sprite_main_tables.zig");
 const features = @import("features.zig");
 const achievements = @import("achievements.zig");
+const rando_game = @import("rando/game.zig");
 const SpriteSpawnInfo = a.SpriteSpawnInfo;
 const PrepOamCoordsRet = a.PrepOamCoordsRet;
 const SpriteHitBox = a.SpriteHitBox;
@@ -7518,6 +7519,16 @@ pub export fn SpritePrep_IgnoreProjectiles(k: c_int) callconv(.c) void {
 
 pub export fn SpritePrep_Mantle(k: c_int) callconv(.c) void {
     const i = ix(k);
+    // Randomized (Open mode, rando/open_mode.zig): once Zelda's in the
+    // Sanctuary the mantle behind the throne's already pushed aside, so the
+    // sewers behind it can be reached without her, where z3randomizer's
+    // Mantle_CorrectPosition puts it. In the game it only moves for Zelda in
+    // tow.
+    if (rando_game.active() and v.sram_progress_flags.* & 0x04 != 0) {
+        v.sprite_x_lo[i] = 0x0a;
+        v.sprite_x_hi[i] = 0x03;
+        v.sprite_G[i] = 0x90;
+    }
     v.sprite_y_lo[i] +%= 3;
     v.sprite_x_lo[i] +%= 8;
 }
@@ -12324,7 +12335,10 @@ pub export fn Uncle_InPassage(k: c_int) callconv(.c) void {
             v.sprite_graphics[i] = 1;
             v.which_starting_point.* = 3;
             v.sram_progress_flags.* |= 1;
-            v.sram_progress_indicator.* = 1;
+            // Randomized (Open mode, rando/open_mode.zig): Zelda's already
+            // rescued, and the uncle's item mustn't bring the rain back.
+            if (!rando_game.active() or v.sram_progress_indicator.* == 0)
+                v.sram_progress_indicator.* = 1;
         },
         else => {},
     }

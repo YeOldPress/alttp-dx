@@ -87,6 +87,19 @@ pub fn wantsWindow(args: []const [:0]const u8) bool {
     return args.len == 0 or (args.len == 1 and std.mem.eql(u8, args[0], "gui"));
 }
 
+/// A seed's spoiler log: each region, then each location in it and its item.
+fn printSpoiler(w: anytype, seed: u64, comptime locs: type, out: *std.Io.Writer) !void {
+    try out.print("Seed {d}\n", .{seed});
+    for (locs.kRegionNames, 0..) |rname, ri| {
+        try out.print("\n{s}\n", .{rname});
+        for (locs.kLocs, 0..) |l, li| {
+            if (@backingInt(l.region) != ri) continue;
+            const item = w.placed[li] orelse continue;
+            try out.print("  {s}: {s}\n", .{ l.name, @tagName(item) });
+        }
+    }
+}
+
 /// Runs `f` with a writer to stdout, flushed after.
 fn toStdout(f: anytype, args: anytype) !void {
     var threaded: std.Io.Threaded = .init(std.heap.c_allocator, .{});
@@ -243,6 +256,19 @@ fn runCommand(alloc: std.mem.Allocator, args: []const [:0]const u8) !bool {
     }
     // Undocumented: what the music page plays, as a file, for hearing it
     // without the window.
+    // `zelda3 tools rando <seed>`: the built-in randomizer's placement for a
+    // seed, every location and what's in it, as a spoiler log.
+    if (std.mem.eql(u8, cmd, "rando")) {
+        const seed = std.fmt.parseInt(u64, positional(rest, 0) orelse return error.Usage, 10) catch return error.Usage;
+        const fill = @import("rando/fill.zig");
+        const locs = @import("rando/locations.zig");
+        var w = fill.generate(seed, .{}) catch |err| {
+            std.debug.print("seed {d} would not fill: {s}\n", .{ seed, @errorName(err) });
+            return false;
+        };
+        try toStdout(printSpoiler, .{ &w, seed, locs });
+        return fill.beatable(&w);
+    }
     if (std.mem.eql(u8, cmd, "music-wav")) {
         const assets = positional(rest, 0) orelse return error.Usage;
         const number = std.fmt.parseInt(u8, positional(rest, 1) orelse return error.Usage, 10) catch return error.Usage;

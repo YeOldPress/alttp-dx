@@ -6,6 +6,7 @@
 const std = @import("std");
 const vars = @import("variables.zig");
 const config = @import("config.zig");
+const rando_save = @import("rando/save.zig");
 const overworld = @import("overworld.zig");
 const load_gfx = @import("load_gfx.zig");
 const dungeon = @import("dungeon.zig");
@@ -1160,10 +1161,12 @@ pub export fn SaveLoadSlot(cmd: c_int, which: c_int) callconv(.c) void {
         else
             @as([*:0]const u8, "Replaying"), which);
 
-        if (cmd != kSaveLoad_Save)
-            StateRecorder_Load(&state_recorder, file, cmd == kSaveLoad_Replay)
-        else
-            StateRecorder_Save(&state_recorder, file);
+        if (cmd != kSaveLoad_Save) {
+            StateRecorder_Load(&state_recorder, file, cmd == kSaveLoad_Replay);
+            // A quick save of a randomized file plays its seed, and one of an
+            // ordinary file plays the game as it comes.
+            _ = rando_save.syncWithFile(vars.g_ram[0xF000..0xF500]);
+        } else StateRecorder_Save(&state_recorder, file);
 
         _ = fclose(file);
     }

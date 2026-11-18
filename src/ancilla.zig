@@ -17,6 +17,9 @@ const tile_detect = @import("tile_detect.zig");
 const player = @import("player.zig");
 const audio = @import("audio.zig");
 const rtl = @import("zelda_rtl.zig");
+const rando_prizes = @import("rando/prizes.zig");
+const rando_game = @import("rando/game.zig");
+const rando_receipt = @import("rando/receipt.zig");
 const main_mod = @import("main.zig");
 
 const OamEnt = vars.OamEnt;
@@ -4362,6 +4365,8 @@ pub export fn Ancilla22_ItemReceipt(k: c_int) callconv(.c) void { // 88c38a
                     tables.kReceiveItemMsgs3[vars.link_heart_pieces.*]
                 else
                     tables.kReceiveItemMsgs[it];
+                // A few say the wrong thing given from a chest.
+                if (rando_game.active()) msg = rando_receipt.message(it, @intCast(msg));
             }
             if (msg != -1) {
                 vars.dialogue_message_index.* = @intCast(msg);
@@ -4424,7 +4429,7 @@ pub export fn Ancilla_ReceiveItem_Draw(k: c_int, x: c_int, y: c_int) callconv(.c
     var oam = GetOamCurPtr();
     const j: usize = vars.ancilla_item_to_link[@intCast(k)];
     oam[0].charnum = 0x24;
-    var a = kWishPond2_OamFlags[j];
+    var a = if (j < kWishPond2_OamFlags.len) kWishPond2_OamFlags[j] else misc.kReceiveItemOamFlagsExtra[j - kWishPond2_OamFlags.len];
     if (sign8(a)) a = vars.ancilla_arr4[@intCast(k)];
     Ancilla_SetOam(oam, lowWord(x), lowWord(y), 0x24, (a *% 2) | 0x30, misc.kReceiveItem_Tab1[j]);
     oam += 1;
@@ -4732,7 +4737,8 @@ pub export fn Ancilla_RisingCrystal(k: c_int) callconv(.c) void { // 88cbf2
     if (y < 0x49) {
         Ancilla_SetY(k, 0x49 +% vars.BG2VOFS_copy.*);
         if (vars.submodule_index.* == 0) {
-            vars.link_has_crystals.* |= rtl.kDungeonCrystalPendantBit[@as(u8, @truncate(vars.cur_palace_index_x2.*)) >> 1];
+            // The dungeon's crystal, as the randomizer placed it.
+            vars.link_has_crystals.* |= rando_prizes.prizeBit(@as(u8, @truncate(vars.cur_palace_index_x2.*)) >> 1);
             vars.submodule_index.* = 0x18;
             vars.subsubmodule_index.* = 0;
             @memset(vars.aux_palette_buffer[0x20 .. 0x20 + 0x60], 0);
