@@ -9,6 +9,7 @@ const audio = @import("audio.zig");
 const select_file = @import("select_file.zig");
 const rando_game = @import("rando/game.zig");
 const rando_receipt = @import("rando/receipt.zig");
+const rando_npcs = @import("rando/npcs.zig");
 
 const g_ram = &vars.g_ram;
 
@@ -725,7 +726,11 @@ pub export fn Module05_LoadFile() callconv(.c) void { // 828136
             LoadDungeonRoomRebuildHUD();
             return;
         }
-        vars.dialogue_message_index.* = if (vars.link_item_mirror.* == 2) 0x185 else 0x184;
+        // The mountain cave's on the start menu once the old man's home:
+        // randomized, by his flag rather than the mirror he gives in the
+        // game (rando/npcs.zig, z3randomizer's ItemCheck_OldMan).
+        const old_man_home = if (rando_game.active()) rando_npcs.given(.old_man) else vars.link_item_mirror.* == 2;
+        vars.dialogue_message_index.* = if (old_man_home) 0x185 else 0x184;
         Main_ShowTextMessage();
         Dungeon_LoadPalettes();
         vars.INIDISP_copy.* = 15;

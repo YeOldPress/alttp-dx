@@ -15,6 +15,7 @@ const tile_detect = @import("tile_detect.zig");
 const player_oam = @import("player_oam.zig");
 const rtl = @import("zelda_rtl.zig");
 const rando_game = @import("rando/game.zig");
+const rando_minigames = @import("rando/minigames.zig");
 
 const g_ram = &vars.g_ram;
 const OamEnt = vars.OamEnt;
@@ -841,10 +842,24 @@ pub export fn LinkState_ReceivingEther() callconv(.c) void {
         vars.link_x_coord.* = x;
         vars.link_y_coord.* = y;
     } else if (i == 0) {
-        _ = AncillaAdd_FallingPrize(0x29, 0, 4);
+        randoTabletPrize(AncillaAdd_FallingPrize(0x29, 0, 4));
         vars.flag_is_link_immobilized.* = 1;
         vars.flag_block_link_menu.* = 0;
     }
+}
+
+/// While randomized, makes the medallion falling from a tablet (falling
+/// prize ancilla `k`) the item placed there instead, graphic and all.
+/// ancilla.zig's Ancilla29_MilestoneItemReceipt gives it and marks the
+/// tablet spent.
+fn randoTabletPrize(k: c_int) void {
+    if (k < 0) return;
+    const rando_drops = @import("rando/drops.zig");
+    const j = rando_drops.tabletGive(@truncate(vars.overworld_screen_index.*)) orelse return;
+    vars.ancilla_item_to_link[@intCast(k)] = j;
+    vars.link_receiveitem_index.* = j;
+    const gfx = misc.kReceiveItemGfx[j];
+    load_gfx.DecodeAnimatedSpriteTile_variable(if (gfx == 0xff) 0 else gfx);
 }
 
 pub export fn BombosTablet_StartCutscene() callconv(.c) void {
@@ -876,7 +891,7 @@ pub export fn LinkState_ReceivingBombos() callconv(.c) void {
         vars.link_x_coord.* = x;
         vars.link_y_coord.* = y;
     } else if (i == 0) {
-        _ = AncillaAdd_FallingPrize(0x29, 5, 4);
+        randoTabletPrize(AncillaAdd_FallingPrize(0x29, 5, 4));
         vars.flag_is_link_immobilized.* = 1;
     }
 }
@@ -3151,8 +3166,12 @@ pub export fn LinkItem_Shovel() callconv(.c) void {
     if (vars.player_handler_timer.* == 1) {
         TileDetect_MainHandler(2);
         if (loPtr(vars.word_7E04B2).* != 0) {
-            misc.Ancilla_Sfx3_Near(27);
-            AncillaAdd_DugUpFlute(54, 0);
+            if (rando_game.active()) {
+                DigUpFluteSpotItem();
+            } else {
+                misc.Ancilla_Sfx3_Near(27);
+                AncillaAdd_DugUpFlute(54, 0);
+            }
         }
 
         if ((vars.tiledetect_thick_grass.* | vars.tiledetect_destruction_aftermath.*) & 1 == 0) {
@@ -7672,6 +7691,42 @@ pub export fn AncillaAdd_DugUpFlute(a: u8, y: u8) callconv(.c) void {
     Ancilla_SetXY(k, 0x490, 0xa8a);
 }
 
+/// A randomized file's dug-up item (rando/minigames.zig): the flute's
+/// ancilla, bouncing out of the ground at `x`, `y` the way the flute does,
+/// drawn as receipt `j` the way a receipt draws it (ancilla.zig's
+/// Ancilla36_Flute hands it over). Null when there's no slot for it.
+fn AncillaAdd_DugUpItem(j: u8, x: u16, y: u16) ?usize {
+    const k = Ancilla_AddAncilla(0x36, 0);
+    if (k < 0)
+        return null;
+    const u: usize = @intCast(k);
+    vars.ancilla_step[u] = 0;
+    vars.ancilla_z[u] = 0;
+    vars.ancilla_z_vel[u] = 24;
+    vars.ancilla_x_vel[u] =
+        if (vars.link_direction_facing.* == 4) @bitCast(@as(i8, -8)) else 8;
+    vars.ancilla_item_to_link[u] = j;
+    vars.ancilla_arr4[u] = 5; // the palette of the receipts that take it from here
+    vars.ancilla_numspr[u] = 8; // an 8x8 item is two sprites
+    const gfx = misc.kReceiveItemGfx[j];
+    load_gfx.DecodeAnimatedSpriteTile_variable(if (gfx == 0xff) 0 else gfx);
+    Ancilla_SetXY(k, x, y);
+    return u;
+}
+
+/// The haunted grove's dig, randomized: the Flute Spot's placed item, where
+/// the flute comes up, once (the screen's taken flag), with the secret's
+/// sound as the flute has.
+fn DigUpFluteSpotItem() void {
+    const screen = loPtr(vars.overworld_screen_index).*;
+    if (vars.save_ow_event_info[screen] & rando_minigames.kTakenBit != 0)
+        return;
+    const j = rando_game.giveAt(.flute_spot) orelse return;
+    if (AncillaAdd_DugUpItem(j, 0x490, 0xa8a) == null)
+        return;
+    misc.Ancilla_Sfx3_Near(27);
+}
+
 pub export fn AncillaAdd_CaneOfByrnaInitSpark(a: u8, y: u8) callconv(.c) void {
     var i: isize = 4;
     while (i >= 0) : (i -= 1) {
@@ -7993,7 +8048,23 @@ pub export fn DiggingGameGuy_AttemptPrizeSpawn() callconv(.c) void {
     // The piece is a one-off. Once it's been dug up the field's flag is set
     // and the sprite kills itself the frame it appears, so don't let a dig
     // or the pity be spent on one that can never show.
-    const taken = vars.save_ow_event_info[loPtr(vars.overworld_screen_index).*] & 0x40 != 0;
+    const field_taken = vars.save_ow_event_info[loPtr(vars.overworld_screen_index).*] & 0x40 != 0;
+    // Randomized, the field's placed item comes up instead, on a round's
+    // 15th dig, once (rando/minigames.zig), and the game's own piece never.
+    if (rando_game.active() and
+        rando_minigames.digPrizeDue(field_taken, vars.beamos_x_hi[0], vars.beamos_x_hi[1]))
+    {
+        if (rando_game.giveAt(.digging_game)) |prize| {
+            const i: usize = @intFromBool(vars.link_direction_facing.* != 4);
+            const x = (vars.link_x_coord.* +% @as(u16, @bitCast(@as(i16, kDiggingGameGuy_X[i])))) & ~@as(u16, 0xf);
+            if (AncillaAdd_DugUpItem(prize, x, (vars.link_y_coord.* +% 22) & ~@as(u16, 0xf))) |_| {
+                vars.beamos_x_hi[0] = 0xeb;
+                misc.Ancilla_Sfx3_Near(27);
+                return;
+            }
+        }
+    }
+    const taken = field_taken or rando_game.active();
     // Still one a round: a round that has had its piece waits for the next.
     const pity_due = !taken and
         features.enhanced_features0.* & features.kFeatures0_DiggingGamePity != 0 and

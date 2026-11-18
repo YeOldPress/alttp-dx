@@ -21,6 +21,7 @@ const particles = @import("particles.zig");
 const rando_game = @import("rando/game.zig");
 const rando_receipt = @import("rando/receipt.zig");
 const rando_prizes = @import("rando/prizes.zig");
+const rando_minigames = @import("rando/minigames.zig");
 const Words = [*]align(1) u16;
 const Tiles = [*]align(1) const u16;
 const RoomBounds = v.RoomBounds;
@@ -6752,6 +6753,7 @@ pub export fn OpenMiniGameChest(chest_position: *c_int) callconv(.c) u8 { // 81e
     v.vram_upload_offset.* +%= 24;
 
     var rv: u8 = undefined;
+    var chest_game_prize = false;
 
     const r16: u16 = v.some_menu_ctr.*;
 
@@ -6764,6 +6766,17 @@ pub export fn OpenMiniGameChest(chest_position: *c_int) callconv(.c) u8 { // 81e
         rv = t.kDungeon_RupeeChestMinigamePrizes[index(0x10 + (tv & 0xf))];
     } else {
         tv &= 7;
+        // A randomized file's Chest Game gives its placed item in the heart
+        // piece's place, on a game's last chest (rando/minigames.zig): a roll
+        // of the prize otherwise is rolled again, and again is rupees.
+        if (rando_game.active()) {
+            if (rando_minigames.chestGamePrizeDue(v.minigame_credits.*, v.dung_savegame_state_bits.* & 0x4000 != 0)) {
+                tv = rando_minigames.kChestGamePrize;
+            } else if (tv == 7) {
+                tv = c.GetRandomNumber() & 7;
+                if (tv == 7) tv = 0;
+            }
+        }
         if (tv >= 2 and tv == @as(c_int, r16)) {
             tv = (tv + 1) & 7;
         }
@@ -6775,10 +6788,17 @@ pub export fn OpenMiniGameChest(chest_position: *c_int) callconv(.c) u8 { // 81e
             }
         }
         rv = t.kDungeon_MinigameChestPrizes1[index(tv)];
+        if (tv == 7) {
+            if (rando_game.giveAt(.chest_game)) |j| {
+                rv = j;
+                chest_game_prize = true;
+            }
+        }
     }
     v.some_menu_ctr.* = u8w(tv);
     v.nmi_load_bg_from_vram.* = 1;
-    v.sound_effect_2.* = 14;
+    // z3randomizer plays the secret's sound for the prize.
+    v.sound_effect_2.* = if (chest_game_prize) 0x1b else 14;
     return rv;
 }
 

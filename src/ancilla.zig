@@ -20,6 +20,7 @@ const rtl = @import("zelda_rtl.zig");
 const rando_prizes = @import("rando/prizes.zig");
 const rando_game = @import("rando/game.zig");
 const rando_receipt = @import("rando/receipt.zig");
+const rando_minigames = @import("rando/minigames.zig");
 const main_mod = @import("main.zig");
 
 const OamEnt = vars.OamEnt;
@@ -4634,7 +4635,11 @@ pub export fn ObjectSplash_Draw(k: c_int) callconv(.c) void { // 88ca22
 
 pub export fn Ancilla29_MilestoneItemReceipt(k: c_int) callconv(.c) void { // 88ca8c
     const i: usize = @intCast(k);
-    if (vars.ancilla_item_to_link[i] != 0x10 and vars.ancilla_item_to_link[i] != 0x0f) {
+    // A randomized tablet's item falls as its medallion would
+    // (player.zig's randoTabletPrize). Every other falling prize is a boss's,
+    // so indoors.
+    const rando_tablet = rando_game.active() and vars.player_is_indoors.* == 0;
+    if (vars.ancilla_item_to_link[i] != 0x10 and vars.ancilla_item_to_link[i] != 0x0f and !rando_tablet) {
         if (vars.dung_savegame_state_bits.* & 0x4000 != 0) {
             vars.ancilla_type[i] = 0;
             return;
@@ -4682,7 +4687,13 @@ pub export fn Ancilla29_MilestoneItemReceipt(k: c_int) callconv(.c) void { // 88
                 vars.link_force_hold_sword_up.* = 0;
                 vars.link_player_handler_state.* = 0;
             }
-            vars.item_receipt_method.* = 3;
+            // Held up as from an NPC, as z3randomizer gives it: method 3 would
+            // end the "fight" with a trip out of the dungeon for most items.
+            if (rando_tablet) {
+                const drops = @import("rando/drops.zig");
+                drops.take(drops.tabletFlag(@truncate(vars.overworld_screen_index.*)));
+                vars.item_receipt_method.* = 0;
+            } else vars.item_receipt_method.* = 3;
             player.Link_ReceiveItem(vars.ancilla_item_to_link[i], 0);
             return;
         }
@@ -4944,6 +4955,16 @@ pub export fn Ancilla36_Flute(k: c_int) callconv(.c) void { // 88cfaa
             {
                 vars.ancilla_type[i] = 0;
                 vars.item_receipt_method.* = 0;
+                if (rando_game.active()) {
+                    // A randomized file's dug-up item (rando/minigames.zig):
+                    // the spot's placed item, and the screen's taken flag.
+                    const screen = @as(u8, @truncate(vars.overworld_screen_index.*));
+                    const loc = rando_minigames.digLoc(screen);
+                    const j = (if (loc) |l| rando_game.giveAt(l) else null) orelse vars.ancilla_item_to_link[i];
+                    vars.save_ow_event_info[screen] |= rando_minigames.kTakenBit;
+                    player.Link_ReceiveItem(j, 0);
+                    return;
+                }
                 player.Link_ReceiveItem(0x14, 0);
                 return;
             }
@@ -4953,7 +4974,12 @@ pub export fn Ancilla36_Flute(k: c_int) callconv(.c) void { // 88cfaa
     var pt: Point16U = undefined;
     Ancilla_PrepAdjustedOamCoord(k, &pt);
     const oam = GetOamCurPtr();
-    Ancilla_SetOam(oam, pt.x, pt.y -% signedOffset(@as(i8, @bitCast(vars.ancilla_z[i]))), 0x24, @as(u8, @truncate(vars.oam_priority_value.* >> 8)) | 4, 2);
+    const y = pt.y -% signedOffset(@as(i8, @bitCast(vars.ancilla_z[i])));
+    if (rando_game.active()) {
+        _ = Ancilla_ReceiveItem_Draw(k, pt.x, y); // drawn as the item it is
+    } else {
+        Ancilla_SetOam(oam, pt.x, y, 0x24, @as(u8, @truncate(vars.oam_priority_value.* >> 8)) | 4, 2);
+    }
     if (oam[0].y == 0xf0) vars.ancilla_type[i] = 0;
 }
 

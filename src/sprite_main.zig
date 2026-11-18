@@ -14,6 +14,8 @@ const t = @import("sprite_main_tables.zig");
 const features = @import("features.zig");
 const achievements = @import("achievements.zig");
 const rando_game = @import("rando/game.zig");
+const rando_npcs = @import("rando/npcs.zig");
+const rando_minigames = @import("rando/minigames.zig");
 const SpriteSpawnInfo = a.SpriteSpawnInfo;
 const PrepOamCoordsRet = a.PrepOamCoordsRet;
 const SpriteHitBox = a.SpriteHitBox;
@@ -969,13 +971,18 @@ pub export fn SpritePrep_FakeSword(k: c_int) callconv(.c) void {
 pub export fn SpritePrep_MedallionTable(k: c_int) callconv(.c) void {
     const i = ix_smz(k);
     v.sprite_ignore_projectile[i] +%= 1;
-    if (lo_smz(v.overworld_screen_index).* != 3) {
-        v.sprite_x_lo[i] +%= 8;
-        if (v.link_item_bombos_medallion.* != 0) {
-            v.sprite_graphics[i] = 4;
-            v.sprite_ai_state[i] = 3;
-        }
-    } else if (v.link_item_ether_medallion.* != 0) {
+    const screen = lo_smz(v.overworld_screen_index).*;
+    if (screen != 3) v.sprite_x_lo[i] +%= 8;
+    // The game's tablet is spent once Link has its medallion; a randomized
+    // one, once it's given its item (rando/drops.zig), wherever the
+    // medallion came from.
+    const spent = if (rando_game.active())
+        rando_drops.taken(rando_drops.tabletFlag(screen))
+    else if (screen != 3)
+        v.link_item_bombos_medallion.* != 0
+    else
+        v.link_item_ether_medallion.* != 0;
+    if (spent) {
         v.sprite_graphics[i] = 4;
         v.sprite_ai_state[i] = 3;
     }
@@ -1383,7 +1390,10 @@ pub export fn MasterSword_Main(k: c_int) callconv(.c) void {
             if (v.sprite_delay_main[i] == 0) {
                 v.save_ow_event_info[lo_smz(v.overworld_screen_index).*] |= 0x40;
                 v.item_receipt_method.* = 0;
-                a.Link_ReceiveItem(1, 0);
+                // While randomized, the item placed there, held up. A Master
+                // Sword comes as 0x50, without the receipt's own cutscene,
+                // since the pedestal just had one.
+                a.Link_ReceiveItem(rando_game.giveAt(.master_sword_pedestal) orelse 1, 0);
                 v.savegame_map_icons_indicator.* = 5;
                 v.link_unk_master_sword.* = 0;
                 v.sprite_ai_state[i] = 5;
@@ -3807,6 +3817,14 @@ pub export fn Sprite_E4_SmallKey(k: c_int) callconv(.c) void {
         return;
     }
     a.Sprite_DrawRippleIfInWater(k);
+    // Randomized: the Tower of Hera's caged key is the item placed there,
+    // unless that's a small key (rando/standing.zig). Sprite.zig's
+    // Sprite_HandleAbsorptionByPlayer hands it over.
+    if (@import("rando/standing.zig").heraCageGive(v.dungeon_room_index.*, v.sprite_die_action[i])) |item| {
+        StandingItem_Draw(k, item);
+        Sprite_Absorbable_Main(k);
+        return;
+    }
     if (a.SpriteDraw_AbsorbableTransient(k, false))
         return;
     Sprite_Absorbable_Main(k);
@@ -7286,7 +7304,15 @@ pub export fn NiceThiefWithGift(k: c_int) callconv(.c) void {
             if (v.dung_savegame_state_bits.* & 0x4000 == 0) {
                 v.dung_savegame_state_bits.* |= 0x4000;
                 v.sprite_ai_state[i] = 2;
-                a.ShopItem_HandleReceipt(k, 0x46);
+                // Randomized, the ones at the back of the Mini Moldorm Cave
+                // and the Hype Cave give their placed items (z3randomizer's
+                // Set300RupeeNPCItem); the room's flag above still says so.
+                const placed: ?u8 = switch (v.dungeon_room_index.*) {
+                    0x123 => rando_npcs.take(.mini_moldorm_cave_npc),
+                    0x11e => rando_npcs.take(.hype_cave_npc),
+                    else => null,
+                };
+                a.ShopItem_HandleReceipt(k, placed orelse 0x46);
             } else {
                 v.sprite_ai_state[i] = 0;
             }
@@ -7974,7 +8000,9 @@ pub export fn SpritePrep_Storyteller(k: c_int) callconv(.c) void {
 
 pub export fn Sprite_BookOfMudora(k: c_int) callconv(.c) void {
     const i = ix(k);
-    a.SpriteDraw_SingleLarge(k);
+    // While randomized, the Library's placed item (rando/drops.zig).
+    const placed = rando_drops.dashGive(0x107);
+    if (placed) |j| randoItemDraw(k, j, 0) else a.SpriteDraw_SingleLarge(k);
     if (a.Sprite_ReturnIfInactive(k))
         return;
     if (a.Sprite_CheckDamageToLink_same_layer(k))
@@ -8010,7 +8038,8 @@ pub export fn Sprite_BookOfMudora(k: c_int) callconv(.c) void {
         3 => { // give to player
             a.Link_CancelDash();
             v.item_receipt_method.* = 0;
-            a.Link_ReceiveItem(0x1d, 0);
+            if (placed != null) rando_drops.take(rando_drops.kLibraryFlag);
+            a.Link_ReceiveItem(placed orelse 0x1d, 0);
             v.sprite_state[i] = 0;
         },
         else => {},
@@ -8124,7 +8153,12 @@ pub export fn SpritePrep_BonkItem(k: c_int) callconv(.c) void {
     }
     v.sprite_floor[i] = 2;
     if (v.dungeon_room_index.* == 0x107) {
-        if (v.link_item_book_of_mudora.* != 0) {
+        // While randomized, the Library's item is taken once it's given
+        // (rando/drops.zig), not once Link has a book from wherever.
+        if (rando_game.active()) {
+            if (rando_drops.taken(rando_drops.kLibraryFlag))
+                v.sprite_state[i] = 0;
+        } else if (v.link_item_book_of_mudora.* != 0) {
             v.sprite_state[i] = 0;
         } else {
             a.DecodeAnimatedSpriteTile_variable(0xe);
@@ -8163,7 +8197,9 @@ pub export fn SpritePrep_Locksmith(k: c_int) callconv(.c) void {
 
 pub export fn SpritePrep_SickKid(k: c_int) callconv(.c) void {
     const i = ix(k);
-    if (v.link_item_bug_net.* != 0)
+    // Randomized, he's done once he's given his item, not once Link has a
+    // bug net (rando/npcs.zig).
+    if (if (rando_game.active()) rando_npcs.given(.sick_kid) else v.link_item_bug_net.* != 0)
         v.sprite_ai_state[i] = 3;
     v.sprite_ignore_projectile[i] +%= 1;
 }
@@ -8302,7 +8338,9 @@ pub export fn SpritePrep_FallingIce(k: c_int) callconv(.c) void {
 
 pub export fn SpritePrep_KingZora(k: c_int) callconv(.c) void {
     const i = ix(k);
-    if (v.link_item_flippers.* != 0) {
+    // Randomized, he's gone once he's sold his item, not once Link has
+    // flippers from anywhere (rando/npcs.zig).
+    if (if (rando_game.active()) rando_npcs.given(.king_zora) else v.link_item_flippers.* != 0) {
         v.sprite_state[i] = 0;
     } else {
         v.sprite_ignore_projectile[i] +%= 1;
@@ -8443,10 +8481,12 @@ pub export fn SpritePrep_FluteKid(k: c_int) callconv(.c) void {
     v.sprite_ignore_projectile[i] +%= 1;
     v.sprite_subtype2[i] = v.savegame_is_darkworld.* >> 6 & 1;
     if (v.sprite_subtype2[i] != 0) {
-        if ((v.sram_progress_indicator_3.* & 8) != 0 or v.link_item_flute.* > 2) {
+        // Randomized, a woken flute doesn't make Stumpy a tree: only his
+        // own flag does, once he's played it (stumpyFluteStage).
+        if ((v.sram_progress_indicator_3.* & 8) != 0 or (!rando_game.active() and v.link_item_flute.* > 2)) {
             v.sprite_graphics[i] = 3;
             v.sprite_ai_state[i] = 5;
-        } else if (v.link_item_flute.* == 2) {
+        } else if (stumpyFluteStage() == 2) {
             v.sprite_graphics[i] = 1;
         }
         v.sprite_x_lo[i] +%= 8;
@@ -10161,6 +10201,18 @@ pub export fn FluteKid_Human(k: c_int) callconv(.c) void {
     }
 }
 
+/// What Stumpy makes of Link's flute slot, 0 to 3 as the game reads it: no
+/// flute, the shovel he lent, his flute found, the flute played. Randomized,
+/// his item and the flute have nothing to do with each other: 0 until he's
+/// given his item (rando/npcs.zig), then 1, or 2 once Link has a flute, so
+/// he can still be played to and turn into a tree. That he has is his own
+/// flag, 0x3c9 0x08, which SpritePrep_FluteKid reads.
+fn stumpyFluteStage() u8 {
+    if (!rando_game.active()) return v.link_item_flute.* & 3;
+    if (!rando_npcs.given(.stumpy)) return 0;
+    return if (v.link_item_flute.* >= 2) 2 else 1;
+}
+
 pub export fn Sprite_FluteKid_Stumpy(k: c_int) callconv(.c) void {
     const i = ix(k);
     a.FluteAardvark_Draw(k);
@@ -10168,7 +10220,7 @@ pub export fn Sprite_FluteKid_Stumpy(k: c_int) callconv(.c) void {
         return;
     switch (v.sprite_ai_state[i]) {
         0 => {
-            switch (v.link_item_flute.* & 3) {
+            switch (stumpyFluteStage()) {
                 0 => { // supplicate
                     if ((a.Sprite_ShowSolicitedMessage(k, 0xe5) & 0x100) != 0)
                         v.sprite_ai_state[i] = 1;
@@ -10192,9 +10244,9 @@ pub export fn Sprite_FluteKid_Stumpy(k: c_int) callconv(.c) void {
                 v.sprite_ai_state[i] = 0;
             }
         },
-        2 => { // grant shovel
+        2 => { // grant shovel (randomized: the placed item, rando/npcs.zig)
             v.item_receipt_method.* = 0;
-            a.Link_ReceiveItem(0x13, 0);
+            a.Link_ReceiveItem(rando_npcs.take(.stumpy) orelse 0x13, 0);
             v.sprite_ai_state[i] = 0;
         },
         3 => { // wait for music
@@ -10549,9 +10601,9 @@ pub export fn Sprite_1F_SickKid(k: c_int) callconv(.c) void {
                 v.sprite_ai_state[i] = 2;
             }
         },
-        2 => { // grant
+        2 => { // grant (randomized: the placed item, rando/npcs.zig)
             v.item_receipt_method.* = 0;
-            a.Link_ReceiveItem(0x21, 0);
+            a.Link_ReceiveItem(rando_npcs.take(.sick_kid) orelse 0x21, 0);
             v.flag_is_link_immobilized.* = 0;
             v.sprite_ai_state[i] = 3;
         },
@@ -10611,7 +10663,10 @@ pub export fn SpritePrep_PotionShop(k: c_int) callconv(.c) void {
 }
 
 pub export fn MagicShopAssistant_SpawnPowder(k: c_int) callconv(.c) void {
-    if (v.flag_overworld_area_did_change.* == 0 or v.link_item_mushroom.* == 2)
+    // Randomized, the powder's spot is done once its item's taken
+    // (rando/npcs.zig), not once Link has powder from anywhere.
+    const taken = if (rando_game.active()) rando_npcs.given(.potion_shop) else v.link_item_mushroom.* == 2;
+    if (v.flag_overworld_area_did_change.* == 0 or taken)
         return;
     if (v.save_dung_info[0x109] & 0x80 != 0) {
         var info: SpriteSpawnInfo = undefined;
@@ -10661,7 +10716,8 @@ pub export fn Sprite_BagOfPowder(k: c_int) callconv(.c) void {
         return;
     a.Link_CancelDash();
     v.item_receipt_method.* = 0;
-    a.Link_ReceiveItem(0xd, 0);
+    // Randomized: the Potion Shop's placed item (rando/npcs.zig).
+    a.Link_ReceiveItem(rando_npcs.take(.potion_shop) orelse 0xd, 0);
     v.sprite_state[i] = 0;
 }
 
@@ -10783,9 +10839,9 @@ pub export fn Sprite_Sahasrahla(k: c_int) callconv(.c) void {
             v.sprite_ai_state[i] = 0;
             v.savegame_map_icons_indicator.* = 3;
         },
-        2 => { // grant boots
+        2 => { // grant boots (randomized: the placed item, rando/npcs.zig)
             v.item_receipt_method.* = 0;
-            a.Link_ReceiveItem(0x4b, 0);
+            a.Link_ReceiveItem(rando_npcs.take(.sahasrahla) orelse 0x4b, 0);
             v.sprite_ai_state[i] = 3;
             v.savegame_map_icons_indicator.* = 3;
         },
@@ -10802,7 +10858,7 @@ pub export fn Sasha_Idle(k: c_int) callconv(.c) void {
     if (v.link_which_pendants.* & 4 == 0) {
         if ((a.Sprite_ShowSolicitedMessage(k, 0x32) & 0x100) != 0)
             v.sprite_ai_state[i] = 1;
-    } else if (v.link_item_boots.* == 0) {
+    } else if (if (rando_game.active()) !rando_npcs.given(.sahasrahla) else v.link_item_boots.* == 0) {
         const m: u16 = if (v.savegame_map_icons_indicator.* >= 3) 0x38 else 0x39;
         if ((a.Sprite_ShowSolicitedMessage(k, m) & 0x100) != 0)
             v.sprite_ai_state[i] = 2;
@@ -10871,7 +10927,16 @@ pub export fn Sprite_HeartPiece(k: c_int) callconv(.c) void {
         if (v.sprite_state[i] == 0)
             return;
     }
-    a.SpriteDraw_SingleLarge(k);
+    // A randomized file's heart piece is the item placed there, unless
+    // that's a heart piece (rando/standing.zig).
+    const rando_item = @import("rando/standing.zig").heartPieceGive(
+        v.player_is_indoors.* != 0,
+        v.dungeon_room_index.*,
+        v.overworld_screen_index.*,
+        a.Sprite_GetX(k),
+        v.sprite_x_hi[i],
+    );
+    if (rando_item) |item| StandingItem_Draw(k, item) else a.SpriteDraw_SingleLarge(k);
     if (a.Sprite_ReturnIfInactive(k))
         return;
     if (a.Sprite_CheckIfLinkIsBusy())
@@ -10892,17 +10957,101 @@ pub export fn Sprite_HeartPiece(k: c_int) callconv(.c) void {
     if (v.sprite_delay_aux4[i] != 0 or !a.Sprite_CheckDamageToLink_same_layer(k))
         return;
 
-    v.link_heart_pieces.* = (v.link_heart_pieces.* +% 1) & 3;
-    if (v.link_heart_pieces.* == 0) {
+    if (rando_item) |item| {
+        // Held up, as z3randomizer's HeartPieceGet hands it over.
         a.Link_CancelDash();
         v.item_receipt_method.* = 0;
-        a.Link_ReceiveItem(0x26, 0);
+        a.Link_ReceiveItem(item, 0);
     } else {
-        a.SpriteSfx_QueueSfx3WithPan(k, 0x2d);
-        a.Sprite_ShowMessageUnconditional(t.kHeartPieceMsg[v.link_heart_pieces.*]);
+        v.link_heart_pieces.* = (v.link_heart_pieces.* +% 1) & 3;
+        if (v.link_heart_pieces.* == 0) {
+            a.Link_CancelDash();
+            v.item_receipt_method.* = 0;
+            a.Link_ReceiveItem(0x26, 0);
+        } else {
+            a.SpriteSfx_QueueSfx3WithPan(k, 0x2d);
+            a.Sprite_ShowMessageUnconditional(t.kHeartPieceMsg[v.link_heart_pieces.*]);
+        }
     }
     v.sprite_state[i] = 0;
     HeartUpgrade_SetObtainedFlag(k);
+}
+
+// ---------------------------------------------------------------------------
+// The randomizer's standing items (rando/standing.zig): a heart piece, the
+// Lost Woods mushroom, the catfish's gift or the key caged in the Tower of
+// Hera's basement shows the item placed there in place of its own graphic.
+// It's drawn from the animated sprite tile (chars 0x24, 0x25, 0x34 and 0x35)
+// that the item receipt rising over Link uses (misc.zig's
+// AncillaAdd_ItemReceipt), as the item receipt would show it.
+// ---------------------------------------------------------------------------
+
+/// Each receipt graphic's tiles (DecodeAnimatedSpriteTile_variable's
+/// number, misc.zig's kReceiveItemGfx), decoded the first time one's shown:
+/// the top row's two tiles, then the bottom row's.
+var g_standing_tiles: [57][0x80]u8 = undefined;
+var g_standing_tiles_ready: [57]bool = @splat(false);
+
+fn StandingItem_Tiles(gfx: u8) *const [0x80]u8 {
+    const dst = &g_standing_tiles[gfx];
+    if (g_standing_tiles_ready[gfx]) return dst;
+    // DecodeAnimatedSpriteTile_variable, into buffers of its own rather than
+    // the game's 0x7F4000 and the tile, so nothing shown changes.
+    var sheets: [0x1000]u8 = @splat(0);
+    const y: c_int = if (gfx == 0x23 or gfx >= 0x37) 0x5d else if (gfx == 0xc or gfx >= 0x24) 0x5c else 0x5b;
+    _ = a.Decomp_spr(&sheets[0x600], y);
+    _ = a.Decomp_spr(&sheets[0], 0x5a);
+    const src: [*]const u8 = sheets[@import("load_gfx_tables.zig").kDecodeAnimatedSpriteTile_Tab[gfx]..].ptr;
+    a.Expand3To4High(dst, src, &sheets, 2);
+    a.Expand3To4High(dst[0x40..].ptr, src + 0x180, &sheets, 2);
+    g_standing_tiles_ready[gfx] = true;
+    return dst;
+}
+
+/// Puts receipt `item`'s graphic in the animated sprite tile, unless an
+/// ancilla that shows its own there (an item receipt, a crystal, a pond's
+/// item or rupees) is out.
+fn StandingItem_ShowTiles(item: u8) void {
+    for (v.ancilla_type[0..10]) |ty| {
+        if (ty == 0x22 or ty == 0x28 or ty == 0x29 or ty == 0x42) return;
+    }
+    @memcpy(v.g_ram[0xbd40..0xbdc0], StandingItem_Tiles(misc.kReceiveItemGfx[item]));
+}
+
+const kStandingItem_WideDmd = [1]a.DrawMultipleData{
+    .{ .x = 0, .y = 0, .char_flags = 0x24, .ext = 2 },
+};
+const kStandingItem_NarrowDmd = [2]a.DrawMultipleData{
+    .{ .x = 4, .y = 0, .char_flags = 0x24, .ext = 0 },
+    .{ .x = 4, .y = 8, .char_flags = 0x34, .ext = 0 },
+};
+
+/// Draws sprite `k` as receipt `item`, where its own graphic would go: as
+/// one 16x16 tile, or a narrow item as two 8x8 ones, centered, in the
+/// receipt's palette, with the sprite's shadow if it has one. A sprite with
+/// too few oam slots for that is given them, and drawn from the next frame.
+fn StandingItem_Draw(k: c_int, item: u8) void {
+    const i = ix(k);
+    const narrow = misc.kReceiveItem_Tab1[item] == 0;
+    const slots: u8 = if (narrow) 2 else 1;
+    if (v.sprite_flags2[i] & 0x1f < slots) {
+        v.sprite_flags2[i] = (v.sprite_flags2[i] & 0xe0) | slots;
+        return;
+    }
+    var info: PrepOamCoordsRet = undefined;
+    if (a.Sprite_PrepOamCoordOrDoubleRet(k, &info))
+        return;
+    StandingItem_ShowTiles(item);
+    const n = t.kWishPond2_OamFlags.len;
+    var pal = if (item < n) t.kWishPond2_OamFlags[item] else misc.kReceiveItemOamFlagsExtra[item - n];
+    if (pal == 0xff) pal = 5;
+    v.sprite_oam_flags[i] = (v.sprite_oam_flags[i] & 0xf1) | ((pal & 7) << 1);
+    if (narrow)
+        a.Sprite_DrawMultiple(k, &kStandingItem_NarrowDmd, 2, &info)
+    else
+        a.Sprite_DrawMultiple(k, &kStandingItem_WideDmd, 1, &info);
+    if (v.sprite_flags3[i] & 0x10 != 0)
+        a.SpriteDraw_Shadow(k, &info);
 }
 
 // ---------------------------------------------------------------------------
@@ -12330,7 +12479,9 @@ pub export fn Uncle_InPassage(k: c_int) callconv(.c) void {
         },
         1 => { // GiveSwordAndShield
             v.item_receipt_method.* = 0;
-            a.Link_ReceiveItem(0, 0);
+            // Randomized: the uncle's placed item instead (rando/npcs.zig);
+            // sram_progress_flags 0x01, set below, still says he's given it.
+            a.Link_ReceiveItem(rando_npcs.take(.links_uncle) orelse 0, 0);
             v.sprite_ai_state[i] +%= 1;
             v.sprite_graphics[i] = 1;
             v.which_starting_point.* = 3;
@@ -12454,6 +12605,9 @@ pub export fn Sprite_Witch(k: c_int) callconv(.c) void {
 
 pub export fn Witch_AcceptShroom(k: c_int) callconv(.c) void {
     v.link_item_mushroom.* = 0;
+    // Randomized: the powder stays if it's been found, and the mushroom's
+    // gone from the item menu's swap (rando/minigames.zig).
+    if (rando_game.active()) rando_minigames.afterMushroomTraded(v.g_ram[0xf000..0xf500]);
     v.save_dung_info[0x109] |= 0x80;
     v.sound_effect_1.* = 0;
     a.Hud_RefreshIcon();
@@ -12746,9 +12900,9 @@ pub export fn Sprite_BottleVendor(k: c_int) callconv(.c) void {
                 v.sprite_ai_state[i] = 0;
             }
         },
-        2 => { // giving
+        2 => { // giving (randomized: the placed item, rando/npcs.zig)
             v.item_receipt_method.* = 0;
-            a.Link_ReceiveItem(0x16, 0);
+            a.Link_ReceiveItem(rando_npcs.take(.bottle_merchant) orelse 0x16, 0);
             v.sram_progress_indicator_3.* |= 2;
             v.link_rupees_goal.* -%= 100;
             v.sprite_ai_state[i] = 0;
@@ -12935,7 +13089,11 @@ pub export fn Zelda_AtSanctuary(k: c_int) callconv(.c) void {
 
 pub export fn SpritePrep_Mushroom(k: c_int) callconv(.c) void {
     const i = ix(k);
-    if (v.link_item_mushroom.* >= 2) {
+    // A randomized file's mushroom spot has a flag of its own
+    // (rando/standing.zig), since the powder or the mushroom can come first.
+    const standing = @import("rando/standing.zig");
+    const taken = if (rando_game.active()) standing.taken(standing.kMushroomFlag) else v.link_item_mushroom.* >= 2;
+    if (taken) {
         v.sprite_state[i] = 0;
     } else {
         v.sprite_graphics[i] = 0;
@@ -12946,7 +13104,9 @@ pub export fn SpritePrep_Mushroom(k: c_int) callconv(.c) void {
 
 pub export fn Sprite_E7_Mushroom(k: c_int) callconv(.c) void {
     const i = ix(k);
-    a.SpriteDraw_SingleLarge(k);
+    // A randomized file's mushroom is the item placed there.
+    const rando_item = rando_game.giveAt(.mushroom);
+    if (rando_item) |item| StandingItem_Draw(k, item) else a.SpriteDraw_SingleLarge(k);
     if (a.Sprite_CheckIfLinkIsBusy()) return;
 
     // If we're in the middle of a mirror warp, don't get the mushroom yet
@@ -12956,8 +13116,12 @@ pub export fn Sprite_E7_Mushroom(k: c_int) callconv(.c) void {
     if (a.Sprite_CheckDamageToLink_same_layer(k)) {
         v.sprite_state[i] = 0;
         v.item_receipt_method.* = 0;
-        a.Link_ReceiveItem(0x29, 0);
-    } else if (v.frame_counter.* & 0x1f == 0) {
+        a.Link_ReceiveItem(rando_item orelse 0x29, 0);
+        if (rando_item != null) {
+            const standing = @import("rando/standing.zig");
+            standing.mark(standing.kMushroomFlag);
+        }
+    } else if (rando_item == null and v.frame_counter.* & 0x1f == 0) {
         v.sprite_oam_flags[i] ^= 0x40;
     }
 }
@@ -12977,6 +13141,47 @@ pub export fn Sprite_E8_FakeSword(k: c_int) callconv(.c) void {
     }
 }
 
+const rando_drops = @import("rando/drops.zig");
+
+/// Draws item receipt `j` where sprite `k` stands, as StandingItem_Draw
+/// does (its graphic put in the animated sprite tile from that one's
+/// cache), only moved `dx` pixels across, for a sprite narrower than 16
+/// pixels: one 16x16 tile, or two 8x8 ones stacked in the middle, in the
+/// item's own palette, then the sprite's shadow. A sprite with too few OAM
+/// slots for that is given them, and drawn from the next frame.
+fn randoItemDraw(k: c_int, j: u8, dx: i8) void {
+    const i = ix_smz(k);
+    const wide = misc.kReceiveItem_Tab1[j] != 0;
+    const slots: u8 = if (wide) 1 else 2;
+    if (v.sprite_flags2[i] & 0x1f < slots) {
+        v.sprite_flags2[i] = (v.sprite_flags2[i] & 0xe0) | slots;
+        return;
+    }
+    var info: PrepOamCoordsRet = undefined;
+    if (a.Sprite_PrepOamCoordOrDoubleRet(k, &info)) return;
+    StandingItem_ShowTiles(j);
+    var pal = if (j < t.kWishPond2_OamFlags.len) t.kWishPond2_OamFlags[j] else misc.kReceiveItemOamFlagsExtra[j - t.kWishPond2_OamFlags.len];
+    // Only the pedestal's Master Sword flashes, and it's never given this way.
+    if (sign8_smz(pal)) pal = 5;
+    const flags = (info.flags & 0x30) | (pal << 1 & 0x0e);
+    const x = info.x +% word(dx);
+    const oam = oamPtr_smz();
+    if (wide) {
+        setOam_smz(oam, x, info.y, 0x24, flags, 2);
+    } else {
+        setOam_smz(oam, x +% 4, info.y, 0x24, flags, 0);
+        setOam_smz(oam + 1, x +% 4, info.y +% 8, 0x34, flags, 0);
+    }
+    if (v.sprite_flags3[i] & 0x10 != 0) a.SpriteDraw_Shadow(k, &info);
+}
+
+/// What the boss of this room leaves while randomized, or null for the
+/// game's heart container (a heart container placed there is just that).
+fn randoBossDrop() ?u8 {
+    const j = rando_drops.bossGive(v.dungeon_room_index.*) orelse return null;
+    return if (j == 0x3e) null else j;
+}
+
 pub export fn Sprite_HeartContainer(k: c_int) callconv(.c) void {
     const i = ix(k);
     if (@as(u8, @truncate(v.cur_palace_index_x2.*)) == 26) {
@@ -12984,15 +13189,17 @@ pub export fn Sprite_HeartContainer(k: c_int) callconv(.c) void {
         return;
     }
     v.sprite_ignore_projectile[i] = v.sprite_G[i];
+    // While randomized, a boss leaves the item placed there, drawn as itself.
+    const placed: ?u8 = if (v.sprite_A[i] != 0) randoBossDrop() else null;
     if (v.sprite_G[i] == 0) {
-        a.DecodeAnimatedSpriteTile_variable(3);
+        if (placed == null) a.DecodeAnimatedSpriteTile_variable(3);
         a.Sprite_Get16BitCoords(k);
         v.sprite_G[i] = 1;
     }
 
     if (@as(u8, @truncate(v.dungeon_room_index2.*)) == 6 and v.sprite_z[i] == 0)
         a.SpriteDraw_WaterRipple_WithOamAdjust(k);
-    a.SpriteDraw_SingleLarge(k);
+    if (placed) |j| randoItemDraw(k, j, 0) else a.SpriteDraw_SingleLarge(k);
     if (a.Sprite_ReturnIfInactive(k)) return;
     v.sprite_z_vel[i] -%= 2;
     a.Sprite_MoveZ(k);
@@ -13009,8 +13216,15 @@ pub export fn Sprite_HeartContainer(k: c_int) callconv(.c) void {
     if (!a.Sprite_CheckDamageToLink_same_layer(k)) return;
     v.sprite_state[i] = 0;
     if (v.sprite_A[i] != 0) {
-        v.item_receipt_method.* = 2;
-        a.Link_ReceiveItem(0x3e, 0);
+        if (placed) |j| {
+            // Held up, as z3randomizer's HeartContainerGet gives it.
+            a.Link_CancelDash();
+            v.item_receipt_method.* = 0;
+            a.Link_ReceiveItem(j, 0);
+        } else {
+            v.item_receipt_method.* = 2;
+            a.Link_ReceiveItem(0x3e, 0);
+        }
         v.dung_savegame_state_bits.* |= 0x8000;
         return;
     }
@@ -13138,7 +13352,11 @@ pub export fn Sprite_DashItem(k: c_int) callconv(.c) void {
 
 pub export fn Sprite_BonkKey(k: c_int) callconv(.c) void {
     const i = ix(k);
-    a.Sprite_DrawThinAndTall(k);
+    // While randomized, the torch's placed item (rando/drops.zig). A small
+    // key is the game's own, for whichever dungeon this is.
+    const placed: ?u8 = if (rando_drops.dashGive(v.dungeon_room_index.*)) |j| (if (j == 0x24) null else j) else null;
+    // Centered on the key, which is 8 pixels wide.
+    if (placed) |j| randoItemDraw(k, j, -4) else a.Sprite_DrawThinAndTall(k);
     if (a.Sprite_ReturnIfInactive(k)) return;
     if (a.Sprite_CheckDamageToLink_same_layer(k))
         v.sprite_ai_state[i] = 3;
@@ -13170,9 +13388,16 @@ pub export fn Sprite_BonkKey(k: c_int) callconv(.c) void {
                 v.sprite_floor[i] = v.link_is_on_lower_level.*;
         },
         3 => { // give to player
-            v.link_num_keys.* +%= 1;
             v.sprite_state[i] = 0;
             v.dung_savegame_state_bits.* |= if (v.sprite_die_action[i] != 0) 0x2000 else 0x4000;
+            if (placed) |j| {
+                // Held up, as z3randomizer's GiveBonkItem does.
+                a.Link_CancelDash();
+                v.item_receipt_method.* = 0;
+                a.Link_ReceiveItem(j, 0);
+                return;
+            }
+            v.link_num_keys.* +%= 1;
             a.SpriteSfx_QueueSfx3WithPan(k, 0x2f);
         },
         else => {},
@@ -13528,7 +13753,9 @@ pub export fn Sprite_39_Locksmith(k: c_int) callconv(.c) void {
                     v.sprite_ai_state[i] = 2;
                 } else {
                     v.item_receipt_method.* = 0;
-                    a.Link_ReceiveItem(0x16, 0);
+                    // Randomized: the Purple Chest's placed item
+                    // (rando/npcs.zig).
+                    a.Link_ReceiveItem(rando_npcs.take(.purple_chest) orelse 0x16, 0);
                     v.sram_progress_indicator_3.* |= 0x10;
                     v.sprite_ai_state[i] = 4;
                     v.follower_indicator.* = 0;
@@ -13597,12 +13824,12 @@ pub export fn Sprite_Hobo_Bum(k: c_int) callconv(.c) void {
                 }
             }
         },
-        2 => { // grant bottle
+        2 => { // grant bottle (randomized: the placed item, rando/npcs.zig)
             v.sprite_ai_state[i] = 3;
             v.sprite_graphics[i] = 1;
             v.save_ow_event_info[@as(u8, @truncate(v.overworld_screen_index.*))] |= 0x20;
             v.item_receipt_method.* = 0;
-            a.Link_ReceiveItem(0x16, 0);
+            a.Link_ReceiveItem(rando_npcs.take(.hobo) orelse 0x16, 0);
             v.sram_progress_indicator_3.* |= 1;
         },
         3 => { // back to sleep
@@ -13786,7 +14013,9 @@ pub export fn SpritePrep_OldMan_bounce(k: c_int) callconv(.c) void {
         return;
     }
     if (v.follower_indicator.* == 0) {
-        if (v.link_item_mirror.* == 2)
+        // Randomized, the lost old man's gone once he's given his item, not
+        // once Link has the mirror (rando/npcs.zig).
+        if (if (rando_game.active()) rando_npcs.given(.old_man) else v.link_item_mirror.* == 2)
             v.sprite_state[i] = 0;
         v.follower_indicator.* = 4;
         a.LoadFollowerGraphics();
@@ -13928,7 +14157,9 @@ pub export fn Sprite_3A_MagicBat(k: c_int) callconv(.c) void {
     a.Sprite_MoveZ(k);
     switch (v.sprite_ai_state[i]) {
         0 => { // wait for summon
-            if (v.link_magic_consumption.* >= 2) return;
+            // Randomized, once he's given his item he stays asleep
+            // (rando/npcs.zig), whatever Link's magic is.
+            if (if (rando_game.active()) rando_npcs.given(.magic_bat) else v.link_magic_consumption.* >= 2) return;
             if (!a.Sprite_CheckDamageToLink_same_layer(k)) return;
             var n: c_int = 4;
             while (n >= 0) : (n -= 1) {
@@ -13973,11 +14204,19 @@ pub export fn Sprite_3A_MagicBat(k: c_int) callconv(.c) void {
         },
         3 => { // DoublePlayerMagicPower
             if (v.sprite_delay_aux1[i] == 0) {
-                a.Sprite_ShowMessageUnconditional(0x111);
+                // Randomized: his placed item, with its own text, instead of
+                // halving Link's magic (z3randomizer's GetMagicBatItem).
+                const placed = rando_npcs.take(.magic_bat);
+                if (placed == null) a.Sprite_ShowMessageUnconditional(0x111);
                 a.Palette_Restore_BG_And_HUD();
                 v.flag_update_cgram_in_nmi.* +%= 1;
                 v.sprite_ai_state[i] +%= 1;
-                v.link_magic_consumption.* = 1;
+                if (placed) |r| {
+                    v.item_receipt_method.* = 0;
+                    a.Link_ReceiveItem(r, 0);
+                } else {
+                    v.link_magic_consumption.* = 1;
+                }
                 a.Hud_RefreshIcon();
             } else if (v.sprite_delay_aux1[i] == 0x10) {
                 v.intro_times_pal_flash.* = 0x10;
@@ -17784,17 +18023,30 @@ pub export fn Sprite_C0_Catfish(k: c_int) callconv(.c) void {
 
 pub export fn Sprite_Catfish_QuakeMedallion(k: c_int) callconv(.c) void {
     const i = ix(k);
+    // Randomized: what the catfish throws anywhere but King Zora's
+    // waterfall is the item placed at the catfish (rando/standing.zig).
+    const catfish_item = if (v.overworld_screen_index.* != 0x81) rando_game.giveAt(.catfish) else null;
     if (v.sprite_z[i] == 0) {
         a.SpriteDraw_WaterRipple_WithOamAdjust(k);
         if (v.submodule_index.* == 0 and a.Sprite_CheckDamageToLink_same_layer(k)) {
             v.sprite_state[i] = 0;
             v.item_receipt_method.* = 0;
-            a.Link_ReceiveItem(v.sprite_A[i], 0);
+            a.Link_ReceiveItem(catfish_item orelse v.sprite_A[i], 0);
+            // Randomized: King Zora's item, picked up at his waterfall
+            // (area 0x81), means he's done (rando/npcs.zig).
+            if (rando_game.active() and v.overworld_screen_index.* == 0x81)
+                rando_npcs.mark(.king_zora);
+            if (catfish_item != null) {
+                const standing = @import("rando/standing.zig");
+                standing.mark(standing.kCatfishFlag);
+            }
         }
     }
     if (v.sprite_delay_aux3[i] != 0)
         _ = a.Oam_AllocateFromRegionC(8);
-    a.SpriteDraw_SingleLarge(k);
+    // King Zora's placed item (zoraThrowsPlacedItem) is drawn the same way.
+    const zora_item: ?u8 = if (rando_game.active() and v.overworld_screen_index.* == 0x81) v.sprite_A[i] else null;
+    if (catfish_item orelse zora_item) |item| StandingItem_Draw(k, item) else a.SpriteDraw_SingleLarge(k);
     if (a.Sprite_ReturnIfInactive(k)) return;
     a.Sprite_MoveXYZ(k);
     v.sprite_z_vel[i] -%= 2;
@@ -17880,11 +18132,11 @@ pub export fn Catfish_BigFish(k: c_int) callconv(.c) void {
                     Catfish_SpawnPlop(k);
                 } else if (j == 96) {
                     v.flag_is_link_immobilized.* = 0;
-                    v.dialogue_message_index.* = if (v.link_item_quake_medallion.* != 0) 0x12b else 0x12a;
+                    v.dialogue_message_index.* = if (Catfish_GiftTaken()) 0x12b else 0x12a;
                     a.Sprite_ShowMessageMinimal();
                     return;
                 } else if (j == 80) {
-                    if (v.link_item_quake_medallion.* != 0) {
+                    if (Catfish_GiftTaken()) {
                         if (a.GetRandomNumber() & 1 != 0)
                             _ = Sprite_SpawnBomb(k)
                         else
@@ -17899,6 +18151,15 @@ pub export fn Catfish_BigFish(k: c_int) callconv(.c) void {
         },
         else => {},
     }
+}
+
+/// Whether the catfish has given its item: the Quake Medallion in Link's
+/// hands, or in a randomized file, a flag of its own (rando/standing.zig),
+/// as z3randomizer's ItemCheck_Catfish asks.
+fn Catfish_GiftTaken() bool {
+    const standing = @import("rando/standing.zig");
+    if (rando_game.active()) return standing.taken(standing.kCatfishFlag);
+    return v.link_item_quake_medallion.* != 0;
 }
 
 pub export fn Sprite_SpawnBomb(k: c_int) callconv(.c) c_int {
@@ -17946,7 +18207,16 @@ pub export fn Sprite_Zora_RegurgitateFlippers(k: c_int) callconv(.c) void {
     v.sprite_flags3[ju] = 0x54;
     v.sprite_oam_flags[ju] = 0x54 & 15;
     v.sprite_delay_aux3[ju] = 0x30;
-    a.DecodeAnimatedSpriteTile_variable(0x11);
+    // Randomized: he throws his placed item instead of the flippers.
+    // Sprite_Catfish_QuakeMedallion draws it as the item it is
+    // (StandingItem_Draw puts up its tiles and palette itself), and picking
+    // it up gives it and notes that he has (rando/npcs.zig), as
+    // z3randomizer's MarkThrownItem does.
+    if (rando_game.giveAt(.king_zora)) |r| {
+        v.sprite_A[ju] = r;
+    } else {
+        a.DecodeAnimatedSpriteTile_variable(0x11);
+    }
 }
 
 pub export fn Catfish_SpawnPlop(k: c_int) callconv(.c) void {
@@ -21520,10 +21790,10 @@ pub export fn Sprite_AD_OldMan(k: c_int) callconv(.c) void {
         1 => { // entering domicile
             a.Sprite_MoveXY(k);
             switch (v.sprite_ai_state[i]) {
-                0 => { // grant mirror
+                0 => { // grant mirror (randomized: the placed item)
                     v.sprite_ai_state[i] +%= 1;
                     v.item_receipt_method.* = 0;
-                    a.Link_ReceiveItem(0x1a, 0);
+                    a.Link_ReceiveItem(rando_npcs.take(.old_man) orelse 0x1a, 0);
                     v.which_starting_point.* = 1;
                     a.OldMan_EnableCutscene();
                     v.sprite_delay_main[i] = 48;
@@ -22177,7 +22447,22 @@ pub export fn Smithy_Main(k: c_int) callconv(.c) void {
             }
         },
         2 => { // HandleTemperingChoice
-            if (v.choice_in_multiselect_box.* == 0) {
+            if (v.choice_in_multiselect_box.* == 0 and rando_game.active()) {
+                // Randomized: for the 10 rupees they hand over the
+                // Blacksmith's placed item there and then, once
+                // (rando/npcs.zig, z3randomizer's GetSmithSword with VT's
+                // quick item give), whatever sword Link has.
+                if (rando_npcs.given(.blacksmith)) {
+                    a.Sprite_ShowMessageUnconditional(0xdb);
+                } else if (v.link_rupees_goal.* < 10) {
+                    a.Sprite_ShowMessageUnconditional(0xdc);
+                } else {
+                    v.link_rupees_goal.* -%= 10;
+                    v.item_receipt_method.* = 0;
+                    a.Link_ReceiveItem(rando_npcs.take(.blacksmith).?, 0);
+                }
+                v.sprite_ai_state[i] = 0;
+            } else if (v.choice_in_multiselect_box.* == 0) {
                 if (v.link_sword_type.* < 3) {
                     a.Sprite_ShowMessageUnconditional(0xda);
                     v.sprite_ai_state[i] = 3;

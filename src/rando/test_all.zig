@@ -9,4 +9,8 @@ test {
     _ = @import("prizes.zig");
     _ = @import("open_mode.zig");
     _ = @import("save.zig");
+    _ = @import("drops.zig");
+    _ = @import("npcs.zig");
+    _ = @import("minigames.zig");
+    _ = @import("standing.zig");
 }

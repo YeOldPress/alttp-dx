@@ -1243,6 +1243,11 @@ pub export fn Sprite_HandleAbsorptionByPlayer(k: c_int) callconv(.c) void {
             if (t == 13) {
                 vars.item_receipt_method.* = 0;
                 Link_ReceiveItem(0x32, 0);
+            } else if (@import("rando/standing.zig").heraCageGive(vars.dungeon_room_index.*, vars.sprite_die_action[ki])) |item| {
+                // Randomized: the Tower of Hera's caged key is the item
+                // placed there, held up (rando/standing.zig).
+                vars.item_receipt_method.* = 0;
+                Link_ReceiveItem(item, 0);
             } else {
                 vars.link_num_keys.* +%= 1;
             }

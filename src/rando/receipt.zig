@@ -48,12 +48,11 @@
 //! substitutions (a second lamp as rupees, a boomerang as arrows or
 //! rupees), since a randomized chest gives what was placed in it.
 //!
-//! What the receipt can't do alone: the game keeps the boomerangs, the
-//! mushroom and powder, and the shovel and flute each in one slot, so the
-//! lesser of a pair found after the better one is noted but can't be used.
-//! z3randomizer lets the item menu swap between them; until the menu does
-//! that here, a shovel found after the flute can't dig (VT's Flute Spot),
-//! and a mushroom found after the powder can't go to the Potion Shop.
+//! The game keeps the boomerangs, the mushroom and powder, and the shovel
+//! and flute each in one slot, so the receipt keeps the better of a pair
+//! and notes both in the tracking bits; the item menu's Y button swaps
+//! between them once both have been found (hud.zig), as z3randomizer's
+//! does.
 const std = @import("std");
 const items = @import("items.zig");
 
@@ -157,14 +156,15 @@ pub fn keepsBetter(slot: u16, value: u8, block: []const u8) bool {
 
 /// Notes receipt `j` in z3randomizer's tracking bytes, so what's been found
 /// of the items that share a slot is known even when the slot shows another
-/// one: kInventoryTracking's 0x80 blue boomerang, 0x40 red, 0x20 mushroom,
-/// 0x10 powder, 0x04 shovel, 0x02 the flute asleep, 0x01 awake; and
+/// one: kInventoryTracking's 0x80 blue boomerang, 0x40 red, 0x20 mushroom
+/// (with 0x08, "had the mushroom", which stays once the witch takes it, as
+/// z3randomizer and the tracker have it), 0x10 powder, 0x04 shovel, 0x02 the flute asleep, 0x01 awake; and
 /// kBowTracking's 0x80 bow, 0x40 silver arrows.
 pub fn track(j: u8, block: []u8) void {
     switch (j) {
         0x0c => block[kInventoryTracking] |= 0x80,
         0x2a => block[kInventoryTracking] |= 0x40,
-        0x29 => block[kInventoryTracking] |= 0x20,
+        0x29 => block[kInventoryTracking] |= 0x28,
         0x0d => block[kInventoryTracking] |= 0x10,
         0x13 => block[kInventoryTracking] |= 0x04,
         0x14 => block[kInventoryTracking] |= 0x02,

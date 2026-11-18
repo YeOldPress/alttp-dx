@@ -53,6 +53,15 @@ pub fn itemAt(loc: Loc) ?Item {
     return g_world.placed[@backingInt(loc)];
 }
 
+/// The receipt number the game should hand over at `loc` right now, while
+/// randomized: the placed item, progressive items worked out from what Link
+/// has (receipt.zig). Null when the file isn't randomized, so the caller
+/// carries on as the game would. Every spot that gives an item asks this.
+pub fn giveAt(loc: Loc) ?u8 {
+    const item = itemAt(loc) orelse return null;
+    return @import("receipt.zig").byteFor(item);
+}
+
 /// The location of the `nth` chest (in the chest table's order) of dungeon
 /// room `room`, if it's one of the randomizer's.
 pub fn chestLoc(room: u16, nth: u8) ?Loc {

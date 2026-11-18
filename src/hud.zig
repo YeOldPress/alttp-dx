@@ -7,6 +7,8 @@ const vars = @import("variables.zig");
 const features = @import("features.zig");
 const rtl = @import("zelda_rtl_types.zig");
 const t = @import("hud_tables.zig");
+const rando_game = @import("rando/game.zig");
+const rando_minigames = @import("rando/minigames.zig");
 
 const ItemBoxGfx = t.ItemBoxGfx;
 const g_ram = &vars.g_ram;
@@ -580,6 +582,57 @@ pub export fn GetCurrentItemButtonPtr(i: c_int) callconv(.c) *u8 {
     };
 }
 
+// ------------------------------------------------ the randomizer's item swap
+//
+// In a randomized file the blue and red boomerangs, the mushroom and the
+// Magic Powder, and the shovel and the flute can each both be found, though
+// each pair has one slot. As in z3randomizer, Y in the item menu switches the
+// circled slot to the other of its pair once both have been found
+// (rando/minigames.zig's swapFor), with the menu's sound, or the error sound
+// when the pair isn't complete. With item switching on, holding Y and a
+// direction moves the circled item instead, so there the swap comes when Y is
+// let go without a direction having been pressed.
+
+/// Y was pressed in the menu and no direction has come since, so letting go
+/// swaps (item switching on only).
+var g_swap_armed = false;
+
+fn Hud_HandleSwapButton() void {
+    const dirs = kJoypadH_Up | kJoypadH_Down | kJoypadH_Left | kJoypadH_Right;
+    if (features.enhanced_features0.* & features.kFeatures0_SwitchLR == 0) {
+        g_swap_armed = false;
+        if (vars.filtered_joypad_H.* & kJoypadH_Y != 0) Hud_SwapSharedSlot();
+        return;
+    }
+    if (vars.filtered_joypad_H.* & kJoypadH_Y != 0) g_swap_armed = true;
+    if (vars.joypad1H_last.* & dirs != 0) g_swap_armed = false;
+    if (vars.joypad1H_last.* & kJoypadH_Y == 0) {
+        if (g_swap_armed) Hud_SwapSharedSlot();
+        g_swap_armed = false;
+    }
+}
+
+/// Switches the circled slot to the other item of its pair, if it shares one
+/// and both have been found. The menu draws the slot, the item box and the
+/// item's name from the inventory each frame, and closing it rebuilds the
+/// HUD, so they all follow; the equipped item is the slot, whichever it holds.
+fn Hud_SwapSharedSlot() void {
+    const item = GetCurrentItemButtonPtr(GetCurrentItemButtonIndex()).*;
+    if (item != rando_minigames.kHudBoomerang and item != rando_minigames.kHudMushroom and
+        item != rando_minigames.kHudFlute)
+        return;
+    const block = vars.g_ram[0xf000..0xf500];
+    // Not mid-dig: the shovel's animation would carry on as the flute.
+    const digging = item == rando_minigames.kHudFlute and vars.link_position_mode.* == 1;
+    const swap = (if (digging) null else rando_minigames.swapFor(item, block)) orelse {
+        vars.sound_effect_1.* = 0x3c;
+        return;
+    };
+    block[swap.slot] = swap.value;
+    vars.timer_for_flashing_circle.* = 16;
+    vars.sound_effect_2.* = 32;
+}
+
 pub export fn Hud_NormalMenu() callconv(.c) void { // 8ddf15
     vars.timer_for_flashing_circle.* +%= 1;
     if (vars.joypad1H_last.* == 0)
@@ -598,6 +651,8 @@ pub export fn Hud_NormalMenu() callconv(.c) void { // 8ddf15
         DisplaySelectMenu();
         return;
     }
+
+    if (rando_game.active()) Hud_HandleSwapButton();
 
     if (vars.joypad1H_last.* & kJoypadH_Y != 0 and (vars.joypad1L_last.* & kJoypadL_X) == 0 and
         features.enhanced_features0.* & features.kFeatures0_SwitchLR != 0)
